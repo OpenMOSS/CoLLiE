@@ -6,7 +6,7 @@ from transformers import TrainingArguments, Seq2SeqTrainingArguments
 @dataclass
 class ModelArguments:
     model_name_or_path: Optional[str] = field(default="facebook/opt-1.3b")
-    cache_dir: Optional[str] = field(default='/remote-hoe/share/llms')
+    cache_dir: Optional[str] = field(default='/remote-home/share/llms')
     llama_dir: Optional[str] = field(default='/remote-home/klv/exps/MossOn3090/llama')
 
 
