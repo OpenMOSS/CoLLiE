@@ -13,30 +13,6 @@ from transformers import set_seed
 import wandb
 
 
-class MyDataset(Dataset):
-    def __init__(self, data, tknz, max_len=512):
-        super().__init__()
-        self.data = data
-        self.tknz = tknz
-        self.max_len = max_len
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        tknz_text = self.tknz(
-            self.data[idx]['text'],
-            max_length=self.max_len,
-            padding='max_length',
-            truncation=True,
-        )
-        return {
-            'input_ids': tknz_text['input_ids'],
-            'attention_mask': tknz_text['attention_mask'],
-            'labels': tknz_text['input_ids']
-        }
-
-
 def collate_fn(batch, tknz, max_len=512):
     text = [e['text'] for e in batch]
     tknz_batch = tknz(
