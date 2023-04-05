@@ -1,12 +1,13 @@
+import sys
+sys.path.append('..')
+import tunelite as tl
 import wandb
 from torch.utils.data import DataLoader
 from transformers import AutoConfig, AutoModelForCausalLM, HfArgumentParser, AutoTokenizer
 from transformers.deepspeed import HfDeepSpeedConfig
-import tunelite as tl
 from tunelite.arguments import ModelArguments, DataArguments, TuneLiteArguments
 import torch
 from datasets import load_from_disk
-import sys
 import os
 import datetime
 
@@ -91,6 +92,6 @@ def train():
     trainer.train()
 
 
-# run with $deepspeed --include localhost:3,4 train_inplace_zero.py zero_args.yaml
+# run with $deepspeed --include localhost:3,4 train_inplace_zero.py config/zero_args.yaml
 if __name__ == "__main__":
     train()

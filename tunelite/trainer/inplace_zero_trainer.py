@@ -84,7 +84,6 @@ class InplaceZeroTrainer:
                     )
                     logits = logits.tolist()
                     pred_texts = self.tokenizer.batch_decode(logits)
-                    print(pred_texts)
                     all_preds = pred_texts if all_preds is None else all_preds + pred_texts
 
             result = self.compute_metrics(all_preds, self.eval_dataset)

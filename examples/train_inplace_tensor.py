@@ -1,3 +1,5 @@
+import sys
+sys.path.append('..')
 import tunelite as tl
 from tunelite.models import llama
 import random
@@ -6,10 +8,33 @@ from torch.utils.data import Dataset, DataLoader
 from datasets import load_dataset, load_from_disk
 from transformers import HfArgumentParser
 from tunelite.arguments import ModelArguments, DataArguments, TuneLiteArguments
-import sys
 import os
 from transformers import set_seed
 import wandb
+
+
+class MyDataset(Dataset):
+    def __init__(self, data, tknz, max_len=512):
+        super().__init__()
+        self.data = data
+        self.tknz = tknz
+        self.max_len = max_len
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        tknz_text = self.tknz(
+            self.data[idx]['text'],
+            max_length=self.max_len,
+            padding='max_length',
+            truncation=True,
+        )
+        return {
+            'input_ids': tknz_text['input_ids'],
+            'attention_mask': tknz_text['attention_mask'],
+            'labels': tknz_text['input_ids']
+        }
 
 
 def collate_fn(batch, tknz, max_len=512):
@@ -32,6 +57,7 @@ def collate_fn(batch, tknz, max_len=512):
 
 
 def compute_metrics(all_pred, eval_dataset):
+    print(len(all_pred), len(eval_dataset))
     return {'my_metric': len(all_pred[0]) - len(eval_dataset[0])}  # dummy metric
 
 
@@ -86,6 +112,6 @@ def train():
     trainer.train()
 
 
-# run with $torchrun --nproc_per_node 2 train_inplace_tensor.py tensor_args.yaml
+# run with $torchrun --nproc_per_node 2 train_inplace_tensor.py config/tensor_args.yaml
 if __name__ == "__main__":
     train()
