@@ -55,17 +55,17 @@ def train():
     ds_config = tl_args.deepspeed
     dschf = HfDeepSpeedConfig(ds_config)  # keep this object alive
 
-    config = AutoConfig.from_pretrained(ModelArguments.model_name_or_path)
+    config = AutoConfig.from_pretrained(model_args.model_name_or_path)
     config.gradient_checkpointing = True
     model = AutoModelForCausalLM.from_pretrained(
-        ModelArguments.model_name_or_path,
-        cache_dir=ModelArguments.cache_dir,
+        model_args.model_name_or_path,
+        cache_dir=model_args.cache_dir,
         local_files_only=True,
         config=config
     )
     tokenizer = AutoTokenizer.from_pretrained(
-        ModelArguments.model_name_or_path,
-        cache_dir=ModelArguments.cache_dir,
+        model_args.model_name_or_path,
+        cache_dir=model_args.cache_dir,
         local_files_only=True,
     )
     tokenizer.pad_token = tokenizer.eos_token
