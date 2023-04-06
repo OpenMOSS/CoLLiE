@@ -60,9 +60,20 @@ class Tokenizer:
         return t
 
     def decode(self, t: List[int]) -> str:
+        if self.bos_id in t:
+            t = t[t.index(self.bos_id):]
         if self.eos_id in t:
             t = t[:t.index(self.eos_id)+1]
         return self.sp_model.decode(t)
+
+    def batch_decode(self, batch_t: List[int]) -> str:
+        for t in batch_t:
+            if self.bos_id in t:
+                t = t[t.index(self.bos_id):]
+            if self.eos_id in t:
+                t = t[:t.index(self.eos_id) + 1]
+        return self.sp_model.decode(batch_t)
+
 
 class MyTokenizer:
     """Masked tokenizer of hugging face to be similar to the one of meta,
@@ -178,6 +189,9 @@ class HFLikeTokenizer:
 
     def decode(self, tokens):
         return self.tokenizer.decode(tokens)
+
+    def batch_decode(self, tokens):
+        return self.tokenzier.batch_decode(tokens)
 
 
 @dataclass
