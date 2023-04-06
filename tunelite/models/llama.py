@@ -191,7 +191,7 @@ class HFLikeTokenizer:
         return self.tokenizer.decode(tokens)
 
     def batch_decode(self, tokens):
-        return self.tokenzier.batch_decode(tokens)
+        return self.tokenizer.batch_decode(tokens)
 
 
 @dataclass
