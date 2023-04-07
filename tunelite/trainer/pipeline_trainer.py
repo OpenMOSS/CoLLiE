@@ -1,2 +1,0 @@
-class PipelineTrainer:
-    pass
