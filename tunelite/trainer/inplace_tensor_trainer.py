@@ -65,15 +65,8 @@ class InplaceTensorTrainer:
             self.model.eval()
             for batch in tqb:
                 with torch.no_grad():
-                    logits = self.model.generate(
-                        batch['input_ids'], batch['attention_mask'],
-                        max_new_tokens=self.tl_args.max_new_tokens,
-                        temperature=self.tl_args.temperature,
-                        top_p=self.tl_args.top_p
-                    )
-                    logits = logits.tolist()
-                    pred_texts = self.tokenizer.decode(logits)
-                    all_preds = pred_texts if all_preds is None else all_preds + pred_texts
+                    pred = self.eval_step(batch)
+                    all_preds = pred if all_preds is None else all_preds + pred
 
             result = self.compute_metrics(all_preds, self.eval_dataset)
             result['epoch'] = epoch
@@ -96,3 +89,14 @@ class InplaceTensorTrainer:
                         wandb.run.summary['best_'+self.tl_args.metric_for_best_model] = result[self.tl_args.metric_for_best_model]
                         wandb.run.summary['best_epoch'] = epoch
                         wandb.run.summary['best_step'] = step
+
+    def eval_step(self, batch):
+        logits = self.model.generate(
+            batch['input_ids'], batch['attention_mask'],
+            max_new_tokens=self.tl_args.max_new_tokens,
+            temperature=self.tl_args.temperature,
+            top_p=self.tl_args.top_p
+        )
+        logits = logits.tolist()
+        pred_texts = self.tokenizer.batch_decode(logits)
+        return pred_texts
