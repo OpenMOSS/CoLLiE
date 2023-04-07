@@ -1,3 +1,4 @@
+import os
 import sys
 sys.path.append("..")
 
@@ -5,7 +6,7 @@ from datasets import load_dataset
 from transformers import HfArgumentParser
 
 from tunelite.models.llama_colossalai import HFLikeTokenizer, Tokenizer, ModelArgs, get_7B_llama, load_state_dict
-from tunelite.trainer.colossalai_trainer import ColossalaiTrainer, GenerativeDataloader, TrainerArgs
+from tunelite.trainer.colossalai_trainer import ColossalaiTrainer, TrainerArgs
 
 import torch
 from torch.utils.data import DataLoader
@@ -30,28 +31,32 @@ def collate_fn(batch, tokenizer, max_length=1024):
 def main():
     tokenizer = HFLikeTokenizer(
         tokenizer=Tokenizer(model_path='/mnt/petrelfs/zhangshuo/projects/OptiLLM/colossalai/llama/tokenizer.model'))
-    def compute_metrics(batch, generated_tensor, epoch, step):
+    def compute_metrics(batch, generated_batch, epoch, step):
         print("\n")
-        print([tokenizer.decode(token.tolist()) for token in generated_tensor])
+        print([tokenizer.decode(token.tolist()) for token in generated_batch[0]["input_ids"]])
         print("\n")
     model_args = ModelArgs()
-    model_args.pp_size = 5
+    model_args.pp_size = 1
+    model_args.micro_batch_size = 1
+    model_args.fp16 = True
     trainer_args = TrainerArgs()
     trainer_args.eval_max_length = 128
-    trainer_args.eval_per_steps = 1
+    trainer_args.eval_per_steps = 0
+    trainer_args.eval_per_epoches = 0
     trainer_args.learning_rate = 2e-5
     model = get_7B_llama(model_args)
-    state_dict = load_state_dict()
-    model.load_state_dict(state_dict)
+    # state_dict = load_state_dict(model_args=model_args)
+    # model.load_state_dict(state_dict)
     dataset = load_dataset("NeelNanda/pile-10k")["train"]
     train_dataloader = DataLoader(
         dataset,
-        batch_size=64,
-        collate_fn=lambda x: collate_fn(x, tokenizer, 512),
+        batch_size=4,
+        collate_fn=lambda x: collate_fn(x, tokenizer, 50),
     )
     eval_dataloader = DataLoader(
-        [{"text": "When I was young, I used to"}],
-        collate_fn=lambda x: collate_fn(x, tokenizer, 1024),
+        dataset,
+        batch_size=4,
+        collate_fn=lambda x: collate_fn(x, tokenizer, 10),
     )
     trainer = ColossalaiTrainer(model=model,
                                 train_dataloader=train_dataloader,
@@ -68,4 +73,4 @@ if __name__ == "__main__":
     except:
         import rich
         console = rich.console.Console()
-        console.print_exception(show_locals=False)
+        console.print_exception(show_locals=True)

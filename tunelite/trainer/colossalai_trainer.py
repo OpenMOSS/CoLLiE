@@ -3,6 +3,7 @@ sys.path.append("..")
 
 from .utils import inplace_grad, GPTLMLoss, sample_top_p
 
+import os
 import tqdm
 import torch
 from itertools import cycle
@@ -16,78 +17,13 @@ try:
     import colossalai
     from colossalai.core import global_context as gpc
     from colossalai.context.parallel_mode import ParallelMode
+    from colossalai.pipeline.rpc._pipeline_schedule import FillDrainPipelineEngine, OneFOneBPipelineEngine
+    from colossalai.pipeline.rpc.utils import rpc_run
+    from colossalai.pipeline.pipeline_process_group import ppg
 except ModuleNotFoundError:
     raise ModuleNotFoundError(
         "Detected Colossal-AI is not installed. See https://github.com/hpcaitech/ColossalAI")
-    
-class GenerativeDataloader:
-    def __init__(self,
-                 sentences: Optional[List[str]] = None,
-                 input_ids: Optional[torch.Tensor] = None,
-                 max_length: Optional[int] = None,
-                 stop_tokens: Optional[List[int]] = None,
-                 tokenizer: Optional[Any] = None,
-                 device: torch.DeviceObjType = torch.device("cpu")
-                 ) -> None:
-        self.input_ids = input_ids.to(device)
-        self.max_length = max_length
-        if sentences is not None:
-            assert tokenizer is not None, "tokenizer should not be None when sentences is not None"
-            tokens = [tokenizer(sentence)["input_ids"] for sentence in sentences]
-            tokens_max_length = max([token.shape[0] for token in tokens])
-            self.input_ids = torch.full((len(tokens), tokens_max_length), 0, dtype=torch.long).to(device)
-            for i, token in enumerate(tokens):
-                if len(token) > self.max_length:
-                    token = token[:self.max_length]
-                    self.input_ids[i, :token.shape[0]] = token
-        orginal_shape = self.input_ids.shape
-        self.input_ids = torch.flatten(self.input_ids)
-        for i in range(self.input_ids.shape[0]):
-            if self.input_ids[i] in stop_tokens:
-                self.input_ids[i] = 0
-        self.input_ids = self.input_ids.view(orginal_shape)
-        self.stop_tokens = stop_tokens
-        self.tokenizer = tokenizer
-        self.current_pos = 1
-        self.stop = False
-    
-    def __iter__(self):
-        return self
-    
-    def __next__(self):
-        if self.current_pos >= self.max_length and self.max_length > 0 or self.stop:
-            raise StopIteration
-        data = {
-            "input_ids": self.input_ids[:self.current_pos]
-        }, self.input_ids
-        self.current_pos += 1
-        return data
         
-    def __len__(self):
-        if self.max_length is None:
-            return sys.maxsize
-        else:
-            return self.max_length
-        
-    def __getitem__(self, index):
-        return next(self)
-    
-    def append(self, token: torch.Tensor):
-        for i in torch.flatten(token).tolist():
-            if i in self.stop_tokens:
-                self.stop = True
-        assert token.shape == (self.input_ids.shape[0], 1), "token should be a 2D tensor with shape (batch_size, 1), but got {}".format(token.shape)
-        if self.current_pos >= self.input_ids.shape[1]:
-            self.input_ids = torch.cat([self.input_ids, torch.zeros_like(token)], dim=1)
-        self.input_ids[:, self.current_pos] = torch.where(self.input_ids[:, self.current_pos] == 0, token[:, 0], self.input_ids[:, self.current_pos])
-        
-    def get_input_ids(self):
-        return self.input_ids
-    
-    def get_sentences(self):
-        return [self.tokenizer.decode(token.tolist()) for token in self.input_ids]
-        
-    
 @dataclass
 class TrainerArgs:
     learning_rate: float = field(
@@ -137,25 +73,22 @@ class ColossalaiTrainer:
                 p.register_hook(self.grad_func)
         self.model = model
         self.tokenizer = tokenizer
-        self.train_dataloader = train_dataloader
-        self.eval_dataloader = eval_dataloader
         self.compute_metrics = compute_metrics
         self.trainer_args = trainer_args
-        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=trainer_args.learning_rate)
+        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=trainer_args.learning_rate)
         self.engine, self.train_dataloader, self.eval_dataloader, _ = colossalai.initialize(
             model=self.model,
-            train_dataloader=self.train_dataloader,
-            test_dataloader=self.eval_dataloader,
+            train_dataloader=train_dataloader,
+            test_dataloader=eval_dataloader,
             optimizer=self.optimizer,
             criterion=GPTLMLoss()
         )
         
     def train(self):
+        self.engine.train()
         def train_loop(epoch: int = 0):
-            dataloader = iter(self.train_dataloader)
             with tqdm.tqdm(self.train_dataloader, disable=not gpc.is_pipeline_last_stage()) as tqb:
                 for step, batch in enumerate(tqb, start=1):
-                    self.engine.train()
                     self.engine.zero_grad()
                     hidden_state, label, loss = self.engine.execute_schedule(
                         cycle([batch]),
@@ -163,9 +96,11 @@ class ColossalaiTrainer:
                         return_loss=True,
                         return_output_label=False,
                     )
-                    self.engine.step()
-                    torch.cuda.empty_cache()
+                    # self.engine.step()
+                    # torch.cuda.empty_cache()
                     if gpc.is_pipeline_last_stage():
+                        import pdb
+                        pdb.set_trace()
                         tqb.set_postfix({'epoch': epoch, 'step': step, 'loss': loss.item()})
                     if self.trainer_args.eval_per_steps == 0:
                         continue
@@ -198,47 +133,46 @@ class ColossalaiTrainer:
                         
     @torch.no_grad()           
     def generate(self,
-                 batch: Union[Dict[str, torch.Tensor], GenerativeDataloader],
+                 batch: Tuple[Dict[str, torch.Tensor], torch.Tensor],
                  max_length: int = 1024,
-                 stop_tokens: List[int] = [2],):
-        if isinstance(batch, dict):
-            dataloader = GenerativeDataloader(
-                input_ids=batch["input_ids"],
-                max_length=max_length,
-                stop_tokens=stop_tokens,
-                device=torch.device(f"cuda:{gpc.get_local_rank(ParallelMode.PIPELINE)}"),
-                )
-        else:
-            dataloader = batch
+                 stop_tokens: List[int] = [2]):
         with tqdm.tqdm(range(max_length), disable=not gpc.is_pipeline_last_stage()) as tqb:
-            for token in tqb:
+            for current_pos in tqb:
                 try:
+                    current_pos += 1
+                    self.engine.eval()
                     hidden_state, label, _ = self.engine.execute_schedule(
-                        dataloader,
+                        cycle([({
+                            "input_ids": batch[0]["input_ids"][:, :current_pos],
+                        }, batch[0]["input_ids"])]),
                         forward_only=True,
                         return_loss=False,
                         return_output_label=True,
                     )
-                    next_tokens = torch.zeros(dataloader.input_ids.shape[0], 1, dtype=torch.long).to(dataloader.input_ids.device)
+                    next_tokens = torch.zeros(batch[0]["input_ids"].shape[0], 1, dtype=torch.long).to(batch[0]["input_ids"].device)
                     if gpc.is_pipeline_last_stage():
                         next_tokens = torch.argmax(hidden_state[:, -1, :], dim=-1)
                         next_tokens = torch.unsqueeze(next_tokens, dim=-1)
+                    print(f"\n\nRank{os.environ['RANK']} is here!!!\n\n")
                     torch.distributed.broadcast(next_tokens, src=gpc.get_world_size(ParallelMode.PIPELINE) - 1)
-                    dataloader.append(next_tokens)
-                    tqb.set_postfix({'generating': f"{token}/{max_length}"})
+                    while current_pos >= batch[0]["input_ids"].shape[1]:
+                        batch[0]["input_ids"] = torch.cat([batch[0]["input_ids"], torch.zeros_like(next_tokens)], dim=1)
+                    batch[0]["input_ids"][:, current_pos] = torch.where(batch[0]["input_ids"][:, current_pos] == 0, next_tokens[:, 0], batch[0]["input_ids"][:, current_pos])
+                    tqb.set_postfix({'generating': f"{current_pos}/{max_length}"})
+                    for i in torch.flatten(next_tokens).tolist():
+                            if i in stop_tokens:
+                                raise StopIteration
                 except StopIteration:
                     break
-        return dataloader.get_input_ids()
+        return batch
     
     def eval(self, epoch, step):
         with tqdm.tqdm(self.eval_dataloader, disable=not gpc.is_pipeline_last_stage()) as tqb:
-            for step, batch in enumerate(tqb, start=1):
-                batch, label = batch
+            for eval_step, batch in enumerate(tqb, start=1):
                 with torch.no_grad():
                     generated_batch = self.generate(batch,
                                                     max_length=self.trainer_args.eval_max_length,
                                                     stop_tokens=self.trainer_args.eval_stop_tokens)
                     if gpc.is_pipeline_last_stage() and self.compute_metrics is not None:
                         self.compute_metrics(batch, generated_batch, epoch, step)
-                tqb.set_postfix({'evaluating': f"{step}/{len(self.eval_dataloader)}"})
-                    
+                tqb.set_postfix({'evaluating': f"{eval_step}/{len(self.eval_dataloader)}"})

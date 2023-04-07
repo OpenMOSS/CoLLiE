@@ -182,7 +182,7 @@ class ModelArgs:
     tp_size: int = 1
     tp_type: str = "1d" # 1d, 2d, 2.5d, 3d
     dp_size: int = 1
-    micro_batch_size: int = 32
+    micro_batch_size: int = 1
     # other parameters
     checkpoint: bool = False
     dropout: float = 0.1
@@ -492,6 +492,7 @@ class Transformer(nn.Module):
         if self.is_end:
             hidden_states = self.norm(hidden_states)
             hidden_states = self.language_model_head(hidden_states)
+        
         return hidden_states
     
 def prepare_distribution(model_args: ModelArgs = ModelArgs()) -> dict:
@@ -502,13 +503,15 @@ def prepare_distribution(model_args: ModelArgs = ModelArgs()) -> dict:
                       )
                   )
     if model_args.fp16:
-        CONFIG["parallel"]["fp16"] = dict(mode=AMP_TYPE.APEX)
+        CONFIG["fp16"] = dict(mode=AMP_TYPE.NAIVE)
     colossalai.launch_from_torch(config=CONFIG, backend=model_args.backend)
     if "pipeline" in CONFIG["parallel"] and CONFIG["parallel"]["pipeline"] == 1:
         def dummy_pipeline_status():
             return True
         gpc.is_pipeline_first_stage = dummy_pipeline_status
         gpc.is_pipeline_last_stage = dummy_pipeline_status
+        gpc._local_ranks[ParallelMode.PIPELINE] = 0
+        gpc._world_sizes[ParallelMode.PIPELINE] = 1
 
 def build_pipe(model_args: ModelArgs = ModelArgs()):
     prepare_distribution(model_args=model_args)
@@ -527,7 +530,7 @@ def build_pipe(model_args: ModelArgs = ModelArgs()):
             chunk = Transformer(is_start=gpc.is_pipeline_first_stage(), 
                                 is_end=gpc.is_pipeline_last_stage(), 
                                 num_blocks=end - start, 
-                                model_args=model_args).to(torch.device(f"cuda:{gpc.get_local_rank(ParallelMode.PIPELINE)}"))
+                                model_args=model_args)
             if gpc.is_pipeline_first_stage() and gpc.get_world_size(ParallelMode.PIPELINE) > 1:
                 wrapper.register_module(chunk.token_embedding)
             if gpc.is_pipeline_last_stage() and gpc.get_world_size(ParallelMode.PIPELINE) > 1:

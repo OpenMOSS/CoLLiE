@@ -1,5 +1,4 @@
 import torch
-import pickle
 import numpy as np
 
 # An approximation of in-place grad update
@@ -20,6 +19,7 @@ class GPTLMLoss(torch.nn.Module):
         self.loss = torch.nn.CrossEntropyLoss()
 
     def forward(self, logits, labels):
+        
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()
         # Flatten the tokens
