@@ -10,16 +10,17 @@ import torch.nn.functional as F
 
 from sentencepiece import SentencePieceProcessor
 
+import io
 import os
+import time
 import math
 import tqdm
+import shutil
 from io import BytesIO
-from functools import reduce
 from einops import rearrange
 from dataclasses import dataclass
 from collections import OrderedDict
-from tempfile import TemporaryDirectory
-from typing import Any, Optional, Callable, List, Union, Dict
+from typing import Optional, Callable, List, Union, Dict
 
 try:
     import colossalai
@@ -181,6 +182,7 @@ class ModelArgs:
     tp_size: int = 1
     tp_type: str = "1d" # 1d, 2d, 2.5d, 3d
     dp_size: int = 1
+    micro_batch_size: int = 32
     # other parameters
     checkpoint: bool = False
     dropout: float = 0.1
@@ -482,7 +484,7 @@ class Transformer(nn.Module):
             hidden_states = self.token_embedding(input_ids)
         for block in self.blocks:
             if self.model_args.checkpoint and self.training:
-                hidden_states = checkpoint(block, False,
+                hidden_states = checkpoint(block, True,
                                            hidden_states, past_key_value, True, self.rope)
             else:
                 hidden_states = block(
@@ -493,7 +495,7 @@ class Transformer(nn.Module):
         return hidden_states
     
 def prepare_distribution(model_args: ModelArgs = ModelArgs()) -> dict:
-    CONFIG = dict(NUM_MICRO_BATCHES=1, 
+    CONFIG = dict(NUM_MICRO_BATCHES=model_args.micro_batch_size, 
                   parallel=dict(
                       pipeline=int(model_args.pp_size), 
                       tensor=dict(size=model_args.tp_size, mode=model_args.tp_type)
@@ -542,9 +544,10 @@ def load_state_dict(protocol: str="s3",
                     file_folder: str = "/remote-home/share/llama/7B",
                     s3_folder: str = "hdd:s3://opennlplab_hdd/models/llama/llama-7b-hf",
                     model_args: ModelArgs = ModelArgs()) -> Dict[str, torch.tensor]:
-    assert source in ["hf", "raw"], "source must be hf or raw"
+    assert source in ["hf", "raw", "tunelite"], "source must be hf or raw or tunelite"
     assert protocol in ["s3", "file"], "protocol must be one of s3, file"
     state_dict = OrderedDict()
+    part_state_dict = OrderedDict()
     tempdir = [""]
     if gpc.get_global_rank() == 0:
         if protocol == "s3":
@@ -552,7 +555,7 @@ def load_state_dict(protocol: str="s3",
             client = Client()
             if not s3_folder.endswith("/"):
                 s3_folder = f"{s3_folder}/"
-            if source == "raw":
+            if source == "raw" or source == "tunelite":
                 weights = [weight for weight in client.list(s3_folder) if weight.endswith(".pth")]
             elif source == "hf":
                 weights = [weight for weight in client.list(s3_folder) if weight.endswith(".bin")]
@@ -583,12 +586,15 @@ def load_state_dict(protocol: str="s3",
                                     state_dict[key] = torch.cat((state_dict[key], value), dim=0)
                             else:
                                 state_dict[key] = value
+                            state_dict.update(raw_state_dict)
+                        elif source == "tunelite":
+                            state_dict.update(raw_state_dict)
                     buffer.close()
                     pbar.update(1)
         elif protocol == "file":
             if not file_folder.endswith("/"):
                 file_folder = f"{file_folder}/"
-            if source == "raw":
+            if source == "raw" or source == "tunelite":
                 weights = [weight for weight in list(os.listdir(file_folder)) if weight.endswith(".pth")]
             elif source == "hf":
                 weights = [weight for weight in list(os.listdir(file_folder)) if weight.endswith(".bin")]
@@ -618,9 +624,13 @@ def load_state_dict(protocol: str="s3",
                                     state_dict[key] = torch.cat((state_dict[key], value), dim=0)
                             else:
                                 state_dict[key] = value
+                            state_dict.update(raw_state_dict)
+                        elif source == "tunelite":
+                            state_dict.update(raw_state_dict)
                     pbar.update(1)
         parts = partition_uniform(model_args.num_hidden_layers, model_args.pp_size, num_chunks=1)
-        tempdir[0] = TemporaryDirectory().name
+        tempdir[0] = f"/dev/shm/TuneLite-{round(time.time() * 1000)}/"
+        os.makedirs(tempdir[0])
         for pp_rank, [(start, end)] in enumerate(parts):
             part_state_dict = OrderedDict()
             if source == "hf":
@@ -675,13 +685,49 @@ def load_state_dict(protocol: str="s3",
                 if "token_embedding" in key:
                     part_state_dict[key.replace(
                         "weight", "module.weight")] = part_state_dict.pop(key)
-            print(f'save to {os.path.join(tempdir[0], f"{gpc.get_local_rank(ParallelMode.PIPELINE)}.pt")}')
-            with open (os.path.join(tempdir[0], f"{pp_rank}.pt"), "wb+") as f:
+            with open (os.path.join(tempdir[0], f"pipeline_{pp_rank}.pt"), "wb+") as f:
                 torch.save(part_state_dict, f)
+    del state_dict, part_state_dict
     torch.distributed.broadcast_object_list(tempdir, src=0)
-    with open(os.path.join(tempdir[0], f"{gpc.get_local_rank(ParallelMode.PIPELINE)}.pt"), "rb") as f:
+    with open(os.path.join(tempdir[0], f"pipeline_{gpc.get_local_rank(ParallelMode.PIPELINE)}.pt"), "rb") as f:
         state_dict = torch.load(f)
+    torch.distributed.barrier()
+    if gpc.get_global_rank() == 0:
+        shutil.rmtree(tempdir[0])
     return state_dict
+
+def save_state_dict(model: nn.Module, 
+                    protocol: str="s3", 
+                    file_folder: str = "/mnt/lustre/zhangshuo/model",
+                    s3_folder: str = "hdd:s3://opennlplab_hdd/models/llama-tunelite/llama-7b/"):
+    assert protocol in ["s3", "file"], "protocol must be one of s3, file"
+    tempdir = [""]
+    if gpc.get_global_rank() == 0:
+        tempdir[0] = f"/dev/shm/TuneLite-{round(time.time() * 1000)}/"
+    torch.distributed.broadcast_object_list(tempdir, src=0)
+    with open(os.path.join(tempdir[0], f"pipeline_{gpc.get_local_rank(ParallelMode.PIPELINE)}.pt"), "rb") as f:
+        torch.save(model.state_dict(), f)
+    torch.distributed.barrier()
+    if gpc.get_global_rank() == 0:
+        state_dict = OrderedDict()
+        for i in range(gpc.get_pipeline_model_parallel_size()):
+            with open(os.path.join(tempdir[0], f"pipeline_{i}.pt"), "rb") as f:
+                state_dict.update(torch.load(f))
+        if protocol == "s3":
+            if not s3_folder.endswith("/"):
+                s3_folder += "/"
+            from petrel_client.client import Client
+            client = Client()
+            buffer = io.BytesIO()
+            torch.save(state_dict, buffer)
+            buffer.seek(0)
+            client.put(f"{s3_folder}model.pth", buffer)
+            buffer.close()
+        elif protocol == "file":
+            with open(os.path.join(file_folder, "model.pth"), "wb+") as f:
+                torch.save(state_dict, f)
+        shutil.rmtree(tempdir[0])
+            
     
 def get_7B_llama(model_args: ModelArgs = ModelArgs()):
     for key, value in {

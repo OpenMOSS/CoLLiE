@@ -40,6 +40,12 @@ class GenerativeDataloader:
                 if len(token) > self.max_length:
                     token = token[:self.max_length]
                     self.input_ids[i, :token.shape[0]] = token
+        orginal_shape = self.input_ids.shape
+        self.input_ids = torch.flatten(self.input_ids)
+        for i in range(self.input_ids.shape[0]):
+            if self.input_ids[i] in stop_tokens:
+                self.input_ids[i] = 0
+        self.input_ids = self.input_ids.view(orginal_shape)
         self.stop_tokens = stop_tokens
         self.tokenizer = tokenizer
         self.current_pos = 1
@@ -73,7 +79,6 @@ class GenerativeDataloader:
         assert token.shape == (self.input_ids.shape[0], 1), "token should be a 2D tensor with shape (batch_size, 1), but got {}".format(token.shape)
         if self.current_pos >= self.input_ids.shape[1]:
             self.input_ids = torch.cat([self.input_ids, torch.zeros_like(token)], dim=1)
-            print(self.input_ids.shape)
         self.input_ids[:, self.current_pos] = torch.where(self.input_ids[:, self.current_pos] == 0, token[:, 0], self.input_ids[:, self.current_pos])
         
     def get_input_ids(self):
@@ -158,6 +163,8 @@ class ColossalaiTrainer:
                         return_loss=True,
                         return_output_label=False,
                     )
+                    self.engine.step()
+                    torch.cuda.empty_cache()
                     if gpc.is_pipeline_last_stage():
                         tqb.set_postfix({'epoch': epoch, 'step': step, 'loss': loss.item()})
                     if self.trainer_args.eval_per_steps == 0:
@@ -203,23 +210,25 @@ class ColossalaiTrainer:
                 )
         else:
             dataloader = batch
-        while True:
-            try:
-                hidden_state, label, _ = self.engine.execute_schedule(
-                    dataloader,
-                    forward_only=True,
-                    return_loss=False,
-                    return_output_label=True,
-                )
-                next_tokens = torch.zeros(dataloader.input_ids.shape[0], 1, dtype=torch.long).to(dataloader.input_ids.device)
-                if gpc.is_pipeline_last_stage():
-                    next_tokens = torch.argmax(hidden_state[:, -1, :], dim=-1)
-                    next_tokens = torch.unsqueeze(next_tokens, dim=-1)
-                torch.distributed.broadcast(next_tokens, src=gpc.get_world_size(ParallelMode.PIPELINE) - 1)
-                dataloader.append(next_tokens)
-            except StopIteration:
-                break
-        return batch
+        with tqdm.tqdm(range(max_length), disable=not gpc.is_pipeline_last_stage()) as tqb:
+            for token in tqb:
+                try:
+                    hidden_state, label, _ = self.engine.execute_schedule(
+                        dataloader,
+                        forward_only=True,
+                        return_loss=False,
+                        return_output_label=True,
+                    )
+                    next_tokens = torch.zeros(dataloader.input_ids.shape[0], 1, dtype=torch.long).to(dataloader.input_ids.device)
+                    if gpc.is_pipeline_last_stage():
+                        next_tokens = torch.argmax(hidden_state[:, -1, :], dim=-1)
+                        next_tokens = torch.unsqueeze(next_tokens, dim=-1)
+                    torch.distributed.broadcast(next_tokens, src=gpc.get_world_size(ParallelMode.PIPELINE) - 1)
+                    dataloader.append(next_tokens)
+                    tqb.set_postfix({'generating': f"{token}/{max_length}"})
+                except StopIteration:
+                    break
+        return dataloader.get_input_ids()
     
     def eval(self, epoch, step):
         with tqdm.tqdm(self.eval_dataloader, disable=not gpc.is_pipeline_last_stage()) as tqb:

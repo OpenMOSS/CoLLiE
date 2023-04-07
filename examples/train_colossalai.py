@@ -25,35 +25,39 @@ def collate_fn(batch, tokenizer, max_length=1024):
     return {
         'input_ids': tknz_batch['input_ids']
     }, tknz_batch['input_ids']
+    
 
 def main():
     tokenizer = HFLikeTokenizer(
         tokenizer=Tokenizer(model_path='/mnt/petrelfs/zhangshuo/projects/OptiLLM/colossalai/llama/tokenizer.model'))
+    def compute_metrics(batch, generated_tensor, epoch, step):
+        print("\n")
+        print([tokenizer.decode(token.tolist()) for token in generated_tensor])
+        print("\n")
     model_args = ModelArgs()
+    model_args.pp_size = 5
     trainer_args = TrainerArgs()
+    trainer_args.eval_max_length = 128
+    trainer_args.eval_per_steps = 1
+    trainer_args.learning_rate = 2e-5
     model = get_7B_llama(model_args)
-    
     state_dict = load_state_dict()
-    print(list(state_dict.keys()))
-    # dataset = load_dataset("NeelNanda/pile-10k")["train"]
-    # train_dataloader = DataLoader(
-    #     dataset,
-    #     batch_size=2,
-    #     collate_fn=lambda x: collate_fn(x, tokenizer, 1024),
-    # )
-    eval_dataloader = DataLoader(
-        [{"text": "I want to"}],
-        collate_fn=lambda x: collate_fn(x, tokenizer, 1024),
-    )
+    model.load_state_dict(state_dict)
+    dataset = load_dataset("NeelNanda/pile-10k")["train"]
     train_dataloader = DataLoader(
-        [{"text": "I want to"}],
+        dataset,
+        batch_size=64,
+        collate_fn=lambda x: collate_fn(x, tokenizer, 512),
+    )
+    eval_dataloader = DataLoader(
+        [{"text": "When I was young, I used to"}],
         collate_fn=lambda x: collate_fn(x, tokenizer, 1024),
     )
     trainer = ColossalaiTrainer(model=model,
                                 train_dataloader=train_dataloader,
                                 eval_dataloader=eval_dataloader,
                                 tokenizer=tokenizer,
-                                compute_metrics=None,
+                                compute_metrics=compute_metrics,
                                 trainer_args=trainer_args)
     trainer.train()
     
@@ -64,4 +68,4 @@ if __name__ == "__main__":
     except:
         import rich
         console = rich.console.Console()
-        console.print_exception(show_locals=True)
+        console.print_exception(show_locals=False)
