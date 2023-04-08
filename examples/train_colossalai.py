@@ -41,6 +41,7 @@ def main():
     model_args.fp16 = True
     model_args.checkpoint = True
     model_args.dense = "fused"
+    model_args.attention = "flash"
     trainer_args = TrainerArgs()
     trainer_args.eval_max_length = 128
     trainer_args.eval_per_steps = 10
@@ -56,7 +57,7 @@ def main():
         collate_fn=lambda x: collate_fn(x, tokenizer, 1024),
     )
     eval_dataloader = DataLoader(
-        [{"text": "When I was young, I used to "} for _ in range(14)],
+        [{"text": "When I was young, I used to "} for _ in range(64)],
         batch_size=4,
         collate_fn=lambda x: collate_fn(x, tokenizer, 1024, eos=False),
     )
@@ -68,7 +69,8 @@ def main():
                                 trainer_args=trainer_args)
     trainer.train()
     
-        
+    
+# Command: CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 torchrun --standalone --nnodes=1 --nproc_per_node=8 train_colossalai.py
 if __name__ == "__main__":
     try:
         main()
