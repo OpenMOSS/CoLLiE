@@ -55,8 +55,8 @@ def train():
         zero=False,
         tensor_parallel=True,
         pipeline_parallel=False,
-        max_batch_size=8,
-        max_seq_len=1024,
+        max_batch_size=tl_args.per_device_train_batch_size,
+        max_seq_len=data_args.max_length,
     )
     tokenizer.pad_token_id = 0
 
