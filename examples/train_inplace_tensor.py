@@ -38,9 +38,19 @@ def compute_metrics(all_pred, eval_dataset):
 
 
 def train():
+    local_rank, world_size = llama.setup_model_parallel()
+    parser = HfArgumentParser((ModelArguments, DataArguments, TuneLiteArguments))
+    if sys.argv[-1].endswith(".yaml"):
+        model_args, data_args, tl_args = parser.parse_yaml_file(yaml_file=os.path.abspath(sys.argv[-1]))
+    else:
+        model_args, data_args, tl_args = parser.parse_args_into_dataclasses()
+    set_seed(tl_args.seed)
+
     model, tokenizer = llama.load_model(
-        ckpt_dir='/remote-home/share/llama/13B/',  # 7B, 13B, 30B, 65B
-        tokenizer_path='/remote-home/share/llama/tokenizer.model',
+        ckpt_dir=model_args.model_name_or_path,  # 7B, 13B, 30B, 65B
+        tokenizer_path=os.path.join(model_args.llama_dir, 'tokenizer.model'),
+        local_rank=local_rank,
+        world_size=world_size,
         froze_embeddings=False,
         zero=False,
         tensor_parallel=True,
@@ -50,12 +60,6 @@ def train():
     )
     tokenizer.pad_token_id = 0
 
-    parser = HfArgumentParser((ModelArguments, DataArguments, TuneLiteArguments))
-    if sys.argv[-1].endswith(".yaml"):
-        model_args, data_args, tl_args = parser.parse_yaml_file(yaml_file=os.path.abspath(sys.argv[-1]))
-    else:
-        model_args, data_args, tl_args = parser.parse_args_into_dataclasses()
-    set_seed(tl_args.seed)
     if tl_args.local_rank in [-1, 0]:
         wandb.init(
             project="tunelite",
@@ -64,7 +68,7 @@ def train():
             config={'model_args': model_args, 'data_args': data_args, 'tl_args': tl_args},
         )
 
-    dataset = load_from_disk("/remote-home/klv/exps/MossOn3090/data/pile-10k")['train'].select(range(1000))
+    dataset = load_from_disk(data_args.data_dir)['train'].select(range(1000))
     train_dataloader = DataLoader(
         dataset,
         batch_size=tl_args.per_device_train_batch_size,

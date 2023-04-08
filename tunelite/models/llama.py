@@ -673,6 +673,8 @@ def load_checkpoints(
 def load_model(
     ckpt_dir: str,
     tokenizer_path: str,
+    local_rank: int,
+    world_size: int,
     froze_embeddings: bool,
     zero: bool,
     tensor_parallel: bool,
@@ -682,7 +684,6 @@ def load_model(
 ) -> Tuple[Transformer, HFLikeTokenizer]:
     assert zero + tensor_parallel + pipeline_parallel <= 1, \
         "ZeRO, Tensor Parallel and Pipeline Parallel are mutually exclusive now"
-    local_rank, world_size = setup_model_parallel()
     checkpoint, params = load_checkpoints(ckpt_dir, local_rank, world_size)
     model_args: ModelArgs = ModelArgs(
         max_seq_len=max_seq_len, max_batch_size=max_batch_size, **params
