@@ -120,12 +120,12 @@ class HFLikeTokenizer:
 
     def __call__(self, texts: Union[List[str], str], *args, **kwargs):
         if isinstance(texts, str):
-            text = self.tokenizer.encode(texts, bos=True, eos=True)
+            text = self.tokenizer.encode(texts, kwargs.get("bos", True), eos=kwargs.get("eos", True))
             tokens = torch.tensor(text).long()
             mask = torch.ones_like(tokens)
         else:
             texts = [
-                self.tokenizer.encode(text, bos=True, eos=True)
+                self.tokenizer.encode(text, kwargs.get("bos", True), eos=kwargs.get("eos", True))
                 for text in texts
             ]
             max_len = max(len(text) for text in texts)
@@ -373,7 +373,7 @@ class TransformerBlock(nn.Module):
                     qkv, split_size_or_sections=1, dim=2)
                 query, key, value = query.squeeze(
                     2), key.squeeze(2), value.squeeze(2)
-                batch_size, seq_len, head_num, head_dim = query.shape
+                batch_size, seq_len, head_num, head_dim = key.shape
                 query, key, value = query.permute(0, 2, 1, 3), key.permute(
                     0, 2, 1, 3), value.permute(0, 2, 1, 3)
                 attention_score = torch.matmul(query, key.transpose(
@@ -394,12 +394,12 @@ class TransformerBlock(nn.Module):
             object.__setattr__(self, "attention_fn", attention)
 
     def forward(self,
-                hidden_states: Optional[col_nn.Tensor],
-                past_key_value: Optional[col_nn.Tensor] = None,
+                hidden_states: Optional[torch.Tensor],
+                past_key_value: Optional[torch.Tensor] = None,
                 casual: bool = True,
                 rpoe: Callable = None):
         
-        assert hidden_states.ndim == 3, "hidden_states.shape must be (B, N, H)"
+        assert hidden_states.ndim == 3, f"hidden_states.shape must be (B, N, H), but got {hidden_states.shape}"
         batch_size, seq_len, hidden_size = hidden_states.shape
         head_dim = self.model_args.hidden_size // self.model_args.num_attention_heads
         _hidden_states = self.attention["norm"](hidden_states)
@@ -414,7 +414,17 @@ class TransformerBlock(nn.Module):
             2), key.squeeze(2), value.squeeze(2)
         if past_key_value is None:
             start_pos = 0
-        
+        else:
+            assert past_key_value.ndim == 5, "past_key_value.shape must be (B, N, 2, H, D)"
+            start_pos = past_key_value.shape[1]
+            past_key, past_value = torch.split(
+                past_key_value, split_size_or_sections=1, dim=2)
+            past_key, past_value = past_key.squeeze(
+                2), past_value.squeeze(2)
+            key, value = torch.cat([past_key, key], dim=-3), torch.cat(
+                [past_value, value], dim=-3)
+            query = torch.cat([torch.zeros_like(past_value), query], dim=-3)
+            past_key_value = torch.stack([past_key, past_value], dim=2)
         query, key = rpoe(query=query, key=key,
                           start_pos=int(start_pos), seq_len=seq_len)
         qkv = torch.stack([query, key, value], dim=2)
@@ -427,10 +437,15 @@ class TransformerBlock(nn.Module):
                               dropout_p=self.model_args.dropout,
                               causal=casual)
         )
+        if past_key_value is not None:
+            hidden_states = hidden_states[:, start_pos:, ...]
         _hidden_states = self.mlp["norm"](hidden_states)
         hidden_states = hidden_states + self.mlp["dropout"](
             self.mlp["w2"](F.silu(self.mlp["w1"](_hidden_states)) * self.mlp["w3"](_hidden_states)))
-        return hidden_states
+        if past_key_value is not None:
+            return hidden_states, past_key_value
+        else:
+            return hidden_states
 
 
 class Transformer(nn.Module):
@@ -475,20 +490,38 @@ class Transformer(nn.Module):
         self.rope = RotaryPositionEmbedding(self.model_args)
 
     def forward(self,
-                hidden_states: Optional[col_nn.Tensor] = None,
-                input_ids: Optional[col_nn.Tensor] = None,
-                past_key_value: Optional[col_nn.Tensor] = None,
+                hidden_states: Optional[torch.Tensor] = None,
+                input_ids: Optional[torch.Tensor] = None,
+                past_key_value: Optional[torch.Tensor] = None,
                 **kwargs):
         if self.is_start:
             assert input_ids is not None, "`input_ids` is not allowed to be None in the first pipeline node. "
             hidden_states = self.token_embedding(input_ids)
-        for block in self.blocks:
+        if past_key_value is not None:
+            if 0 in past_key_value[0].shape:
+                # past_key_value shape is (B, layers, N, 2, H, D)
+                past_key_value.resize_(input_ids.shape[0], 
+                                       len(self.blocks), 
+                                       0,
+                                       2, 
+                                       self.model_args.num_attention_heads, 
+                                       self.model_args.hidden_size // self.model_args.num_attention_heads)
+        for i in range(len(self.blocks)):
             if self.model_args.checkpoint and self.training:
-                hidden_states = checkpoint(block, True,
-                                           hidden_states, past_key_value, True, self.rope)
+                hidden_states = checkpoint(self.blocks[i], True,
+                                           hidden_states, 
+                                           past_key_value[:, i, ...] if past_key_value is not None else past_key_value, 
+                                           True, 
+                                           self.rope)
             else:
-                hidden_states = block(
-                    hidden_states, past_key_value, True, self.rope)
+                hidden_states = self.blocks[i](
+                    hidden_states, 
+                    past_key_value[:, i, ...] if past_key_value is not None else past_key_value, 
+                    True, 
+                    self.rope)
+            if past_key_value is not None:
+                past_key_value[:, i, ...] = hidden_states[1]
+                hidden_states = hidden_states[0]
         if self.is_end:
             hidden_states = self.norm(hidden_states)
             hidden_states = self.language_model_head(hidden_states)

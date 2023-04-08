@@ -1,6 +1,6 @@
 import os
 import sys
-sys.path.append("..")
+sys.path.append("/mnt/lustre/zhangshuo/projects/TuneLite")
 
 from datasets import load_dataset
 from transformers import HfArgumentParser
@@ -11,21 +11,21 @@ from tunelite.trainer.colossalai_trainer import ColossalaiTrainer, TrainerArgs
 import torch
 from torch.utils.data import DataLoader
 
-def collate_fn(batch, tokenizer, max_length=1024):
+def collate_fn(batch, tokenizer, max_length=1024, bos=True, eos=True):
     text = [e['text'] for e in batch]
     tknz_batch = tokenizer(
         text,
         max_length=max_length,
         padding='max_length',
         truncation=True,
-        return_tensors='pt'
+        return_tensors='pt',
+        bos=bos,
+        eos=eos
     )
-    eos_tensors = torch.tensor([tokenizer.eos_token_id] * tknz_batch['input_ids'].shape[0]).unsqueeze(1)
-    tknz_batch['input_ids'] = torch.cat((tknz_batch['input_ids'][:, :max_length-1], eos_tensors), dim=1)
-    tknz_batch['attention_mask'] = tknz_batch['attention_mask'][:, :max_length]
+    tknz_batch['input_ids'] = tknz_batch['input_ids'][:, :max_length-1]
     return {
-        'input_ids': tknz_batch['input_ids']
-    }, tknz_batch['input_ids']
+        'input_ids': tknz_batch['input_ids'].long()
+    }, tknz_batch['input_ids'].long()
     
 
 def main():
@@ -36,27 +36,29 @@ def main():
         print([tokenizer.decode(token.tolist()) for token in generated_batch[0]["input_ids"]])
         print("\n")
     model_args = ModelArgs()
-    model_args.pp_size = 1
-    model_args.micro_batch_size = 1
+    model_args.pp_size = 8
+    model_args.micro_batch_size = 4
     model_args.fp16 = True
+    model_args.checkpoint = True
+    model_args.dense = "fused"
     trainer_args = TrainerArgs()
     trainer_args.eval_max_length = 128
-    trainer_args.eval_per_steps = 0
-    trainer_args.eval_per_epoches = 0
-    trainer_args.learning_rate = 2e-5
+    trainer_args.eval_per_steps = 10
+    trainer_args.eval_per_epoches = 1
+    trainer_args.learning_rate = 2e-4
     model = get_7B_llama(model_args)
-    # state_dict = load_state_dict(model_args=model_args)
-    # model.load_state_dict(state_dict)
+    state_dict = load_state_dict(model_args=model_args)
+    model.load_state_dict(state_dict)
     dataset = load_dataset("NeelNanda/pile-10k")["train"]
     train_dataloader = DataLoader(
         dataset,
-        batch_size=4,
-        collate_fn=lambda x: collate_fn(x, tokenizer, 50),
+        batch_size=16,
+        collate_fn=lambda x: collate_fn(x, tokenizer, 1024),
     )
     eval_dataloader = DataLoader(
-        dataset,
+        [{"text": "When I was young, I used to "} for _ in range(14)],
         batch_size=4,
-        collate_fn=lambda x: collate_fn(x, tokenizer, 10),
+        collate_fn=lambda x: collate_fn(x, tokenizer, 1024, eos=False),
     )
     trainer = ColossalaiTrainer(model=model,
                                 train_dataloader=train_dataloader,
@@ -73,4 +75,4 @@ if __name__ == "__main__":
     except:
         import rich
         console = rich.console.Console()
-        console.print_exception(show_locals=True)
+        console.print_exception(show_locals=False)

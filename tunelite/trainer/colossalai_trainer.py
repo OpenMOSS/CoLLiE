@@ -9,7 +9,7 @@ import torch
 from itertools import cycle
 from functools import partial
 
-from typing import List, Tuple, Dict, Union, Iterable, Optional, Any
+from typing import List, Tuple, Dict
 
 from dataclasses import dataclass, field
 
@@ -17,9 +17,6 @@ try:
     import colossalai
     from colossalai.core import global_context as gpc
     from colossalai.context.parallel_mode import ParallelMode
-    from colossalai.pipeline.rpc._pipeline_schedule import FillDrainPipelineEngine, OneFOneBPipelineEngine
-    from colossalai.pipeline.rpc.utils import rpc_run
-    from colossalai.pipeline.pipeline_process_group import ppg
 except ModuleNotFoundError:
     raise ModuleNotFoundError(
         "Detected Colossal-AI is not installed. See https://github.com/hpcaitech/ColossalAI")
@@ -67,10 +64,6 @@ class ColossalaiTrainer:
                  eval_dataloader,
                  compute_metrics = None,
                  trainer_args: TrainerArgs = TrainerArgs()) -> None:
-        self.grad_func = inplace_grad(model, lr=trainer_args.learning_rate)
-        for n, p in model.named_parameters():
-            if p.requires_grad:
-                p.register_hook(self.grad_func)
         self.model = model
         self.tokenizer = tokenizer
         self.compute_metrics = compute_metrics
@@ -90,17 +83,14 @@ class ColossalaiTrainer:
             with tqdm.tqdm(self.train_dataloader, disable=not gpc.is_pipeline_last_stage()) as tqb:
                 for step, batch in enumerate(tqb, start=1):
                     self.engine.zero_grad()
-                    hidden_state, label, loss = self.engine.execute_schedule(
+                    _, _, loss = self.engine.execute_schedule(
                         cycle([batch]),
                         forward_only=False,
                         return_loss=True,
                         return_output_label=False,
                     )
-                    # self.engine.step()
-                    # torch.cuda.empty_cache()
+                    self.engine.step()
                     if gpc.is_pipeline_last_stage():
-                        import pdb
-                        pdb.set_trace()
                         tqb.set_postfix({'epoch': epoch, 'step': step, 'loss': loss.item()})
                     if self.trainer_args.eval_per_steps == 0:
                         continue
@@ -137,24 +127,27 @@ class ColossalaiTrainer:
                  max_length: int = 1024,
                  stop_tokens: List[int] = [2]):
         with tqdm.tqdm(range(max_length), disable=not gpc.is_pipeline_last_stage()) as tqb:
+            past_key_value = torch.empty(batch[0]["input_ids"].shape[0], 0).to(torch.device(f"cuda:{os.environ['LOCAL_RANK']}")) # shape: (batch_size, 0)
             for current_pos in tqb:
                 try:
-                    current_pos += 1
                     self.engine.eval()
-                    hidden_state, label, _ = self.engine.execute_schedule(
+                    hidden_states, label, _ = self.engine.execute_schedule(
                         cycle([({
-                            "input_ids": batch[0]["input_ids"][:, :current_pos],
+                            # "input_ids": batch[0]["input_ids"][:, current_pos:current_pos+1],
+                            "input_ids": batch[0]["input_ids"],
+                            # "past_key_value": past_key_value
                         }, batch[0]["input_ids"])]),
                         forward_only=True,
                         return_loss=False,
                         return_output_label=True,
                     )
-                    next_tokens = torch.zeros(batch[0]["input_ids"].shape[0], 1, dtype=torch.long).to(batch[0]["input_ids"].device)
+                    current_pos += 1
+                    next_tokens = torch.zeros(batch[0]["input_ids"].shape[0], 1, dtype=torch.long).to(torch.device(f"cuda:{os.environ['LOCAL_RANK']}"))
                     if gpc.is_pipeline_last_stage():
-                        next_tokens = torch.argmax(hidden_state[:, -1, :], dim=-1)
+                        next_tokens = torch.argmax(hidden_states[:, -1, :], dim=-1)
                         next_tokens = torch.unsqueeze(next_tokens, dim=-1)
-                    print(f"\n\nRank{os.environ['RANK']} is here!!!\n\n")
                     torch.distributed.broadcast(next_tokens, src=gpc.get_world_size(ParallelMode.PIPELINE) - 1)
+                    next_tokens = next_tokens.to(batch[0]["input_ids"].device)
                     while current_pos >= batch[0]["input_ids"].shape[1]:
                         batch[0]["input_ids"] = torch.cat([batch[0]["input_ids"], torch.zeros_like(next_tokens)], dim=1)
                     batch[0]["input_ids"][:, current_pos] = torch.where(batch[0]["input_ids"][:, current_pos] == 0, next_tokens[:, 0], batch[0]["input_ids"][:, current_pos])
