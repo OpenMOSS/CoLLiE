@@ -57,8 +57,10 @@ except ModuleNotFoundError:
 
 try:
     from xformers.ops import memory_efficient_attention
+    from xformers.ops.fmha.attn_bias import LowerTriangularMask
 except ModuleNotFoundError:
     memory_efficient_attention = None
+    LowerTriangularMask = None
 
 class Tokenizer:
     def __init__(self, model_path: str):
@@ -225,7 +227,6 @@ class RotaryPositionEmbedding(nn.Module):
     def forward(self,
                 query: Optional[torch.Tensor] = None,
                 key: Optional[torch.Tensor] = None,
-                qkv: Optional[torch.Tensor] = None,
                 start_pos: int = 0,
                 seq_len: int = 1024):
         if self.model_args.rotary_emb == "raw":
@@ -242,7 +243,9 @@ class RotaryPositionEmbedding(nn.Module):
             key = torch.view_as_real(key * freqs_cis).flatten(3)
             return query.type(t), key.type(t)
         elif self.model_args.rotary_emb == "fused":
-            return object.__getattribute__(self, "rpoe")(qkv=qkv, seqlen_offset=start_pos)
+            qkv = torch.stack([query, key, key], dim=2)
+            output = object.__getattribute__(self, "rpoe")(qkv=qkv, seqlen_offset=start_pos)
+            return output[:, :, 0, ...], output[:, :, 1, ...]
 
 
 class TransformerBlock(nn.Module):
@@ -310,7 +313,7 @@ class TransformerBlock(nn.Module):
             self.attention["norm"] = RMSNorm(self.model_args)
             self.mlp["norm"] = RMSNorm(self.model_args)
         elif self.model_args.rms_norm == "apex":
-            self.atention["norm"] = FusedRMSNorm(
+            self.attention["norm"] = FusedRMSNorm(
                 normalized_shape=self.model_args.hidden_size,
                 eps=self.model_args.layer_norm_epsilon)
             self.mlp["norm"] = FusedRMSNorm(
@@ -326,51 +329,57 @@ class TransformerBlock(nn.Module):
             assert flash_attention_qkv is not None, \
                 "Detected triton is not installed. See https://github.com/openai/triton"
             def attention(**kwargs):
-                out_put = flash_attention_qkv(**kwargs)
-                out_put = rearrange(
-                    out_put, "(b n) h d -> b n (h d)", n=kwargs.get("seq_len"))
-                out_put = F.dropout(
-                    out_put, p=self.model_args.dropout, training=self.training)
-                return out_put
+                kwargs["qkv"] = rearrange(kwargs["qkv"], "b n three h d -> (b n) three h d")
+                output = flash_attention_qkv(**kwargs)
+                output = rearrange(
+                    output, "(b n) h d -> b n (h d)", n=kwargs.get("seq_len"))
+                output = F.dropout(
+                    output, p=self.model_args.dropout, training=self.training)
+                return output
             object.__setattr__(self, "attention_fn", attention)
         elif self.model_args.attention == "flash":
             assert FlashAttention is not None, \
                 "Detected flash_attn is not installed. See https://github.com/HazyResearch/flash-attention"
             def attention(**kwargs):
-                out_put = FlashAttention()(
-                    qkv=kwargs["qkv"], casual=kwargs.get("casual", True))
-                out_put = F.dropout(
-                    out_put, p=self.model_args.dropout, training=self.training)
-                return out_put
+                output, _ = FlashAttention()(
+                    kwargs["qkv"], causal=kwargs.get("causal", True))
+                output = rearrange(
+                    output, "b n h d -> b n (h d)", n=kwargs.get("seq_len"))
+                output = F.dropout(
+                    output, p=self.model_args.dropout, training=self.training)
+                return output
             object.__setattr__(self, "attention_fn", attention)
         elif self.model_args.attention == "mem_eff":
-            assert memory_efficient_attention is not None, \
+            assert memory_efficient_attention is not None and LowerTriangularMask is not None, \
                 "Detected xformers is not installed. See https://github.com/facebookresearch/xformers"
             def attention(**kwargs):
-                qkv = rearrange(kwargs["qkv"], "(b n) three h d -> b n three h d",
-                                n=kwargs.get("seq_len"))
                 query, key, value = torch.split(
-                    qkv, split_size_or_sections=1, dim=2)
+                    kwargs["qkv"], split_size_or_sections=1, dim=2)
                 query, key, value = query.squeeze(
                     2), key.squeeze(2), value.squeeze(2)
                 batch_size, seq_len, head_num, head_dim = query.shape
                 mask = None
-                if kwargs.get("casual", True) and seq_len > 1:
-                    mask = torch.full((1, 1, seq_len, seq_len), float("-inf"))
-                    mask = torch.triu(mask, diagonal=1).to(query.device)
-                return memory_efficient_attention(query=query,
+                if kwargs.get("causal", True) and seq_len > 1:
+                    # bigger_seq_len = (seq_len // 8 + 1) * 8
+                    # mask = torch.full((batch_size, head_num, 
+                    #                    bigger_seq_len, 
+                    #                    bigger_seq_len), float("-inf"))
+                    # mask = torch.triu(mask, diagonal=1).to(query.dtype).to(query.device)
+                    # mask = mask[:, :, :seq_len, :seq_len]
+                    mask = LowerTriangularMask()
+                output = memory_efficient_attention(query=query,
                                                   key=key,
                                                   value=value,
                                                   attn_bias=mask,
                                                   p=self.model_args.dropout,
-                                                  scale=math.sqrt(head_dim))
+                                                  scale=1/math.sqrt(head_dim))
+                output = rearrange(output, "b n h d -> b n (h d)")
+                return output
             object.__setattr__(self, "attention_fn", attention)
         elif self.model_args.attention == "raw":
             def attention(**kwargs):
-                qkv = rearrange(kwargs["qkv"], "(b n) three h d -> b n three h d",
-                                n=kwargs.get("seq_len"))
                 query, key, value = torch.split(
-                    qkv, split_size_or_sections=1, dim=2)
+                    kwargs["qkv"], split_size_or_sections=1, dim=2)
                 query, key, value = query.squeeze(
                     2), key.squeeze(2), value.squeeze(2)
                 batch_size, seq_len, head_num, head_dim = key.shape
@@ -378,7 +387,7 @@ class TransformerBlock(nn.Module):
                     0, 2, 1, 3), value.permute(0, 2, 1, 3)
                 attention_score = torch.matmul(query, key.transpose(
                     2, 3)) / math.sqrt(head_dim)
-                if kwargs.get("casual", True) and seq_len > 1:
+                if kwargs.get("causal", True) and seq_len > 1:
                     mask = torch.full((1, 1, seq_len, seq_len), float("-inf"))
                     mask = torch.triu(mask, diagonal=1).to(
                         attention_score.device)
@@ -396,7 +405,7 @@ class TransformerBlock(nn.Module):
     def forward(self,
                 hidden_states: Optional[torch.Tensor],
                 past_key_value: Optional[torch.Tensor] = None,
-                casual: bool = True,
+                causal: bool = True,
                 rpoe: Callable = None):
         
         assert hidden_states.ndim == 3, f"hidden_states.shape must be (B, N, H), but got {hidden_states.shape}"
@@ -428,14 +437,13 @@ class TransformerBlock(nn.Module):
         query, key = rpoe(query=query, key=key,
                           start_pos=int(start_pos), seq_len=seq_len)
         qkv = torch.stack([query, key, value], dim=2)
-        qkv = rearrange(qkv, "b n ... -> (b n) ...")
         hidden_states = hidden_states + self.attention["wo"](
             self.attention_fn(qkv=qkv,
                               sm_scale=1 / math.sqrt(head_dim),
                               batch_size=batch_size,
                               seq_len=seq_len,
                               dropout_p=self.model_args.dropout,
-                              causal=casual)
+                              causal=causal)
         )
         if past_key_value is not None:
             hidden_states = hidden_states[:, start_pos:, ...]

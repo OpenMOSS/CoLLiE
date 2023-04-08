@@ -33,23 +33,29 @@ def main():
         tokenizer=Tokenizer(model_path='/mnt/petrelfs/zhangshuo/projects/OptiLLM/colossalai/llama/tokenizer.model'))
     def compute_metrics(batch, generated_batch, epoch, step):
         print("\n")
-        print([tokenizer.decode(token.tolist()) for token in generated_batch[0]["input_ids"]])
+        print("\n".join([tokenizer.decode(token.tolist()) for token in generated_batch[0]["input_ids"]]))
         print("\n")
     model_args = ModelArgs()
     model_args.pp_size = 8
     model_args.micro_batch_size = 4
     model_args.fp16 = True
     model_args.checkpoint = True
+    # model staructure
+    # editor's choice
     model_args.dense = "fused"
-    model_args.attention = "flash"
+    model_args.attention = "mem_eff"
+    model_args.rotary_emb = "fused"
+    
     trainer_args = TrainerArgs()
     trainer_args.eval_max_length = 128
     trainer_args.eval_per_steps = 10
     trainer_args.eval_per_epoches = 1
-    trainer_args.learning_rate = 2e-4
+    trainer_args.learning_rate = 2e-5
+    
     model = get_7B_llama(model_args)
     state_dict = load_state_dict(model_args=model_args)
     model.load_state_dict(state_dict)
+    
     dataset = load_dataset("NeelNanda/pile-10k")["train"]
     train_dataloader = DataLoader(
         dataset,
@@ -57,7 +63,7 @@ def main():
         collate_fn=lambda x: collate_fn(x, tokenizer, 1024),
     )
     eval_dataloader = DataLoader(
-        [{"text": "When I was young, I used to "} for _ in range(64)],
+        [{"text": "When I was young, I used to "} for _ in range(4)],
         batch_size=4,
         collate_fn=lambda x: collate_fn(x, tokenizer, 1024, eos=False),
     )
@@ -75,6 +81,8 @@ if __name__ == "__main__":
     try:
         main()
     except:
-        import rich
-        console = rich.console.Console()
-        console.print_exception(show_locals=False)
+        if os.environ.get("RANK") == "0" or os.environ.get("RANK") == f"{int(os.environ.get('WORLD_SIZE'))-1}":
+            import rich
+            console = rich.console.Console()
+            console.print_exception(show_locals=True)
+        print(f"\nExceptions at Rank: {os.environ.get('RANK')}\n")
