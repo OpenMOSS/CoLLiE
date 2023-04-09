@@ -35,6 +35,7 @@ try:
     from colossalai.utils.model.colo_init_context import ColoInitContext
     from colossalai.logging import get_dist_logger, disable_existing_loggers
     from colossalai.kernel.cuda_native.flash_attention import flash_attention_qkv
+    
 except ModuleNotFoundError:
     raise ModuleNotFoundError(
         "Detected Colossal-AI is not installed. See https://github.com/hpcaitech/ColossalAI")
@@ -547,10 +548,8 @@ def prepare_distribution(model_args: ModelArgs = ModelArgs()) -> dict:
         CONFIG["fp16"] = dict(mode=AMP_TYPE.NAIVE)
     colossalai.launch_from_torch(config=CONFIG, backend=model_args.backend)
     if "pipeline" in CONFIG["parallel"] and CONFIG["parallel"]["pipeline"] == 1:
-        def dummy_pipeline_status():
-            return True
-        gpc.is_pipeline_first_stage = dummy_pipeline_status
-        gpc.is_pipeline_last_stage = dummy_pipeline_status
+        gpc.is_pipeline_first_stage = lambda: True
+        gpc.is_pipeline_last_stage = lambda: True
         gpc._local_ranks[ParallelMode.PIPELINE] = 0
         gpc._world_sizes[ParallelMode.PIPELINE] = 1
 
