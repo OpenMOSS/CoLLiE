@@ -13,6 +13,8 @@ from typing import List, Tuple, Dict
 
 from dataclasses import dataclass, field
 
+# torch.cuda.set_per_process_memory_fraction(0.3, int(os.environ.get("RANK")))
+
 try:
     import colossalai
     from colossalai.core import global_context as gpc
@@ -68,7 +70,7 @@ class ColossalaiTrainer:
         self.tokenizer = tokenizer
         self.compute_metrics = compute_metrics
         self.trainer_args = trainer_args
-        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=trainer_args.learning_rate)
+        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=trainer_args.learning_rate)
         self.engine, self.train_dataloader, self.eval_dataloader, _ = colossalai.initialize(
             model=self.model,
             train_dataloader=train_dataloader,
@@ -90,6 +92,7 @@ class ColossalaiTrainer:
                         return_output_label=False,
                     )
                     self.engine.step()
+                    torch.cuda.empty_cache()
                     if gpc.is_pipeline_last_stage():
                         tqb.set_postfix({'epoch': epoch, 'step': step, 'loss': loss.item()})
                     if self.trainer_args.eval_per_steps == 0:
@@ -155,6 +158,7 @@ class ColossalaiTrainer:
                     for i in torch.flatten(next_tokens).tolist():
                             if i in stop_tokens:
                                 raise StopIteration
+                    torch.cuda.empty_cache()
                 except StopIteration:
                     break
         return batch
@@ -169,3 +173,5 @@ class ColossalaiTrainer:
                     if gpc.is_pipeline_last_stage() and self.compute_metrics is not None:
                         self.compute_metrics(batch, generated_batch, epoch, step)
                 tqb.set_postfix({'evaluating': f"{eval_step}/{len(self.eval_dataloader)}"})
+            torch.cuda.empty_cache()
+            print(torch.cuda.memory_allocated())
