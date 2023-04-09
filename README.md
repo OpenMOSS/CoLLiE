@@ -41,12 +41,45 @@ python setup.py install
 Here's a simple example to run pipeline parallel:
 
 ```python
-from tunelite.models.llama_colossalai import get_13b_llama, load_state_dict
-from tunelite.trainer.colossalai_trainer import ColossalaiTrainer
+from tunelite.models.llama_colossalai import HFLikeTokenizer, Tokenizer, ModelArgs, get_7B_llama, load_state_dict
+from tunelite.trainer.colossalai_trainer import ColossalaiTrainer, TrainerArgs
+from torch.utils.data import DataLoader
 
-model = get_13b_llama()
-dataloader = mydataloader(*data_args)
-trainer = ColossalaiTrainer(*tl_args)
+tokenizer = HFLikeTokenizer(tokenizer=Tokenizer(model_path='./tokenizer.model'))
+model_args = ModelArgs()
+model_args.pp_size = 8 # your pipeline parallel degree
+model = get_7B_llama(model_args=model_args)
+state_dict = load_state_dict(
+    protocol="file", 
+    source="raw", 
+    file_folder="./llama/7B",  # where consolidated.00.pth in it
+    model_args=model_args)
+model.load_state_dict(state_dict)
+train_sample = {
+    "input_ids": tokenizer("TuneLite is a python package for training large language models", return_tensors="pt")["input_ids"].long()
+}, tokenizer("TuneLite is a python package for training large language models", return_tensors="pt")["input_ids"].long()
+eval_sample = {
+    "input_ids": tokenizer("TuneLite is a python package for", return_tensors="pt")["input_ids"].long()
+}, tokenizer("TuneLite is a python package for", return_tensors="pt")["input_ids"].long()
+
+train_dataloader = DataLoader(
+    [train_sample for _ in range(1000)],
+    batch_size=1
+)
+eval_dataloader = DataLoader(
+    [eval_sample for _ in range(1000)],
+    batch_size=1
+)
+def compute_metrics(batch, generated_batch, epoch, step):
+    print("\n")
+    print(tokenizer.decode(generated_batch[0]["input_ids"].tolist()))
+    print("\n")
+    
+trainer = ColossalaiTrainer(model=model,
+                            train_dataloader=train_dataloader,
+                            eval_dataloader=eval_dataloader,
+                            tokenizer=tokenizer,
+                            compute_metrics=None)
 trainer.train()
 ```
 

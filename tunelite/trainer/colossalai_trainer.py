@@ -44,7 +44,7 @@ class TrainerArgs:
                   "If it is set to -1, the evaluation will run after every training epoch."
                   "If it is set to 0, the evaluation will not run after training epoch."})
     eval_max_length: int = field(
-        default=1024,
+        default=128,
         metadata={"help": "The maximum length of generated text when evaluating."
                   "If it is set to -1, the evaluation will run until the stop tokens are generated."})
     eval_stop_tokens: List[int] = field(
