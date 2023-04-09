@@ -687,7 +687,7 @@ def load_state_dict(protocol: str="s3",
                     part_state_dict["token_embedding.weight"] = state_dict["tok_embeddings.weight"]
                 if end == model_args.num_hidden_layers:
                     part_state_dict["language_model_head.weight"] = state_dict["output.weight"]
-                    part_state_dict["norm.weight"] = state_dict["mnorm.weight"]
+                    part_state_dict["norm.weight"] = state_dict["norm.weight"]
             for idx, key in enumerate(list(range(start, end))):
                 if source == "hf":
                     part_state_dict[f"blocks.{idx}.attention.wo.weight"] = state_dict[f"model.layers.{key}.self_attn.o_proj.weight"]
@@ -707,16 +707,16 @@ def load_state_dict(protocol: str="s3",
                     part_state_dict[f"blocks.{idx}.attention.wo.weight"] = state_dict[f"layers.{key}.attention.wo.weight"]
                     part_state_dict[f"blocks.{idx}.attention.wqkv.weight"] = torch.cat(
                         (
-                            state_dict[f"blocks.{key}.attention.wq.weight"],
-                            state_dict[f"blocks.{key}.attention.wk.weight"],
-                            state_dict[f"blocks.{key}.attention.wv.weight"]
+                            state_dict[f"layers.{key}.attention.wq.weight"],
+                            state_dict[f"layers.{key}.attention.wk.weight"],
+                            state_dict[f"layers.{key}.attention.wv.weight"]
                         ), dim=0
                     )
-                    part_state_dict[f"blocks.{idx}.attention.drop_and_norm.weight"] = state_dict[f"layers.{key}.attention_norm.weight"]
+                    part_state_dict[f"blocks.{idx}.attention.norm.weight"] = state_dict[f"layers.{key}.attention_norm.weight"]
                     part_state_dict[f"blocks.{idx}.mlp.w1.weight"] = state_dict[f"layers.{key}.feed_forward.w1.weight"]
                     part_state_dict[f"blocks.{idx}.mlp.w2.weight"] = state_dict[f"layers.{key}.feed_forward.w2.weight"]
                     part_state_dict[f"blocks.{idx}.mlp.w3.weight"] = state_dict[f"layers.{key}.feed_forward.w3.weight"]
-                    part_state_dict[f"blocks.{idx}.mlp.drop_and_norm.weight"] = state_dict[f"layers.{key}.ffn_norm.weight"]
+                    part_state_dict[f"blocks.{idx}.mlp.norm.weight"] = state_dict[f"layers.{key}.ffn_norm.weight"]
             # special cases
             for key in list(part_state_dict.keys()):
                 if model_args.dense == "raw" and "blocks" in key and "norm" not in key:
