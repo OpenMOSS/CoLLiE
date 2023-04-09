@@ -61,4 +61,4 @@ trainer = tl.Trainer.InplaceTensorTrainer(*tl_args)
 trainer.train()
 ```
 
-For more examples, check [TuneLite Examples]([TuneLite/examples at main · OpenLMLab/TuneLite (github.com)](https://github.com/OpenLMLab/TuneLite/tree/main/examples)).
+For more examples, check [TuneLite Examples](https://github.com/OpenLMLab/TuneLite/tree/main/examples)).
