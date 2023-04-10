@@ -3,7 +3,6 @@ from torch.utils.data import RandomSampler, DataLoader, SequentialSampler
 from transformers.trainer_pt_utils import nested_numpify, nested_concat
 from transformers.trainer_utils import seed_worker
 import tqdm
-from .utils import inplace_grad
 import torch
 import wandb
 
@@ -19,12 +18,6 @@ class InplaceTensorTrainer:
             tl_args,
             compute_metrics,
     ):
-        # register inplace grad hook
-        self.grad_func = inplace_grad(model, lr=tl_args.learning_rate)
-        for n, p in model.named_parameters():
-            if p.requires_grad:
-                p.register_hook(self.grad_func)
-
         self.train_dataloader = train_dataloader
         self.eval_dataloader = eval_dataloader
         self.eval_dataset = eval_dataset
@@ -33,6 +26,27 @@ class InplaceTensorTrainer:
         self.tl_args = tl_args
         self.metric = None
         self.compute_metrics = compute_metrics
+
+        # register inplace grad hook
+        self.grad_func = self.inplace_grad()
+        for n, p in model.named_parameters():
+            if p.requires_grad:
+                p.register_hook(self.grad_func)
+
+    def inplace_grad(self):
+        # An approximation of in-place grad update
+        def func(x):
+            with torch.no_grad():
+                for n, p in self.model.named_parameters():
+                    if p.requires_grad and p.grad is not None and p.shape != torch.Size([0]):
+                        if self.tl_args.clip_grad_value is not None:
+                            # Graidiens are modified in-palce.
+                            p.grad.data.clamp_(min=-self.tl_args.clip_grad_value, max=self.tl_args.clip_grad_value)
+                        p.data -= (self.tl_args.learning_rate * p.grad.data)
+                        p.grad = None
+            return x
+
+        return func
 
     def train(self):
         for epoch in range(self.tl_args.num_train_epochs):
@@ -45,9 +59,15 @@ class InplaceTensorTrainer:
                     shift_logits = outs[..., :-1, :].contiguous()
                     shift_labels = batch['labels'][:, 1:].contiguous()
                     # Flatten the tokens
-                    loss_fct = CrossEntropyLoss()
-                    loss = loss_fct(shift_logits.view(shift_labels.shape[0] * shift_labels.shape[1], -1),
-                                    shift_labels.view(-1))
+                    if self.tl_args.clip_loss_value is not None:
+                        loss_fct = CrossEntropyLoss(reduction='none')
+                        loss = loss_fct(shift_logits.view(shift_labels.shape[0] * shift_labels.shape[1], -1),
+                                        shift_labels.view(-1))
+                        loss.data.clamp_(min=-self.tl_args.clip_loss_value, max=self.tl_args.clip_loss_value)
+                    else:
+                        loss_fct = CrossEntropyLoss()
+                        loss = loss_fct(shift_logits.view(shift_labels.shape[0] * shift_labels.shape[1], -1),
+                                        shift_labels.view(-1))
 
                     loss.backward()
                     # update the last one since the hook function will not be called for the last parameter
