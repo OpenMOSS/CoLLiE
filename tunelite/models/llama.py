@@ -345,10 +345,8 @@ class Attention(nn.Module):
         x: torch.Tensor,
         kv_mask: torch.Tensor,
         freqs_cis: torch.Tensor,
-        cache_k: Optional[torch.Tensor] = None,
-        cache_v: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        start_pos = 0  # Temporary
+        start_pos: int
+    ) -> torch.Tensor:
 
         bsz, seqlen, _ = x.shape
         xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
@@ -359,21 +357,16 @@ class Attention(nn.Module):
 
         xq, xk = apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
 
-        # Modified code to allow training, caching is not good for training
-        if (cache_k is None and cache_v is not None) or (
-            cache_k is not None and cache_v is None
-        ):
-            raise ValueError("cache_k is None while cache_v is not None")
-        if cache_k is None:
+        if self.training:
             keys = xk
             values = xv
         else:
-            cache_k.to(xk.device)
-            cache_v.to(xv.device)
-            cache_k[:bsz, start_pos : start_pos + seqlen] = xk  # noqa E203
-            cache_v[:bsz, start_pos : start_pos + seqlen] = xv  # noqa E203
-            keys = self.cache_k[:bsz, : start_pos + seqlen]  # noqa E203
-            values = self.cache_v[:bsz, : start_pos + seqlen]  # noqa E203
+            self.cache_k.to(xk.device)
+            self.cache_v.to(xv.device)
+            self.cache_k[:bsz, start_pos : start_pos + seqlen] = xk
+            self.cache_v[:bsz, start_pos : start_pos + seqlen] = xv 
+            keys = self.cache_k[:bsz, : start_pos + seqlen]  
+            values = self.cache_v[:bsz, : start_pos + seqlen]  
 
         xq = xq.transpose(1, 2)
         keys = keys.transpose(1, 2)
@@ -386,10 +379,7 @@ class Attention(nn.Module):
         scores = F.softmax(scores.float(), dim=-1).type_as(xq)
         output = torch.matmul(scores, values)
         output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
-        if cache_k is None:
-            return self.wo(output), None, None
-        else:
-            return self.wo(output), self.cache_k, self.cache_v
+        return self.wo(output)
 
 
 class FeedForward(nn.Module):
@@ -466,9 +456,8 @@ class TransformerBlock(nn.Module):
         x: torch.Tensor,
         attention_mask: torch.Tensor,
         freqs_cis: torch.Tensor,
-        cache_k: Optional[torch.Tensor] = None,
-        cache_v: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+        start_pos: int
+    ) -> torch.Tensor:
         # modified from orignal code to enable external cache
         attention_mask = attention_mask[:, None, :, :]
         if self.tensor_parallel:
@@ -480,12 +469,12 @@ class TransformerBlock(nn.Module):
             )
         else:
             attention_mask = attention_mask.expand(-1, self.n_heads, -1, -1)
-        attn, cache_k, cache_v = self.attention.forward(
-            self.attention_norm(x), attention_mask, freqs_cis, cache_k, cache_v
+        attn = self.attention.forward(
+            self.attention_norm(x), attention_mask, freqs_cis, start_pos
         )
         h = x + attn
         out = h + self.feed_forward.forward(self.ffn_norm(h))
-        return out, cache_k, cache_v
+        return out
 
 
 class Transformer(nn.Module):
@@ -509,14 +498,6 @@ class Transformer(nn.Module):
             self.n_local_heads = params.n_heads
 
         self.head_dim = params.dim // params.n_heads
-        dim = (
-            params.max_batch_size,
-            params.max_seq_len,
-            self.n_local_heads,
-            self.head_dim,
-        )
-        self.cache_k = [torch.zeros(dim) for _ in range(self.n_layers)]
-        self.cache_v = [torch.zeros(dim) for _ in range(self.n_layers)]
 
         if params.tensor_parallel:
             self.tok_embeddings = ParallelEmbedding(
@@ -544,7 +525,6 @@ class Transformer(nn.Module):
         else:
             self.output = nn.Linear(params.dim, params.vocab_size, bias=False)
 
-        # TODO: How too modify this for training?
         self.freqs_cis = precompute_freqs_cis(
             self.params.dim // self.params.n_heads, self.params.max_seq_len * 2
         )
@@ -555,19 +535,16 @@ class Transformer(nn.Module):
         self, tokens: torch.Tensor, attention_mask: torch.Tensor
     ) -> torch.Tensor:
         attention_mask = attention_mask.detach()
-        logits = self._forward(tokens, attention_mask)
+        logits = self._forward(tokens, attention_mask, 0)
         return logits
 
     def _forward(
-        self, tokens: torch.Tensor, attention_mask: torch.Tensor
+        self, tokens: torch.Tensor, attention_mask: torch.Tensor, start_pos: int
     ) -> torch.Tensor:
         _bsz, seqlen = tokens.shape
         h = self.tok_embeddings(tokens)
         self.freqs_cis = self.freqs_cis.to(h.device)
-        # TEMPORARY FIX, need to understand how to manage the positioning
-        # embedding and the batch size with the current padding and masking.
-        start_pos = 1
-        freqs_cis = self.freqs_cis[start_pos : start_pos + seqlen]  # noqa E203
+        freqs_cis = self.freqs_cis[start_pos : start_pos + seqlen]
         # mask has size (bsz, seqlen). It should be transformed in
         # (bsz, seqlen, seqlen)
         # if the mask is a boolean tensor, convert it to int
@@ -591,20 +568,13 @@ class Transformer(nn.Module):
             return custom_forward
 
         for i, layer in enumerate(self.layers):
-            if not self.training:
-                cache_k = self.cache_k[i]
-                cache_v = self.cache_v[i]
-                h, cache_k, cache_v = layer(
-                    h, kv_mask, freqs_cis, cache_k, cache_v
+            if not self.training or not self.gradient_checkpoint:
+                h = layer(
+                    h, kv_mask, freqs_cis, start_pos
                 )
             else:
                 if self.gradient_checkpoint:
-                    h, _, _ = torch.utils.checkpoint.checkpoint(create_custom_forward(layer), h, kv_mask, freqs_cis)
-                else:
-                    h, _, _ = layer(h, kv_mask, freqs_cis)
-            if not self.training:
-                self.cache_k[i] = cache_k.detach()
-                self.cache_v[i] = cache_v.detach()
+                    h = torch.utils.checkpoint.checkpoint(create_custom_forward(layer), h, kv_mask, freqs_cis, start_pos)
 
         h = self.norm(h)
         output = self.output(h)
@@ -621,8 +591,11 @@ class Transformer(nn.Module):
         no_repeat_ngram_size=None,
     ):
         generated_tokens = []
-        for cur_pos in range(max_new_tokens):
-            logits = self._forward(input_ids, attention_mask)[:, -1, :]
+        pre_pos = 0
+        start_pos = input_ids.shape[1] # length of prompt
+
+        for cur_pos in range(start_pos, start_pos+max_new_tokens):
+            logits = self._forward(input_ids[:,pre_pos:cur_pos], attention_mask[:,pre_pos:cur_pos], pre_pos)[:,-1,:]
             if temperature > 0:
                 probs = torch.softmax(logits.float() / temperature, dim=-1).type_as(logits)
                 next_token = sample_top_p(probs, top_p)
