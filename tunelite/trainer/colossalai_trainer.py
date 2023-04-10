@@ -174,4 +174,3 @@ class ColossalaiTrainer:
                         self.compute_metrics(batch, generated_batch, epoch, step)
                 tqb.set_postfix({'evaluating': f"{eval_step}/{len(self.eval_dataloader)}"})
             torch.cuda.empty_cache()
-            print(torch.cuda.memory_allocated())
