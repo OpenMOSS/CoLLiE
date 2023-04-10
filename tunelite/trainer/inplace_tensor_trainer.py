@@ -91,6 +91,7 @@ class InplaceTensorTrainer:
                         wandb.run.summary['best_step'] = step
 
     def eval_step(self, batch):
+        self.model.eval()
         logits = self.model.generate(
             batch['input_ids'], batch['attention_mask'],
             max_new_tokens=self.tl_args.max_new_tokens,
