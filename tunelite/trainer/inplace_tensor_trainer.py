@@ -6,6 +6,8 @@ import tqdm
 import torch
 import wandb
 
+from .utils import LearningRateScheduler
+
 
 class InplaceTensorTrainer:
     def __init__(
@@ -27,6 +29,15 @@ class InplaceTensorTrainer:
         self.metric = None
         self.compute_metrics = compute_metrics
 
+        self.num_steps_per_epoch = len(self.train_dataloader)
+        self.global_step = 0
+        self.n_steps = self.num_steps_per_epoch * self.tl_args.num_train_epochs
+        self.lr_scheduler = LearningRateScheduler(learning_rate=self.tl_args.learning_rate,
+                                                  warmup=self.tl_args.warmup,
+                                                  schedule=self.tl_args.lr_scheduler_type,
+                                                  n_steps=self.n_steps)
+        self.lr = 0
+
         # register inplace grad hook
         self.grad_func = self.inplace_grad()
         for n, p in model.named_parameters():
@@ -42,7 +53,7 @@ class InplaceTensorTrainer:
                         if self.tl_args.clip_grad_value is not None:
                             # Graidiens are modified in-palce.
                             p.grad.data.clamp_(min=-self.tl_args.clip_grad_value, max=self.tl_args.clip_grad_value)
-                        p.data -= (self.tl_args.learning_rate * p.grad.data)
+                        p.data -= (self.lr * p.grad.data)
                         p.grad = None
             return x
 
@@ -69,18 +80,51 @@ class InplaceTensorTrainer:
                         loss = loss_fct(shift_logits.view(shift_labels.shape[0] * shift_labels.shape[1], -1),
                                         shift_labels.view(-1))
 
+                    # update the learning rate
+                    self.global_step = self.num_steps_per_epoch * epoch + step
+                    self.lr = self.lr_scheduler.step(self.global_step)
                     loss.backward()
+
                     # update the last one since the hook function will not be called for the last parameter
                     self.grad_func(0)
                     tqb.set_postfix({'loss': loss.item()})
                     if self.tl_args.local_rank in [0, -1]:
-                        wandb.log({'loss': loss.item()})
+                        logs = {
+                            'train/loss': loss.item(),
+                            'train/learning_rate': self.lr,
+                            'train/global_step': self.global_step,
+                        }
+                        wandb.log(logs)
 
-                    if step % self.tl_args.eval_steps == 0 or step == len(self.train_dataloader):
-                        self.eval(step, epoch)
+                    if self.tl_args.evaluation_strategy == 'steps' and \
+                            self.global_step % self.tl_args.eval_steps == 0:
 
-    def eval(self, step, epoch):
-        with tqdm.tqdm(self.eval_dataloader, disable=self.tl_args.local_rank not in [0, -1]) as tqb:
+                        if self.tl_args.do_eval:
+                            self.eval(self.global_step, epoch, self.eval_dataset, self.eval_dataloader, 'eval')
+                        # if self.tl_args.do_predict:
+                        #     self.eval(step, epoch, self.eval_dataset, self.eval_dataloader, 'predict')
+            if self.tl_args.evaluation_strategy == 'epoch':
+                if self.tl_args.do_eval:
+                    self.eval(self.global_step, epoch, self.eval_dataset, self.eval_dataloader, 'eval')
+                # if self.tl_args.do_predict:
+                #     self.eval(step, epoch, self.eval_dataset, self.eval_dataloader, 'predict')
+
+    def eval(self,
+             step: int,
+             epoch: int,
+             dataset: torch.utils.data.Dataset,
+             dataloader: DataLoader,
+             eval_prefix: str
+             ):
+        r"""
+        Shared by both eval(validation) and predict(test).
+        This method will be called by the trainer to evaluate the model.
+        """
+        print(f"***** Running {eval_prefix} *****")
+        print(f"  Num examples: {len(dataset)}")
+        print(f"  Batch size: {self.tl_args.per_device_eval_batch_size}")
+
+        with tqdm.tqdm(dataloader, disable=self.tl_args.local_rank not in [0, -1]) as tqb:
             all_preds = None
             self.model.eval()
             for batch in tqb:
@@ -89,26 +133,31 @@ class InplaceTensorTrainer:
                     all_preds = pred if all_preds is None else all_preds + pred
 
             result = self.compute_metrics(all_preds, self.eval_dataset)
+            result = {f"{eval_prefix}/{k}": v for k, v in result.items()}
             result['epoch'] = epoch
             result['step'] = step
 
+            prefix_metric_for_best_model = f'{eval_prefix}/{self.tl_args.metric_for_best_model}'
+
             if self.tl_args.local_rank in [-1, 0]:
-                print('epoch: ', epoch, 'step: ', step, self.tl_args.metric_for_best_model, ': ',
-                      result[self.tl_args.metric_for_best_model])
+                print(f'epoch: {epoch}, step: {step}, {self.tl_args.metric_for_best_model}: '
+                      f'{result[prefix_metric_for_best_model]}')
                 wandb.log(result)
 
             if self.tl_args.greater_is_better:
-                if self.metric is None or result[self.tl_args.metric_for_best_model] > self.metric:
+                if self.metric is None or result[prefix_metric_for_best_model] > self.metric:
                     if self.tl_args.local_rank in [-1, 0]:
-                        wandb.run.summary['best_'+self.tl_args.metric_for_best_model] = result[self.tl_args.metric_for_best_model]
-                        wandb.run.summary['best_epoch'] = epoch
-                        wandb.run.summary['best_step'] = step
+                        wandb.run.summary[f'{eval_prefix}/best_{self.tl_args.metric_for_best_model}'] = \
+                            result[prefix_metric_for_best_model]
+                        wandb.run.summary[f'{eval_prefix}/best_epoch'] = epoch
+                        wandb.run.summary[f'{eval_prefix}/best_step'] = step
             else:
-                if self.metric is None or result[self.tl_args.metric_for_best_model] < self.metric:
+                if self.metric is None or result[prefix_metric_for_best_model] < self.metric:
                     if self.tl_args.local_rank in [-1, 0]:
-                        wandb.run.summary['best_'+self.tl_args.metric_for_best_model] = result[self.tl_args.metric_for_best_model]
-                        wandb.run.summary['best_epoch'] = epoch
-                        wandb.run.summary['best_step'] = step
+                        wandb.run.summary[f'{eval_prefix}/best_{self.tl_args.metric_for_best_model}'] = \
+                            result[prefix_metric_for_best_model]
+                        wandb.run.summary[f'{eval_prefix}/best_epoch'] = epoch
+                        wandb.run.summary[f'{eval_prefix}/best_step'] = step
 
     def eval_step(self, batch):
         self.model.eval()
