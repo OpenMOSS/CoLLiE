@@ -11,10 +11,10 @@ from transformers import set_seed
 from tunelite.models import llama
 import wandb
 
-from V2.arguments import ModelArguments, DataArguments, TuneLiteArguments
-from V2.collator_v2 import DataCollatorForCauselLM, EvalDataCollatorForCauselLM
-from V2.datasets_v2 import MyDataset, get_dataset_info, get_train_dataloader, get_eval_dataloader
-from V2.tensor_trainer_v2 import MyInplaceTensorTrainer
+from openbook_examples.arguments import ModelArguments, DataArguments, TuneLiteArguments
+from openbook_examples.collator import DataCollatorForCauselLM, EvalDataCollatorForCauselLM
+from openbook_examples.datasets import MyDataset, get_dataset_info, get_train_dataloader, get_eval_dataloader
+from openbook_examples.tensor_trainer import MyInplaceTensorTrainer
 
 
 def compute_metrics(all_pred, eval_dataset):
