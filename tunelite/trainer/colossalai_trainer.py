@@ -1,15 +1,12 @@
-from .utils import inplace_grad, GPTLMLoss, sample_top_p
-
 import os
 import tqdm
 import torch
 from itertools import cycle
 from functools import partial
-
 from typing import List, Tuple, Dict
-
 from dataclasses import dataclass, field
 
+from .utils import GPTLMLoss
 # torch.cuda.set_per_process_memory_fraction(0.3, int(os.environ.get("RANK")))
 
 try:
