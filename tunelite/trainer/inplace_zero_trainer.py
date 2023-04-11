@@ -1,14 +1,15 @@
-from torch.nn import CrossEntropyLoss
-from torch.utils.data import RandomSampler, DataLoader, SequentialSampler
-from transformers.trainer_pt_utils import nested_numpify, nested_concat
-from transformers.trainer_utils import seed_worker
-import tqdm
-from .utils import inplace_grad
-import deepspeed
-import torch
-import wandb
-from deepspeed.accelerator import get_accelerator
+import sys
 
+import tqdm
+import torch
+
+try:
+    import deepspeed
+    from deepspeed.accelerator import get_accelerator
+except:
+    pass
+
+from .utils import inplace_grad, WandbLogger
 
 class InplaceZeroTrainer:
     def __init__(
@@ -23,6 +24,9 @@ class InplaceZeroTrainer:
             data_args,
             compute_metrics,
     ):
+        if 'deepspeed' not in sys.modules:
+            raise ModuleNotFoundError(
+                "Detected DeepSpeed is not installed. See https://github.com/microsoft/DeepSpeed")
         # Initialize deepspeed engine
         model, _, self.train_dataloader, _ = deepspeed.initialize(
             config=tl_args.deepspeed,
@@ -46,10 +50,12 @@ class InplaceZeroTrainer:
         self.tl_args = tl_args
         self.metric = None
         self.compute_metrics = compute_metrics
+        self.wandb = WandbLogger(tl_args)
+        self.allow_print = self.tl_args.local_rank in [0, -1]
 
     def train(self):
         for epoch in range(self.tl_args.num_train_epochs):
-            with tqdm.tqdm(self.train_dataloader, disable=self.tl_args.local_rank not in [0, -1]) as tqb:
+            with tqdm.tqdm(self.train_dataloader, disable=not self.allow_print) as tqb:
                 for step, batch in enumerate(tqb, start=1):
                     self.model.train()
                     outs = self.model(
@@ -64,14 +70,14 @@ class InplaceZeroTrainer:
                     self.model.optimizer.get_param_coordinator(training=True).reset_step()
 
                     tqb.set_postfix({'loss': outs['loss'].item()})
-                    if self.tl_args.local_rank in [0, -1]:
-                        wandb.log({'loss': outs['loss'].item()})
+                    if self.allow_print:
+                        self.wandb.log({'loss': outs['loss'].item()})
 
                     if step % self.tl_args.eval_steps == 0 or step == len(self.train_dataloader):
                         self.eval(step, epoch)
 
     def eval(self, step, epoch):
-        with tqdm.tqdm(self.eval_dataloader, disable=self.tl_args.local_rank not in [0, -1]) as tqb:
+        with tqdm.tqdm(self.eval_dataloader, disable=not self.allow_print) as tqb:
             all_preds = None
             self.model.eval()
             for batch in tqb:
@@ -82,26 +88,17 @@ class InplaceZeroTrainer:
             result = self.compute_metrics(all_preds, self.eval_dataset)
             result['epoch'] = epoch
             result['step'] = step
+            result_value = result[self.tl_args.metric_for_best_model]
 
-            if self.tl_args.local_rank in [-1, 0]:
-                print('epoch: ', epoch, 'step: ', step, self.tl_args.metric_for_best_model, ': ',
-                      result[self.tl_args.metric_for_best_model])
-                wandb.log(result)
+            if self.allow_print:
+                print('epoch: ', epoch, 'step: ', step, self.tl_args.metric_for_best_model, ': ', result_value)
+                self.wandb.log(result)
 
-            if self.tl_args.greater_is_better:
-                if self.metric is None or result[self.tl_args.metric_for_best_model] > self.metric:
-                    if self.tl_args.local_rank in [-1, 0]:
-                        wandb.run.summary['best_' + self.tl_args.metric_for_best_model] = result[
-                            self.tl_args.metric_for_best_model]
-                        wandb.run.summary['best_epoch'] = epoch
-                        wandb.run.summary['best_step'] = step
-            else:
-                if self.metric is None or result[self.tl_args.metric_for_best_model] < self.metric:
-                    if self.tl_args.local_rank in [-1, 0]:
-                        wandb.run.summary['best_' + self.tl_args.metric_for_best_model] = result[
-                            self.tl_args.metric_for_best_model]
-                        wandb.run.summary['best_epoch'] = epoch
-                        wandb.run.summary['best_step'] = step
+                if self.is_better(result_value):
+                    self.wandb.set_summary('best_' + self.tl_args.metric_for_best_model, result_value)
+                    self.wandb.set_summary(f'best_epoch', epoch)
+                    self.wandb.set_summary(f'best_step', step)
+                    self.metric = result_value
 
     def eval_step(self, batch):
         logits = self.model.generate(
@@ -113,3 +110,17 @@ class InplaceZeroTrainer:
         logits = logits.tolist()
         pred_texts = self.tokenizer.batch_decode(logits)
         return pred_texts
+    
+    def is_better(self, result):
+        """
+        判断 ``result`` 是否更好。
+
+        :param result:
+        """
+        if self.tl_args.greater_is_better:
+            if self.metric is None or result > self.metric:
+                return True
+        else:
+            if self.metric is None or result < self.metric:
+                return True
+        return False

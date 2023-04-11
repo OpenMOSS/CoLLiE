@@ -1,6 +1,3 @@
-import sys
-sys.path.append("..")
-
 from .utils import inplace_grad, GPTLMLoss, sample_top_p
 
 import os

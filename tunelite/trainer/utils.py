@@ -1,5 +1,12 @@
+import sys
+
 import torch
 import numpy as np
+
+try:
+    import wandb
+except:
+    pass
 
 # An approximation of in-place grad update
 def inplace_grad(model, lr=5e-4):
@@ -79,3 +86,27 @@ class LearningRateScheduler:
     def step(self, global_step):
         progress = global_step / self.t_steps
         return self.initial_lr * self.get_lr(progress)
+    
+class WandbLogger:
+    """
+    使用 wandb 记录信息的类。
+
+    :param tl_args: Tunelite 的参数
+    """
+    def __init__(self, tl_args):
+        self.tl_args = tl_args
+        # report_to is a list
+        self.able = "wandb" in getattr(tl_args, "report_to", [])
+        if self.able and 'wandb' not in sys.modules:
+            raise ModuleNotFoundError(
+                "Detected Wandb not installed while you have set "
+                "`report_to=['wandb']` in your tunelite config. Please "
+                "either set `report_to` to another value or install wandb.")
+
+    def log(self, *args, **kwargs):
+        if self.able:
+            wandb.log(*args, **kwargs)
+
+    def set_summary(self, key, value):
+        if self.able:
+            wandb.run.summary[key] = value

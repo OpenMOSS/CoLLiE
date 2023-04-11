@@ -1,12 +1,9 @@
-from torch.nn import CrossEntropyLoss
-from torch.utils.data import RandomSampler, DataLoader, SequentialSampler
-from transformers.trainer_pt_utils import nested_numpify, nested_concat
-from transformers.trainer_utils import seed_worker
 import tqdm
 import torch
-import wandb
+from torch.nn import CrossEntropyLoss
+from torch.utils.data import DataLoader
 
-from .utils import LearningRateScheduler
+from .utils import LearningRateScheduler, WandbLogger
 
 
 class InplaceTensorTrainer:
@@ -28,6 +25,8 @@ class InplaceTensorTrainer:
         self.tl_args = tl_args
         self.metric = None
         self.compute_metrics = compute_metrics
+        self.wandb = WandbLogger(tl_args)
+        self.allow_print = self.tl_args.local_rank in [0, -1]
 
         self.num_steps_per_epoch = len(self.train_dataloader)
         self.global_step = 0
@@ -61,7 +60,7 @@ class InplaceTensorTrainer:
 
     def train(self):
         for epoch in range(self.tl_args.num_train_epochs):
-            with tqdm.tqdm(self.train_dataloader, disable=self.tl_args.local_rank not in [0, -1]) as tqb:
+            with tqdm.tqdm(self.train_dataloader, disable=not self.allow_print) as tqb:
                 for step, batch in enumerate(tqb, start=1):
                     self.model.train()
                     outs = self.model(batch['input_ids'], batch['attention_mask'])
@@ -88,13 +87,14 @@ class InplaceTensorTrainer:
                     # update the last one since the hook function will not be called for the last parameter
                     self.grad_func(0)
                     tqb.set_postfix({'loss': loss.item()})
-                    if self.tl_args.local_rank in [0, -1]:
-                        logs = {
-                            'train/loss': loss.item(),
-                            'train/learning_rate': self.lr,
-                            'train/global_step': self.global_step,
-                        }
-                        wandb.log(logs)
+                    if self.allow_print:
+                        self.wandb.log(
+                            {
+                                'train/loss': loss.item(),
+                                'train/learning_rate': self.lr,
+                                'train/global_step': self.global_step,
+                            }
+                        )
 
                     if self.tl_args.evaluation_strategy == 'steps' and \
                             self.global_step % self.tl_args.eval_steps == 0:
@@ -124,7 +124,7 @@ class InplaceTensorTrainer:
         print(f"  Num examples: {len(dataset)}")
         print(f"  Batch size: {self.tl_args.per_device_eval_batch_size}")
 
-        with tqdm.tqdm(dataloader, disable=self.tl_args.local_rank not in [0, -1]) as tqb:
+        with tqdm.tqdm(dataloader, disable=not self.allow_print) as tqb:
             all_preds = None
             self.model.eval()
             for batch in tqb:
@@ -138,26 +138,17 @@ class InplaceTensorTrainer:
             result['step'] = step
 
             prefix_metric_for_best_model = f'{eval_prefix}/{self.tl_args.metric_for_best_model}'
+            result_value = result[prefix_metric_for_best_model]
 
-            if self.tl_args.local_rank in [-1, 0]:
-                print(f'epoch: {epoch}, step: {step}, {self.tl_args.metric_for_best_model}: '
-                      f'{result[prefix_metric_for_best_model]}')
-                wandb.log(result)
+            if self.allow_print:
+                print(f'epoch: {epoch}, step: {step}, {self.tl_args.metric_for_best_model}: {result_value}')
+                self.wandb.log(result)
 
-            if self.tl_args.greater_is_better:
-                if self.metric is None or result[prefix_metric_for_best_model] > self.metric:
-                    if self.tl_args.local_rank in [-1, 0]:
-                        wandb.run.summary[f'{eval_prefix}/best_{self.tl_args.metric_for_best_model}'] = \
-                            result[prefix_metric_for_best_model]
-                        wandb.run.summary[f'{eval_prefix}/best_epoch'] = epoch
-                        wandb.run.summary[f'{eval_prefix}/best_step'] = step
-            else:
-                if self.metric is None or result[prefix_metric_for_best_model] < self.metric:
-                    if self.tl_args.local_rank in [-1, 0]:
-                        wandb.run.summary[f'{eval_prefix}/best_{self.tl_args.metric_for_best_model}'] = \
-                            result[prefix_metric_for_best_model]
-                        wandb.run.summary[f'{eval_prefix}/best_epoch'] = epoch
-                        wandb.run.summary[f'{eval_prefix}/best_step'] = step
+                if self.is_better(result_value):
+                    self.wandb.set_summary(f'{eval_prefix}/best_{self.tl_args.metric_for_best_model}', result_value)
+                    self.wandb.set_summary(f'{eval_prefix}/best_epoch', epoch)
+                    self.wandb.set_summary(f'{eval_prefix}/best_step', step)
+                    self.metric = result_value
 
     def eval_step(self, batch):
         self.model.eval()
@@ -170,3 +161,17 @@ class InplaceTensorTrainer:
         logits = logits.tolist()
         pred_texts = self.tokenizer.batch_decode(logits)
         return pred_texts
+    
+    def is_better(self, result):
+        """
+        判断 ``result`` 是否更好。
+
+        :param result:
+        """
+        if self.tl_args.greater_is_better:
+            if self.metric is None or result > self.metric:
+                return True
+        else:
+            if self.metric is None or result < self.metric:
+                return True
+        return False
