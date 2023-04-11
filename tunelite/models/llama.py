@@ -188,9 +188,14 @@ class HFLikeTokenizer:
         return output
 
     def decode(self, tokens):
+        if isinstance(tokens, torch.Tensor):
+            # llama's tokenizer only accepts List[int]
+            tokens = tokens.tolist()
         return self.tokenizer.decode(tokens)
 
     def batch_decode(self, tokens):
+        if isinstance(tokens, torch.Tensor):
+            tokens = tokens.tolist()
         return self.tokenizer.batch_decode(tokens)
 
 
