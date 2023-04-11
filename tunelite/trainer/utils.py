@@ -64,7 +64,7 @@ class LearningRateScheduler:
         elif self.schedule == 'linear':
             self.get_lr = self._get_linear_lr
         else:
-            raise RuntimeError("Only support 'linear', 'constant'.")
+            raise NotImplementedError("Only support 'linear', 'constant'.")
 
     def _get_constant_lr(self, progress):
         if progress < self.warmup:
