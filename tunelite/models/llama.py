@@ -608,6 +608,8 @@ class Transformer(nn.Module):
                 dim=1,
             )
             generated_tokens.append(next_token)
+            pre_pos = cur_pos
+
         sequences = torch.concat(
             (input_ids, torch.stack(generated_tokens, dim=1)), dim=1
         )
