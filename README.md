@@ -42,7 +42,8 @@ Here's a simple example to run pipeline parallel:
 
 ```python
 # Command: $torchrun --nproc_per_node=8 train.py
-from tunelite.models.llama_colossalai import HFLikeTokenizer, Tokenizer, ModelArgs, get_7B_llama, load_state_dict
+from tunelite.models.llama_colossalai import ModelArgs, get_7B_llama, load_state_dict
+from tunelite.models.llama_tokenizer import HFLikeTokenizer, Tokenizer
 from tunelite.trainer.colossalai_trainer import ColossalaiTrainer, TrainerArgs
 from torch.utils.data import DataLoader
 

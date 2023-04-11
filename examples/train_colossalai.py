@@ -4,7 +4,8 @@ sys.path.append("/mnt/lustre/zhangshuo/projects/TuneLite")
 
 from datasets import load_dataset
 
-from tunelite.models.llama_colossalai import HFLikeTokenizer, Tokenizer, ModelArgs, get_7B_llama, load_state_dict, get_13B_llama
+from tunelite.models.llama_colossalai import ModelArgs, get_7B_llama, load_state_dict, get_13B_llama
+from tunelite.models.llama_tokenizer import HFLikeTokenizer, Tokenizer
 from tunelite.trainer.colossalai_trainer import ColossalaiTrainer, TrainerArgs
 
 import torch

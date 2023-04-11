@@ -7,7 +7,6 @@
 # https://github.com/nebuly-ai/nebullvm/tree/main/apps/accelerate/chatllama/chatllama
 import json
 import math
-import random
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +23,8 @@ from fairscale.nn.model_parallel.layers import (
     RowParallelLinear,
     ColumnParallelLinear,
 )
+
+from .llama_tokenizer import HFLikeTokenizer, Tokenizer
 
 def sample_top_p(probs, p):
     probs_sort, probs_idx = torch.sort(probs, dim=-1, descending=True)
