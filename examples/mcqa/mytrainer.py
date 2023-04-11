@@ -4,7 +4,6 @@ import torch
 from torch.nn import CrossEntropyLoss
 from transformers.trainer_pt_utils import nested_numpify, nested_concat
 from tunelite.trainer import InplaceTensorTrainer
-import wandb
 
 IGNORE_INDEX = -100
 

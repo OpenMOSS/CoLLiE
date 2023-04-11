@@ -8,8 +8,8 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 from torch.utils.data import Dataset
-from fastNLP import print
 
+from tunelite.log import print
 from prompts import QuestionPart, Exemplar
 
 IGNORE_INDEX = -100

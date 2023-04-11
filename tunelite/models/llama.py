@@ -26,6 +26,7 @@ from fairscale.nn.model_parallel.layers import (
 )
 from transformers import AutoTokenizer
 from sentencepiece import SentencePieceProcessor
+from tunelite.log import print
 
 def sample_top_p(probs, p):
     probs_sort, probs_idx = torch.sort(probs, dim=-1, descending=True)

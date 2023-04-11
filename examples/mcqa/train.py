@@ -10,13 +10,13 @@ from transformers import set_seed
 
 import wandb
 # os.environ['WANDB_MODE'] = 'debug'
-from fastNLP import print, logger
 
 python_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 print("PYTHON_PATH", python_path)
 sys.path.append(python_path)
 
 from tunelite.models import llama
+from tunelite.log import print
 from arguments import ModelArguments, DataArguments, MyTuneLiteArguments
 from mydatasets import MyDataset, get_dataset_info
 from mytrainer import MyInplaceTensorTrainer
@@ -73,8 +73,6 @@ def train():
             name=tag_name if hparam_name == 'output' else '_'.join([tag_name, hparam_name.replace('output_', '')]),
             config={'model_args': model_args, 'data_args': data_args, 'tl_args': tl_args}
         )
-    logger.add_file(os.path.join(tl_args.output_dir, 'log.log'),
-                    level='INFO' if tl_args.local_rank in [-1, 0] else 'WARNING')
 
     # ========== 2. Load pretrained model and tokenizer. ==========
     model, tokenizer = llama.load_model(

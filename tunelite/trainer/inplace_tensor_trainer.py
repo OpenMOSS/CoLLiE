@@ -8,6 +8,7 @@ import operator
 import wandb
 
 from .utils import LearningRateScheduler
+from tunelite.log import print
 
 
 class InplaceTensorTrainer:
@@ -79,7 +80,8 @@ class InplaceTensorTrainer:
             print(f"  Num examples: {len(self.train_dataset)}")
             print(f"  Num Epochs: {self.tl_args.num_train_epochs}")
             print(f"  Batch Size: {self.tl_args.per_device_train_batch_size}")
-            wandb.log({'train/epoch': epoch}, step=self.global_step)
+            if self.tl_args.local_rank in [0, -1]:
+                wandb.log({'train/epoch': epoch}, step=self.global_step)
 
             with tqdm.tqdm(self.train_dataloader, disable=self.tl_args.local_rank not in [0, -1]) as tqb:
                 for step, batch in enumerate(tqb, start=1):
