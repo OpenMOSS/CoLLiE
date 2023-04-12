@@ -1,4 +1,5 @@
 import sys
+import operator
 
 import tqdm
 import torch
@@ -111,16 +112,14 @@ class InplaceZeroTrainer:
         pred_texts = self.tokenizer.batch_decode(logits)
         return pred_texts
     
-    def is_better(self, result):
+    def is_better(self, result_dict, key):
         """
         判断 ``result`` 是否更好。
 
         :param result:
         """
-        if self.tl_args.greater_is_better:
-            if self.metric is None or result > self.metric:
-                return True
-        else:
-            if self.metric is None or result < self.metric:
-                return True
-        return False
+        op = operator.gt if self.tl_args.greater_is_better else operator.lt
+        return (
+            key not in self.metrics or \
+            op(result_dict[key], self.metrics[key])
+        )

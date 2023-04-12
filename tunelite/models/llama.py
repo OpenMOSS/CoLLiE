@@ -25,6 +25,7 @@ from fairscale.nn.model_parallel.layers import (
 )
 
 from .llama_tokenizer import HFLikeTokenizer, Tokenizer
+from tunelite.log import print
 
 def sample_top_p(probs, p):
     probs_sort, probs_idx = torch.sort(probs, dim=-1, descending=True)
@@ -461,7 +462,7 @@ class Transformer(nn.Module):
 
 def setup_model_parallel() -> Tuple[int, int]:
     local_rank = int(os.environ.get("LOCAL_RANK", -1))
-    world_size = int(os.environ.get("WORLD_SIZE", -1))
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
     print("local_rank:", local_rank, "world_size:", world_size)
 
     torch.distributed.init_process_group("nccl")
@@ -481,7 +482,6 @@ def load_checkpoints(
         f"size is {world_size}"
     )
     ckpt_path = checkpoints[local_rank]
-    print("Loading")
     checkpoint = torch.load(ckpt_path, map_location="cpu")
     with open(Path(ckpt_dir) / "params.json", "r") as f:
         params = json.loads(f.read())
@@ -502,13 +502,17 @@ def load_model(
 ) -> Tuple[Transformer, HFLikeTokenizer]:
     assert zero + tensor_parallel + pipeline_parallel <= 1, \
         "ZeRO, Tensor Parallel and Pipeline Parallel are mutually exclusive now"
+    print('Loading checkpoint from', ckpt_dir)
     checkpoint, params = load_checkpoints(ckpt_dir, local_rank, world_size)
     model_args: ModelArgs = ModelArgs(
         max_seq_len=max_seq_len, max_batch_size=max_batch_size, **params
     )
     model_args.froze_embeddings = froze_embeddings
     model_args.tensor_parallel = tensor_parallel
+
+    print('Loading tokenizer from', tokenizer_path)
     tokenizer = Tokenizer(model_path=tokenizer_path)
+
     model_args.vocab_size = tokenizer.n_words
     torch.set_default_tensor_type(torch.cuda.BFloat16Tensor)
     #torch.set_default_tensor_type(torch.cuda.HalfTensor)
