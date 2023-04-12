@@ -130,21 +130,20 @@ class ColossalaiTrainer:
                  max_length: int = 1024,
                  stop_tokens: List[int] = [2]):
         with tqdm.tqdm(range(max_length), disable=not gpc.is_pipeline_last_stage()) as tqb:
-            past_key_value = torch.empty(batch[0]["input_ids"].shape[0], 0).to(torch.device(f"cuda:{os.environ['LOCAL_RANK']}")) # shape: (batch_size, 0)
             for current_pos in tqb:
                 try:
                     self.engine.eval()
+                    current_pos += 1
                     hidden_states, label, _ = self.engine.execute_schedule(
                         cycle([({
-                            # "input_ids": batch[0]["input_ids"][:, current_pos:current_pos+1],
-                            "input_ids": batch[0]["input_ids"],
-                            # "past_key_value": past_key_value
+                            "input_ids": batch[0]["input_ids"][:, current_pos - 1:current_pos],
+                            # "input_ids": batch[0]["input_ids"],
+                            "use_cache": torch.ones(batch[0]["input_ids"].shape[0], dtype=torch.bool)
                         }, batch[0]["input_ids"])]),
                         forward_only=True,
                         return_loss=False,
                         return_output_label=True,
                     )
-                    current_pos += 1
                     next_tokens = torch.zeros(batch[0]["input_ids"].shape[0], 1, dtype=torch.long).to(torch.device(f"cuda:{os.environ['LOCAL_RANK']}"))
                     if gpc.is_pipeline_last_stage():
                         next_tokens = torch.argmax(hidden_states[:, -1, :], dim=-1)
@@ -163,7 +162,7 @@ class ColossalaiTrainer:
                     break
         return batch
     
-    def eval(self, epoch, step):
+    def eval(self, epoch=0, step=0):
         with tqdm.tqdm(self.eval_dataloader, disable=not gpc.is_pipeline_last_stage()) as tqb:
             for eval_step, batch in enumerate(tqb, start=1):
                 with torch.no_grad():

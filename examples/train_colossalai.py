@@ -36,31 +36,30 @@ def main():
         print("\n")
     model_args = ModelArgs()
     model_args.pp_size = 8
-    model_args.micro_batch_size = 32
+    model_args.micro_batch_size = 1
     model_args.fp16 = True
     model_args.checkpoint = True
-    model_args.dense = "fused"
-    model_args.attention = "flash"
-    model_args.rotary_emb = "fused"
+    model_args.dense = "raw"
+    model_args.attention = "raw"
+    model_args.rotary_emb = "raw"
     
     trainer_args = TrainerArgs()
-    trainer_args.eval_max_length = 128
+    trainer_args.eval_max_length = 30
     trainer_args.eval_per_steps = 10
     trainer_args.eval_per_epoches = 1
     trainer_args.learning_rate = 2e-5
     
-    model = get_13B_llama(model_args)
-    state_dict = load_state_dict(model_args=model_args, s3_folder="hdd:s3://opennlplab_hdd/models/llama/llama-13b-hf")
+    model = get_7B_llama(model_args)
+    state_dict = load_state_dict(model_args=model_args, s3_folder="hdd:s3://opennlplab_hdd/models/llama/llama-7b-hf")
     model.load_state_dict(state_dict)
-    dataset = load_dataset("NeelNanda/pile-10k")["train"]
     train_dataloader = DataLoader(
-        dataset,
-        batch_size=32,
+        [{"text": "The python package TuneLite is for tuning large language models."} for _ in range(1)],
+        batch_size=1,
         collate_fn=lambda x: collate_fn(x, tokenizer, 1024),
     )
     eval_dataloader = DataLoader(
-        [{"text": "When I see the python package TuneLite, I fell"} for _ in range(32)],
-        batch_size=32,
+        [{"text": "The python package TuneLite is for tuning"} for _ in range(1)],
+        batch_size=1,
         collate_fn=lambda x: collate_fn(x, tokenizer, 1024, eos=False),
     )
     trainer = ColossalaiTrainer(model=model,
@@ -69,7 +68,7 @@ def main():
                                 tokenizer=tokenizer,
                                 compute_metrics=compute_metrics,
                                 trainer_args=trainer_args)
-    trainer.train()
+    trainer.eval()
     
     
 # Command: CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 torchrun --standalone --nnodes=1 --nproc_per_node=8 train_colossalai.py
@@ -77,8 +76,6 @@ if __name__ == "__main__":
     try:
         main()
     except:
-        if os.environ.get("RANK") == "0" or os.environ.get("RANK") == f"{int(os.environ.get('WORLD_SIZE'))-1}":
-            import rich
-            console = rich.console.Console()
-            console.print_exception(show_locals=True)
-        print(f"\nExceptions at Rank: {os.environ.get('RANK')}\n")
+        import rich
+        console = rich.console.Console()
+        console.print_exception(show_locals=False)
