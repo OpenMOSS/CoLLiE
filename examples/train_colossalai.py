@@ -36,7 +36,7 @@ def main():
         print("\n")
     model_args = ModelArgs()
     model_args.pp_size = 8
-    model_args.micro_batch_size = 1
+    model_args.micro_batch_num = 32
     model_args.fp16 = True
     model_args.checkpoint = True
     model_args.dense = "raw"
@@ -53,13 +53,13 @@ def main():
     state_dict = load_state_dict(model_args=model_args, s3_folder="hdd:s3://opennlplab_hdd/models/llama/llama-7b-hf")
     model.load_state_dict(state_dict)
     train_dataloader = DataLoader(
-        [{"text": "The python package TuneLite is for tuning large language models."} for _ in range(1)],
-        batch_size=1,
+        [{"text": "The python package TuneLite is for tuning large language models."} for _ in range(64)],
+        batch_size=64,
         collate_fn=lambda x: collate_fn(x, tokenizer, 1024),
     )
     eval_dataloader = DataLoader(
-        [{"text": "The python package TuneLite is for tuning"} for _ in range(1)],
-        batch_size=1,
+        [{"text": "My name is MOSS, and my responsibility is to"} for _ in range(64)],
+        batch_size=64,
         collate_fn=lambda x: collate_fn(x, tokenizer, 1024, eos=False),
     )
     trainer = ColossalaiTrainer(model=model,

@@ -165,7 +165,7 @@ class ModelArgs:
     # tp_size: int = 1
     # tp_type: str = "1d" # 1d, 2d, 2.5d, 3d
     dp_size: int = 1
-    micro_batch_size: int = 1
+    micro_batch_num: int = 1
     # other parameters
     checkpoint: bool = False
     dropout: float = 0.1
@@ -381,8 +381,9 @@ class TransformerBlock(nn.Module):
                     output, p=self.model_args.dropout, training=self.training)
                 return output
             object.__setattr__(self, "attention_fn", attention)
-        self.key_cache = None
-        self.value_cache = None
+        self.key_cache = [None for _ in range(self.model_args.micro_batch_num)]
+        self.value_cache = [None for _ in range(self.model_args.micro_batch_num)]
+        self.micro_batch_counter = 0 # 现在自己处于第几个 micro batch
 
     def forward(self,
                 hidden_states: Optional[torch.Tensor],
@@ -404,22 +405,25 @@ class TransformerBlock(nn.Module):
         query, key, value = query.squeeze(
             2), key.squeeze(2), value.squeeze(2)
         if use_cache:
-            start_pos = self.key_cache.shape[1] if self.key_cache is not None else 0
+            start_pos = self.key_cache[self.micro_batch_counter].shape[1] if self.key_cache[self.micro_batch_counter] is not None else 0
         else:
             start_pos = 0
         query, key = rpoe(query=query, key=key,
                           start_pos=start_pos, seq_len=seq_len)
         if use_cache:
-            if self.key_cache is None or self.value_cache is None:
-                self.key_cache = key
-                self.value_cache = value
+            if self.key_cache[self.micro_batch_counter] is None or self.value_cache[self.micro_batch_counter] is None:
+                self.key_cache[self.micro_batch_counter] = key
+                self.value_cache[self.micro_batch_counter] = value
             else:
                 query = torch.concat(
-                    [torch.zeros_like(self.key_cache).type_as(self.key_cache), query], dim=1)
-                key = self.key_cache = torch.concat(
-                    [self.key_cache, key], dim=1)
-                value = self.value_cache = torch.concat(
-                    [self.value_cache, value], dim=1)
+                    [torch.zeros_like(self.key_cache[self.micro_batch_counter]).type_as(self.key_cache[self.micro_batch_counter]), query], dim=1)
+                key = self.key_cache[self.micro_batch_counter] = torch.concat(
+                    [self.key_cache[self.micro_batch_counter], key], dim=1)
+                value = self.value_cache[self.micro_batch_counter] = torch.concat(
+                    [self.value_cache[self.micro_batch_counter], value], dim=1)
+        self.micro_batch_counter = self.micro_batch_counter + 1
+        if self.micro_batch_counter >= len(self.key_cache):
+            self.micro_batch_counter = 0
         qkv = torch.stack([query, key, value], dim=2)
         attention_output = self.attention_fn(qkv=qkv,
                                              sm_scale=1 / math.sqrt(head_dim),
@@ -508,7 +512,7 @@ class Transformer(nn.Module):
 
 
 def prepare_distribution(model_args: ModelArgs = ModelArgs()) -> dict:
-    CONFIG = dict(NUM_MICRO_BATCHES=model_args.micro_batch_size,
+    CONFIG = dict(NUM_MICRO_BATCHES=model_args.micro_batch_num,
                   parallel=dict(
                       pipeline=int(model_args.pp_size),
                       tensor=dict(size=1, mode="1d")

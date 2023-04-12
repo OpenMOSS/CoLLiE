@@ -137,8 +137,9 @@ class ColossalaiTrainer:
                     hidden_states, label, _ = self.engine.execute_schedule(
                         cycle([({
                             "input_ids": batch[0]["input_ids"][:, current_pos - 1:current_pos],
-                            # "input_ids": batch[0]["input_ids"],
+                            # "input_ids": batch[0]["input_ids"], # if you don't use key/value cache
                             "use_cache": torch.ones(batch[0]["input_ids"].shape[0], dtype=torch.bool)
+                            # "use_cache": torch.zeros(batch[0]["input_ids"].shape[0], dtype=torch.bool) # if you don't use key/value cache
                         }, batch[0]["input_ids"])]),
                         forward_only=True,
                         return_loss=False,
