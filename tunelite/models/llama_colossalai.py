@@ -8,8 +8,6 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from sentencepiece import SentencePieceProcessor
-
 import io
 import os
 import time
@@ -20,7 +18,7 @@ from io import BytesIO
 from einops import rearrange
 from dataclasses import dataclass
 from collections import OrderedDict
-from typing import Optional, Callable, List, Union, Dict
+from typing import Optional, Callable, Dict
 
 try:
     import colossalai
@@ -62,109 +60,6 @@ try:
 except ModuleNotFoundError:
     memory_efficient_attention = None
     LowerTriangularMask = None
-
-class Tokenizer:
-    def __init__(self, model_path: str):
-        # reload tokenizer
-        assert os.path.isfile(model_path), model_path
-        self.sp_model = SentencePieceProcessor(model_file=model_path)
-
-        # BOS / EOS token IDs
-        self.n_words: int = self.sp_model.vocab_size()
-        self.bos_id: int = self.sp_model.bos_id()
-        self.eos_id: int = self.sp_model.eos_id()
-        self.pad_id: int = self.sp_model.pad_id()
-        assert self.sp_model.vocab_size() == self.sp_model.get_piece_size()
-
-    def encode(self, s: str, bos: bool, eos: bool) -> List[int]:
-        assert type(s) is str
-        t = self.sp_model.encode(s)
-        if bos:
-            t = [self.bos_id] + t
-        if eos:
-            t = t + [self.eos_id]
-        return t
-
-    def decode(self, t: List[int]) -> str:
-        if self.eos_id in t:
-            t = t[:t.index(self.eos_id)+1]
-        return self.sp_model.decode(t)
-
-
-class HFLikeTokenizer:
-    def __init__(self, tokenizer: Tokenizer):
-        self.tokenizer = tokenizer
-
-        # assign attributes from real tokenizer to masked one
-        self.pad_id = self.tokenizer.pad_id
-        self.eos_id = self.tokenizer.eos_id
-        self.bos_id = self.tokenizer.bos_id
-
-        # mask attribute to be similar to hugging face
-        self.eos_token_id = self.tokenizer.eos_id
-        self.pad_token_id = self.tokenizer.pad_id
-
-        # to match hugging face attribute
-        self.pad_token_id = self.pad_id
-
-    def create_sequence_mask(self, tokens: torch.Tensor) -> torch.Tensor:
-        mask = torch.where(
-            tokens == self.tokenizer.pad_id,
-            torch.zeros_like(tokens),
-            torch.ones_like(tokens),
-        )
-        mask = torch.where(
-            tokens == self.tokenizer.bos_id, torch.zeros_like(tokens), mask
-        )
-        mask = torch.where(
-            tokens == self.tokenizer.eos_id, torch.zeros_like(tokens), mask
-        )
-        return mask
-
-    def __call__(self, texts: Union[List[str], str], *args, **kwargs):
-        if isinstance(texts, str):
-            text = self.tokenizer.encode(texts, kwargs.get("bos", True), eos=kwargs.get("eos", True))
-            tokens = torch.tensor(text).long()
-            mask = torch.ones_like(tokens)
-        else:
-            texts = [
-                self.tokenizer.encode(text, kwargs.get("bos", True), eos=kwargs.get("eos", True))
-                for text in texts
-            ]
-            max_len = max(len(text) for text in texts)
-            tokens = torch.full(
-                (len(texts), max_len), self.tokenizer.pad_id
-            ).long()
-            for i, text in enumerate(texts):
-                tokens[i, -len(text) :] = torch.tensor(  # noqa E203
-                    text
-                ).long()
-
-            # TODO: decide how eos and bos should be handled - i need to mask
-            # them? or not?
-            mask = self.create_sequence_mask(tokens)
-            for i in range(tokens.shape[0]):
-                current_tokens = tokens[i, mask[i] == 1]
-                tokens[
-                    i, -len(current_tokens) - 1 : -1  # noqa E203
-                ] = current_tokens
-            mask = self.create_sequence_mask(tokens)
-
-            # convert `pad_id` from -1 to 0, otherwise embedding will cause out
-            # of bounds.
-            tokens = torch.where(
-                tokens == self.tokenizer.pad_id,
-                torch.zeros_like(tokens),
-                tokens,
-            )
-        output = {
-            "input_ids": tokens,
-            "attention_mask": mask,
-        }
-        return output
-
-    def decode(self, tokens):
-        return self.tokenizer.decode(tokens)
 
 @dataclass
 class ModelArgs:
