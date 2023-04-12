@@ -130,30 +130,31 @@ class ColossalaiTrainer:
                  max_length: int = 1024,
                  stop_tokens: List[int] = [2]):
         with tqdm.tqdm(range(max_length), disable=not gpc.is_pipeline_last_stage()) as tqb:
+            input_ids = batch[0]["input_ids"]
             for current_pos in tqb:
                 try:
                     self.engine.eval()
                     current_pos += 1
                     hidden_states, label, _ = self.engine.execute_schedule(
                         cycle([({
-                            "input_ids": batch[0]["input_ids"][:, current_pos - 1:current_pos],
+                            "input_ids": input_ids[:, current_pos - 1:current_pos],
                             # "input_ids": batch[0]["input_ids"], # if you don't use key/value cache
-                            "use_cache": torch.ones(batch[0]["input_ids"].shape[0], dtype=torch.bool)
+                            "use_cache": torch.ones(input_ids.shape[0], dtype=torch.bool)
                             # "use_cache": torch.zeros(batch[0]["input_ids"].shape[0], dtype=torch.bool) # if you don't use key/value cache
-                        }, batch[0]["input_ids"])]),
+                        }, input_ids)]),
                         forward_only=True,
                         return_loss=False,
                         return_output_label=True,
                     )
-                    next_tokens = torch.zeros(batch[0]["input_ids"].shape[0], 1, dtype=torch.long).to(torch.device(f"cuda:{os.environ['LOCAL_RANK']}"))
+                    next_tokens = torch.zeros(input_ids.shape[0], 1, dtype=torch.long).to(torch.device(f"cuda:{os.environ['LOCAL_RANK']}"))
                     if gpc.is_pipeline_last_stage():
                         next_tokens = torch.argmax(hidden_states[:, -1, :], dim=-1)
                         next_tokens = torch.unsqueeze(next_tokens, dim=-1)
                     torch.distributed.broadcast(next_tokens, src=gpc.get_world_size(ParallelMode.PIPELINE) - 1)
-                    next_tokens = next_tokens.to(batch[0]["input_ids"].device)
-                    while current_pos >= batch[0]["input_ids"].shape[1]:
-                        batch[0]["input_ids"] = torch.cat([batch[0]["input_ids"], torch.zeros_like(next_tokens)], dim=1)
-                    batch[0]["input_ids"][:, current_pos] = torch.where(batch[0]["input_ids"][:, current_pos] == 0, next_tokens[:, 0], batch[0]["input_ids"][:, current_pos])
+                    next_tokens = next_tokens.to(input_ids.device)
+                    while current_pos >= input_ids.shape[1]:
+                        input_ids = torch.cat([input_ids, torch.zeros_like(next_tokens)], dim=1)
+                    input_ids[:, current_pos] = torch.where(input_ids[:, current_pos] == 0, next_tokens[:, 0], input_ids[:, current_pos])
                     tqb.set_postfix({'generating': f"{current_pos}/{max_length}"})
                     for i in torch.flatten(next_tokens).tolist():
                             if i in stop_tokens:
@@ -161,7 +162,7 @@ class ColossalaiTrainer:
                     torch.cuda.empty_cache()
                 except StopIteration:
                     break
-        return batch
+        return input_ids
     
     def eval(self, epoch=0, step=0):
         with tqdm.tqdm(self.eval_dataloader, disable=not gpc.is_pipeline_last_stage()) as tqb:

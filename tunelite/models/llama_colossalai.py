@@ -35,7 +35,6 @@ try:
     from colossalai.nn.layer.wrapper import PipelineSharedModuleWrapper
     from colossalai.utils.model.colo_init_context import ColoInitContext
     from colossalai.logging import get_dist_logger, disable_existing_loggers
-    from colossalai.kernel.cuda_native.flash_attention import flash_attention_qkv
 
 except ModuleNotFoundError:
     raise ModuleNotFoundError(
@@ -308,8 +307,7 @@ class TransformerBlock(nn.Module):
             self.model_args.dropout)
 
         if self.model_args.attention == "col_flash":
-            assert flash_attention_qkv is not None, \
-                "Detected triton is not installed. See https://github.com/openai/triton"
+            from colossalai.kernel.cuda_native.flash_attention import flash_attention_qkv
 
             def attention(**kwargs):
                 kwargs["qkv"] = rearrange(
