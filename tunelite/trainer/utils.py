@@ -33,4 +33,49 @@ def sample_top_p(probs, p):
     next_token = torch.multinomial(probs_sort, num_samples=1)
     next_token = torch.gather(probs_idx, -1, next_token)
     return next_token
-    
+
+
+class LearningRateScheduler:
+    r"""
+    Learning rate scheduler with warmup.
+
+        :param warmup: if ``warmup`` is an integer, ``warmup`` stands for warmup steps, if ``warmup`` is a float,
+            such as 0.1, then it stands for warmup_ratio.
+        :param schedule: the learning rate will be adjusted according to ``schedule`` strategy,
+            which can be: linear or constant.
+    """
+
+    def __init__(self,
+                 warmup: float,
+                 schedule: str,
+                 learning_rate: float,
+                 n_steps: int = 0):
+
+        self.warmup = max(warmup, 0.)
+        self.schedule = schedule
+        self.initial_lr = learning_rate
+
+        if self.warmup > 1:
+            self.warmup = self.warmup / n_steps
+        self.t_steps = max(2, n_steps)
+
+        if self.schedule == 'constant':
+            self.get_lr = self._get_constant_lr
+        elif self.schedule == 'linear':
+            self.get_lr = self._get_linear_lr
+        else:
+            raise NotImplementedError("Only support 'linear', 'constant'.")
+
+    def _get_constant_lr(self, progress):
+        if progress < self.warmup:
+            return progress / self.warmup
+        return 1
+
+    def _get_linear_lr(self, progress):
+        if progress < self.warmup:
+            return progress / self.warmup
+        return max((progress - 1.) / (self.warmup - 1.), 0.)
+
+    def step(self, global_step):
+        progress = global_step / self.t_steps
+        return self.initial_lr * self.get_lr(progress)
