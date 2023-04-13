@@ -181,7 +181,20 @@ class ColossalaiTrainer:
                     next_tokens = torch.zeros(input_ids.shape[0], 1, dtype=torch.long).to(
                         torch.device(f"cuda:{os.environ['LOCAL_RANK']}"))
                     if gpc.is_pipeline_last_stage():
-                        next_tokens = torch.argmax(hidden_states[:, -1, :], dim=-1)
+                        # top-p分布
+                        scores = hidden_states[:,-1,:]
+                        sorted_logits, sorted_indicies = torch.sort(scores, descending=True)
+                        cumulative_probs = sorted_logits.softmax(dim=-1).cumsum(dim=-1)
+                        sorted_indices_to_remove = cumulative_probs > self.trainer_args.eval_top_p
+                        sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+                        sorted_indices_to_remove[..., 0] = 0
+                        indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indicies, sorted_indices_to_remove)
+                        scores = scores.masked_fill(indices_to_remove, -float('inf'))
+                        # 温度采样
+                        scores = torch.exp(scores / self.trainer_args.eval_temperature)
+                        scores = scores / torch.sum(scores)
+                        # next_tokens = torch.argmax(hidden_states[:, -1, :], dim=-1)
+                        next_tokens = torch.multinomial(scores, num_samples=1).squeeze(1)
                         next_tokens = torch.unsqueeze(next_tokens, dim=-1)
                     torch.distributed.broadcast(next_tokens, src=gpc.get_world_size(ParallelMode.PIPELINE) - 1)
                     next_tokens = next_tokens.to(input_ids.device)
