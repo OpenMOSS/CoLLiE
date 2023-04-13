@@ -95,7 +95,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from datasets import load_dataset, load_from_disk
 from transformers import HfArgumentParser
-from collie.arguments import ModelArguments, DataArguments, collieArguments
+from collie.arguments import ModelArguments, DataArguments, CollieArguments
 import os
 
 
