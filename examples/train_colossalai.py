@@ -31,9 +31,9 @@ def collate_fn(batch, tokenizer, max_length=1024, bos=True, eos=True):
 def main():
     tokenizer = HFLikeTokenizer(
         tokenizer=Tokenizer(model_path='/mnt/petrelfs/zhangshuo/projects/OptiLLM/colossalai/llama/tokenizer.model'))
-    def compute_metrics(result, label, epoch, step):
+    def compute_metrics(batch, epoch, step):
         print("\n")
-        print("\n".join([tokenizer.decode(token.tolist()) for token in result][:1]))
+        print("\n".join([tokenizer.decode(token.tolist()) for token in batch[0]["input_ids"]][:1]))
         print("\n")
     model_args = ModelArgs()
     model_args.pp_size = 8

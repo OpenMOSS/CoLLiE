@@ -193,14 +193,14 @@ class ColossalaiTrainer:
     def eval(self, epoch=0, step=0):
         with tqdm.tqdm(self.eval_dataloader, disable=not gpc.is_pipeline_last_stage()) as tqb:
             for eval_step, batch in enumerate(tqb, start=1):
-                input_ids = batch[0]['input_ids']
+                input_dict = batch[0]
                 label = batch[1]
                 with torch.no_grad():
-                    result = self.generate(input_ids,
-                                           max_length=self.trainer_args.eval_max_length,
-                                           stop_tokens=self.trainer_args.eval_stop_tokens,
-                                           use_cache=self.trainer_args.eval_use_cache)
+                    input_dict['input_ids'] = self.generate(input_dict['input_ids'],
+                                                            max_length=self.trainer_args.eval_max_length,
+                                                            stop_tokens=self.trainer_args.eval_stop_tokens,
+                                                            use_cache=self.trainer_args.eval_use_cache)
                     if gpc.is_pipeline_last_stage() and self.compute_metrics is not None:
-                        self.compute_metrics(result, label, epoch, step)
+                        self.compute_metrics((input_dict, label), epoch, step)
                 tqb.set_postfix({'evaluating': f"{eval_step}/{len(self.eval_dataloader)}"})
             torch.cuda.empty_cache()
