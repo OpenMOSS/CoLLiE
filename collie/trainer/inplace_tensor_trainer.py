@@ -119,7 +119,8 @@ class InplaceTensorTrainer:
                                 'train/loss': loss.item(),
                                 'train/learning_rate': self.lr,
                                 'train/global_step': self.global_step,
-                            }
+                            },
+                            step=self.global_step
                         )
 
                     if self.collie_args.do_eval and self.collie_args.evaluation_strategy == 'steps' and \
