@@ -1,4 +1,4 @@
-# TuneLite
+# CoLLiE
 
 A Light Toolkit to Finetune Large Language Models.
 
@@ -36,15 +36,15 @@ python setup.py install
 + [ ] Speed Benchmark.
 + [ ] Add more examples.
 
-## How to use TuneLite
+## How to use CoLLiE
 
 Here's a simple example to run pipeline parallel:
 
 ```python
 # Command: $torchrun --nproc_per_node=8 train.py
-from tunelite.models.llama_colossalai import ModelArgs, get_7B_llama, load_state_dict
-from tunelite.models.llama_tokenizer import HFLikeTokenizer, Tokenizer
-from tunelite.trainer.colossalai_trainer import ColossalaiTrainer, TrainerArgs
+from collie.models.llama_colossalai import ModelArgs, get_7B_llama, load_state_dict
+from collie.models.llama_tokenizer import HFLikeTokenizer, Tokenizer
+from collie.trainer.colossalai_trainer import ColossalaiTrainer, TrainerArgs
 from torch.utils.data import DataLoader
 
 tokenizer = HFLikeTokenizer(tokenizer=Tokenizer(model_path='./tokenizer.model'))
@@ -58,11 +58,11 @@ state_dict = load_state_dict(
     model_args=model_args)
 model.load_state_dict(state_dict)
 train_sample = {
-    "input_ids": tokenizer("TuneLite is a python package for training large language models", return_tensors="pt")["input_ids"].long()
-}, tokenizer("TuneLite is a python package for training large language models", return_tensors="pt")["input_ids"].long()
+    "input_ids": tokenizer("CoLLiE is a python package for training large language models", return_tensors="pt")["input_ids"].long()
+}, tokenizer("CoLLiE is a python package for training large language models", return_tensors="pt")["input_ids"].long()
 eval_sample = {
-    "input_ids": tokenizer("TuneLite is a python package for", return_tensors="pt")["input_ids"].long()
-}, tokenizer("TuneLite is a python package for", return_tensors="pt")["input_ids"].long()
+    "input_ids": tokenizer("CoLLiE is a python package for", return_tensors="pt")["input_ids"].long()
+}, tokenizer("CoLLiE is a python package for", return_tensors="pt")["input_ids"].long()
 
 train_dataloader = DataLoader(
     [train_sample for _ in range(1000)],
@@ -89,13 +89,13 @@ To run tensor parallel with tensor parallel and inplace:
 
 ```python
 # Command: $torchrun --nproc_per_node 2 train.py ./example/config/tensor_args.yaml
-import tunelite as tl
-from tunelite.models import llama
+import collie
+from collie.models import llama
 import torch
 from torch.utils.data import Dataset, DataLoader
 from datasets import load_dataset, load_from_disk
 from transformers import HfArgumentParser
-from tunelite.arguments import ModelArguments, DataArguments, TuneLiteArguments
+from collie.arguments import ModelArguments, DataArguments, collieArguments
 import os
 
 
@@ -124,11 +124,11 @@ def compute_metrics(all_pred, eval_dataset):
 
 
 local_rank, world_size = llama.setup_model_parallel()
-parser = HfArgumentParser((ModelArguments, DataArguments, TuneLiteArguments))
+parser = HfArgumentParser((ModelArguments, DataArguments, CollieArguments))
 if sys.argv[-1].endswith(".yaml"):
-    model_args, data_args, tl_args = parser.parse_yaml_file(yaml_file=os.path.abspath(sys.argv[-1]))
+    model_args, data_args, collie_args = parser.parse_yaml_file(yaml_file=os.path.abspath(sys.argv[-1]))
 else:
-    model_args, data_args, tl_args = parser.parse_args_into_dataclasses()
+    model_args, data_args, collie_args = parser.parse_args_into_dataclasses()
 
 model, tokenizer = llama.load_model(
     ckpt_dir=model_args.model_name_or_path,  # 7B, 13B, 30B, 65B
@@ -139,7 +139,7 @@ model, tokenizer = llama.load_model(
     zero=False,
     tensor_parallel=True,
     pipeline_parallel=False,
-    max_batch_size=tl_args.per_device_train_batch_size,
+    max_batch_size=collie_args.per_device_train_batch_size,
     max_seq_len=data_args.max_length,
 )
 tokenizer.pad_token_id = 0
@@ -147,25 +147,25 @@ tokenizer.pad_token_id = 0
 dataset = load_from_disk(data_args.data_dir)['train'].select(range(1000))
 train_dataloader = DataLoader(
     dataset,
-    batch_size=tl_args.per_device_train_batch_size,
+    batch_size=collie_args.per_device_train_batch_size,
     collate_fn=lambda x: collate_fn(x, tokenizer, max_len=data_args.max_length)
 )
 eval_dataloader = DataLoader(
     dataset.select(range(4)),
-    batch_size=tl_args.per_device_train_batch_size,
+    batch_size=collie_args.per_device_train_batch_size,
     collate_fn=lambda x: collate_fn(x, tokenizer, max_len=data_args.max_length)
 )
 
-trainer = tl.trainer.InplaceTensorTrainer(
+trainer = collie.trainer.InplaceTensorTrainer(
     model=model,
     tokenizer=tokenizer,
     train_dataloader=train_dataloader,
     eval_dataloader=eval_dataloader,
     eval_dataset=dataset.select(range(4)),
-    tl_args=tl_args,
+    collie_args=collie_args,
     compute_metrics=compute_metrics,
 )
 trainer.train()
 ```
 
-For more examples, check [TuneLite Examples](https://github.com/OpenLMLab/TuneLite/tree/main/examples).
+For more examples, check [CoLLiE Examples](https://github.com/OpenLMLab/collie/tree/main/examples).

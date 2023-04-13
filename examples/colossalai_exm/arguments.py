@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
-from tunelite.trainer.colossalai_trainer import TrainerArgs
-from tunelite.models.llama_colossalai import ModelArgs
+from collie.trainer.colossalai_trainer import TrainerArgs
+from collie.models.llama_colossalai import ModelArgs
 
 @dataclass
 class DataArguments:

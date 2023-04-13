@@ -1,11 +1,11 @@
 import sys
 sys.path.append('..')
-import tunelite as tl
+import collie
 import wandb
 from torch.utils.data import DataLoader
 from transformers import AutoConfig, AutoModelForCausalLM, HfArgumentParser, AutoTokenizer
 from transformers.deepspeed import HfDeepSpeedConfig
-from tunelite.arguments import ModelArguments, DataArguments, TuneLiteArguments
+from collie.arguments import ModelArguments, DataArguments, CollieArguments
 import torch
 from datasets import load_from_disk
 import os
@@ -35,24 +35,24 @@ def compute_metrics(all_pred, eval_dataset):
 
 def train():
     torch.set_default_dtype(torch.bfloat16)
-    parser = HfArgumentParser((ModelArguments, DataArguments, TuneLiteArguments))
+    parser = HfArgumentParser((ModelArguments, DataArguments, CollieArguments))
     if sys.argv[-1].endswith(".yaml"):
-        model_args, data_args, tl_args = parser.parse_yaml_file(yaml_file=os.path.abspath(sys.argv[-1]))
+        model_args, data_args, collie_args = parser.parse_yaml_file(yaml_file=os.path.abspath(sys.argv[-1]))
     else:
-        model_args, data_args, tl_args = parser.parse_args_into_dataclasses()
+        model_args, data_args, collie_args = parser.parse_args_into_dataclasses()
 
-    if tl_args.local_rank in [-1, 0]:
+    if collie_args.local_rank in [-1, 0]:
         wandb.init(
-            project="tunelite",
-            name=tl_args.run_name,
-            tags=[data_args.data_tag, tl_args.tag],
-            config={'model_args': model_args, 'data_args': data_args, 'tl_args': tl_args},
+            project="collie",
+            name=collie_args.run_name,
+            tags=[data_args.data_tag, collie_args.tag],
+            config={'model_args': model_args, 'data_args': data_args, 'collie_args': collie_args},
         )
 
-    if tl_args.local_rank == 0:
+    if collie_args.local_rank == 0:
         print(f"[{datetime.datetime.today()}] Loading model.")
     # load model
-    ds_config = tl_args.deepspeed
+    ds_config = collie_args.deepspeed
     dschf = HfDeepSpeedConfig(ds_config)  # keep this object alive
 
     config = AutoConfig.from_pretrained(model_args.model_name_or_path)
@@ -70,22 +70,22 @@ def train():
     )
     tokenizer.pad_token = tokenizer.eos_token
 
-    if tl_args.local_rank == 0:
+    if collie_args.local_rank == 0:
         print(f"[{datetime.datetime.today()}] Loading dataset.")
     dataset = load_from_disk("/remote-home/klv/exps/MossOn3090/data/pile-10k")['train'].select(range(1000))
     eval_dataloader = DataLoader(
         dataset.select(range(4)),
-        batch_size=tl_args.per_device_train_batch_size,
+        batch_size=collie_args.per_device_train_batch_size,
         collate_fn=lambda x: collate_fn(x, tokenizer, max_len=data_args.max_length)
     )
-    trainer = tl.trainer.InplaceZeroTrainer(
+    trainer = collie.trainer.InplaceZeroTrainer(
         model=model,
         tokenizer=tokenizer,
         train_dataset=dataset,
         data_collator=collate_fn,
         eval_dataloader=eval_dataloader,
         eval_dataset=dataset.select(range(4)),
-        tl_args=tl_args,
+        collie_args=collie_args,
         data_args=data_args,
         compute_metrics=compute_metrics,
     )

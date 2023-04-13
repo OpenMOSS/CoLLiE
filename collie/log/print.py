@@ -11,7 +11,7 @@ def print(*args, sep=' ', end='\n', file=None, flush=False):
 
     Example::
 
-        from tunelite import print
+        from collie import print
         print("This is a test")  # 等价于调用了 logger.info("This is a test")
 
     :param args: 需要打印的内容

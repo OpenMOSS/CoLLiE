@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Optional
-from tunelite.arguments import TuneLiteArguments
+from collie.arguments import CollieArguments
 
 
 @dataclass
@@ -24,5 +24,5 @@ class DataArguments:
 
 
 @dataclass
-class MyTuneLiteArguments(TuneLiteArguments):
+class MyCollieArguments(CollieArguments):
     pass

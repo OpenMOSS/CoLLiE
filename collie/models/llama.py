@@ -25,7 +25,7 @@ from fairscale.nn.model_parallel.layers import (
 )
 
 from .llama_tokenizer import HFLikeTokenizer, Tokenizer
-from tunelite.log import print
+from collie.log import print
 
 def sample_top_p(probs, p):
     probs_sort, probs_idx = torch.sort(probs, dim=-1, descending=True)

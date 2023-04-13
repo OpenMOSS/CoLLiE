@@ -1,11 +1,11 @@
 import os
 import sys
-sys.path.append("/mnt/lustre/zhangshuo/projects/TuneLite")
+sys.path.append("/mnt/lustre/zhangshuo/projects/collie")
 
 from datasets import load_dataset
 
-from tunelite.models.llama_colossalai import HFLikeTokenizer, Tokenizer, ModelArgs, get_7B_llama, load_state_dict, get_13B_llama, get_30B_llama
-from tunelite.trainer.colossalai_trainer import ColossalaiTrainer, TrainerArgs
+from collie.models.llama_colossalai import HFLikeTokenizer, Tokenizer, ModelArgs, get_7B_llama, load_state_dict, get_13B_llama, get_30B_llama
+from collie.trainer.colossalai_trainer import ColossalaiTrainer, TrainerArgs
 
 import torch
 from torch.utils.data import DataLoader

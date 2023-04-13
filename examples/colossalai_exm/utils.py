@@ -3,9 +3,9 @@ from dataclasses import dataclass
 from transformers.utils import PaddingStrategy
 from transformers.trainer import *
 
-from tunelite.models.llama_colossalai import (get_7B_llama, get_13B_llama,
+from collie.models.llama_colossalai import (get_7B_llama, get_13B_llama,
                                               get_30B_llama, load_state_dict)
-from tunelite.models.llama_colossalai import HFLikeTokenizer, Tokenizer
+from collie.models.llama_colossalai import HFLikeTokenizer, Tokenizer
 
 @dataclass
 class DataCollatorForCauselLM:

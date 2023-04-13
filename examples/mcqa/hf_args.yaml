@@ -5,7 +5,7 @@ dataset_name: 'openbookqa'
 refresh: false
 data_tag: 'src'
 max_length: 256
-# tunelite
+# collie
 # trainer
 tag: 'test'
 output_dir: 'outputs'

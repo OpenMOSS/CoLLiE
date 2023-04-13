@@ -18,7 +18,7 @@ refresh: false
 data_tag: 'src'
 max_length: 256
 few_shot_size: 30
-# tunelite
+# collie
 # trainer
 epochs: 10
 eval_per_steps: 5

@@ -1,4 +1,4 @@
-# TuneLite example on OpenBookQA dataset with colossalai
+# CoLLiE example on OpenBookQA dataset with colossalai
 
 Support on full dataset finetuning and few-shot finetuning on 3090 using colossalai pipeline.
 

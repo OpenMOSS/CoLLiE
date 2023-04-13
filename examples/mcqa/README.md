@@ -1,4 +1,4 @@
-# TuneLite example on OpenBookQA dataset
+# CoLLiE example on OpenBookQA dataset
 
 Support on full dataset finetuning and few-shot finetuning on 3090.
 

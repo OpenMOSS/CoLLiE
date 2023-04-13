@@ -22,7 +22,7 @@ class DataArguments:
 
 
 @dataclass
-class TuneLiteArguments(Seq2SeqTrainingArguments):
+class CollieArguments(Seq2SeqTrainingArguments):
     tag: str = field(default=None, metadata={"help": "Tag for the experiment."})
 
     clip_grad_value: float = field(default=None, metadata={"help": "Maximum gradient value (for gradient clipping)."})  # recommend 1.0

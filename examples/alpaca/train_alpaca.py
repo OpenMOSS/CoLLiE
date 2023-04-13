@@ -7,9 +7,9 @@ from colossalai.utils import print_rank_0
 
 sys.path.append("../../")
 from datasets import load_dataset
-from tunelite.models.llama_colossalai import HFLikeTokenizer, Tokenizer, ModelArgs
-from tunelite.models.llama_colossalai import load_state_dict, get_7B_llama, get_13B_llama
-from tunelite.trainer.colossalai_trainer import ColossalaiTrainer, TrainerArgs
+from collie.models.llama_colossalai import HFLikeTokenizer, Tokenizer, ModelArgs
+from collie.models.llama_colossalai import load_state_dict, get_7B_llama, get_13B_llama
+from collie.trainer.colossalai_trainer import ColossalaiTrainer, TrainerArgs
 
 tokenizer_path = '/mnt/petrelfs/zhangshuo/projects/OptiLLM/colossalai/llama/tokenizer.model'
 alpaca_data_path = './alpaca_data.json'

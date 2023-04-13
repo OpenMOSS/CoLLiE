@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 from transformers import HfArgumentParser
 from transformers import set_seed
 
-from tunelite.log import print
+from collie.log import print
 from arguments import ModelArguments, DataArguments, TrainerArgs
 from mydatasets import MyDataset, get_dataset_info
 from utils import DataCollatorForCauselLM, EvalDataCollatorForCauselLM
@@ -41,10 +41,10 @@ def train():
     """
     parser = HfArgumentParser((ModelArguments, DataArguments, TrainerArgs))
     if sys.argv[-1].endswith(".yaml"):
-        model_args, data_args, tl_args = parser.parse_yaml_file(yaml_file=os.path.abspath(sys.argv[-1]))
+        model_args, data_args, collie_args = parser.parse_yaml_file(yaml_file=os.path.abspath(sys.argv[-1]))
     else:
-        model_args, data_args, tl_args = parser.parse_args_into_dataclasses()
-    # set_seed(tl_args.seed)
+        model_args, data_args, collie_args = parser.parse_args_into_dataclasses()
+    # set_seed(collie_args.seed)
 
     # ========== 2. Load pretrained model and tokenizer. ==========
     llama_pipeline, tokenizer = get_llama(model_args)
@@ -78,7 +78,7 @@ def train():
         model=llama_pipeline, tokenizer=tokenizer,
         optimizer=optimizer,
         train_dataloader=train_dataloader, eval_dataloader=eval_dataloader,
-        compute_metrics=compute_metrics, trainer_args=tl_args
+        compute_metrics=compute_metrics, trainer_args=collie_args
     )
     trainer.train()
 

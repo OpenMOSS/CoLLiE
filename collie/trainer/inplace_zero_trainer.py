@@ -21,7 +21,7 @@ class InplaceZeroTrainer:
             data_collator,
             eval_dataloader,
             eval_dataset,
-            tl_args,
+            collie_args,
             data_args,
             compute_metrics,
     ):
@@ -30,7 +30,7 @@ class InplaceZeroTrainer:
                 "Detected DeepSpeed is not installed. See https://github.com/microsoft/DeepSpeed")
         # Initialize deepspeed engine
         model, _, self.train_dataloader, _ = deepspeed.initialize(
-            config=tl_args.deepspeed,
+            config=collie_args.deepspeed,
             model=model,
             training_data=train_dataset,
             collate_fn=lambda x: data_collator(x, tokenizer, max_len=data_args.max_length),
@@ -38,7 +38,7 @@ class InplaceZeroTrainer:
         get_accelerator().empty_cache()
 
         # register inplace grad hook
-        self.grad_func = inplace_grad(model, lr=tl_args.learning_rate)
+        self.grad_func = inplace_grad(model, lr=collie_args.learning_rate)
         for n, p in model.named_parameters():
             p.register_hook(self.grad_func)
 
@@ -48,21 +48,21 @@ class InplaceZeroTrainer:
 
         self.model = model
         self.tokenizer = tokenizer
-        self.tl_args = tl_args
+        self.collie_args = collie_args
         self.metric = None
         self.compute_metrics = compute_metrics
-        self.wandb = WandbLogger(tl_args)
-        self.allow_print = self.tl_args.local_rank in [0, -1]
+        self.wandb = WandbLogger(collie_args)
+        self.allow_print = self.collie_args.local_rank in [0, -1]
 
     def train(self):
-        for epoch in range(self.tl_args.num_train_epochs):
+        for epoch in range(self.collie_args.num_train_epochs):
             with tqdm.tqdm(self.train_dataloader, disable=not self.allow_print) as tqb:
                 for step, batch in enumerate(tqb, start=1):
                     self.model.train()
                     outs = self.model(
-                        input_ids=batch['input_ids'].cuda(self.tl_args.local_rank),
-                        attention_mask=batch['attention_mask'].cuda(self.tl_args.local_rank),
-                        labels=batch['labels'].cuda(self.tl_args.local_rank),
+                        input_ids=batch['input_ids'].cuda(self.collie_args.local_rank),
+                        attention_mask=batch['attention_mask'].cuda(self.collie_args.local_rank),
+                        labels=batch['labels'].cuda(self.collie_args.local_rank),
                     )
                     outs['loss'].backward()
 
@@ -74,7 +74,7 @@ class InplaceZeroTrainer:
                     if self.allow_print:
                         self.wandb.log({'loss': outs['loss'].item()})
 
-                    if step % self.tl_args.eval_steps == 0 or step == len(self.train_dataloader):
+                    if step % self.collie_args.eval_steps == 0 or step == len(self.train_dataloader):
                         self.eval(step, epoch)
 
     def eval(self, step, epoch):
@@ -89,14 +89,14 @@ class InplaceZeroTrainer:
             result = self.compute_metrics(all_preds, self.eval_dataset)
             result['epoch'] = epoch
             result['step'] = step
-            result_value = result[self.tl_args.metric_for_best_model]
+            result_value = result[self.collie_args.metric_for_best_model]
 
             if self.allow_print:
-                print('epoch: ', epoch, 'step: ', step, self.tl_args.metric_for_best_model, ': ', result_value)
+                print('epoch: ', epoch, 'step: ', step, self.collie_args.metric_for_best_model, ': ', result_value)
                 self.wandb.log(result)
 
                 if self.is_better(result_value):
-                    self.wandb.set_summary('best_' + self.tl_args.metric_for_best_model, result_value)
+                    self.wandb.set_summary('best_' + self.collie_args.metric_for_best_model, result_value)
                     self.wandb.set_summary(f'best_epoch', epoch)
                     self.wandb.set_summary(f'best_step', step)
                     self.metric = result_value
@@ -104,9 +104,9 @@ class InplaceZeroTrainer:
     def eval_step(self, batch):
         logits = self.model.generate(
             batch['input_ids'], batch['attention_mask'],
-            max_new_tokens=self.tl_args.max_new_tokens,
-            temperature=self.tl_args.temperature,
-            top_p=self.tl_args.top_p
+            max_new_tokens=self.collie_args.max_new_tokens,
+            temperature=self.collie_args.temperature,
+            top_p=self.collie_args.top_p
         )
         logits = logits.tolist()
         pred_texts = self.tokenizer.batch_decode(logits)
@@ -118,7 +118,7 @@ class InplaceZeroTrainer:
 
         :param result:
         """
-        op = operator.gt if self.tl_args.greater_is_better else operator.lt
+        op = operator.gt if self.collie_args.greater_is_better else operator.lt
         return (
             key not in self.metrics or \
             op(result_dict[key], self.metrics[key])
