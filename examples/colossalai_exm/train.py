@@ -27,9 +27,10 @@ def compute_metrics(batch, generated_batch, epoch, step):
     """
     print(batch[0])
     golds = batch[0]["answer"].tolist()
-    assert len(generated_batch) == len(golds), f"# of predictions {len(generated_batch)} doesn't match # of references {len(golds)}."
+    preds = batch[0]["input_ids"].tolist()
+    assert len(preds) == len(golds), f"# of predictions {len(preds)} doesn't match # of references {len(golds)}."
 
-    acc = round(sum([int(pred == gold) for pred, gold in zip(generated_batch, golds)]) / len(golds), 6)
+    acc = round(sum([int(pred == gold) for pred, gold in zip(preds, golds)]) / len(golds), 6)
     result = {'acc': acc}
     return result
 
@@ -71,10 +72,11 @@ def train():
             tokenizer, max_length=data_args.max_length, padding_side='left'
         ),
     )
-
+    optimizer = torch.optim.SGD(llama_pipeline.parameters(), lr=0.0001)
     # ========== 4. Initialize our Trainer. ==========
     trainer = MyColossalaiTrainer(
         model=llama_pipeline, tokenizer=tokenizer,
+        optimizer=optimizer,
         train_dataloader=train_dataloader, eval_dataloader=eval_dataloader,
         compute_metrics=compute_metrics, trainer_args=tl_args
     )

@@ -20,7 +20,6 @@ max_length: 256
 few_shot_size: 30
 # tunelite
 # trainer
-learning_rate: 0.0001
 epochs: 10
 eval_per_steps: 5
 eval_per_epoches: 1

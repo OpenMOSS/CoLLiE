@@ -5,13 +5,13 @@ import json
 from torch.utils.data import DataLoader
 from colossalai.utils import print_rank_0
 
-sys.path.append("/mnt/lustre/luxingyu/TuneLite")
+sys.path.append("../../")
 from datasets import load_dataset
 from tunelite.models.llama_colossalai import HFLikeTokenizer, Tokenizer, ModelArgs
 from tunelite.models.llama_colossalai import load_state_dict, get_7B_llama, get_13B_llama
 from tunelite.trainer.colossalai_trainer import ColossalaiTrainer, TrainerArgs
 
-tokenizer_path = '/mnt/petrelfs/luxingyu/TuneLite/tokenizer.model'
+tokenizer_path = '/mnt/petrelfs/zhangshuo/projects/OptiLLM/colossalai/llama/tokenizer.model'
 alpaca_data_path = './alpaca_data.json'
 llama_7b_path = "hdd:s3://opennlplab_hdd/models/llama/llama-7b-hf"
 llama_13b_path = "hdd:s3://opennlplab_hdd/models/llama/llama-13b-hf"
@@ -89,20 +89,19 @@ def main():
 
     model_args = ModelArgs()
     model_args.pp_size = 8
-    model_args.micro_batch_size = 32
+    model_args.micro_batch_num = 128
     model_args.fp16 = True
     model_args.checkpoint = True
-    dense: str = "fused"  # raw, fused, apex
-    rms_norm: str = "raw"  # raw, apex
-    attention: str = "flash"  # raw, flash, col_flash, mem_eff
-    rotary_emb: str = "raw"  # raw, fused
+    model_args.dense: str = "raw"  # raw, fused, apex
+    model_args.rms_norm: str = "raw"  # raw, apex
+    model_args.attention: str = "raw"  # raw, flash, col_flash, mem_eff
+    model_args.rotary_emb: str = "raw"  # raw, fused
 
     trainer_args = TrainerArgs()
-    trainer_args.learning_rate = 2e-5
     trainer_args.epochs = 3
     trainer_args.eval_max_length = 128
-    trainer_args.eval_per_steps = 4
-    trainer_args.eval_per_epoches = 0
+    trainer_args.eval_per_steps = 10
+    trainer_args.eval_per_epoches = 1
     trainer_args.eval_stop_tokens = [2]
     trainer_args.eval_use_cache = False
     trainer_args.inplace = False
@@ -114,26 +113,29 @@ def main():
     # eval_data = alpaca_data[-32:] # reserve last 32 sample for eval
     # full data for real train
     train_data = alpaca_data[:49920]
-    eval_data = alpaca_data[-32:]  # reserve last 32 sample for eval
+    eval_data = alpaca_data[-128:]  # reserve last 32 sample for eval
     train_dataloader = DataLoader(
         train_data,
-        batch_size=64,
-        collate_fn=lambda x: collate_fn(mode='train', batch=x, tokenizer=tokenizer, max_length=512),
+        batch_size=128,
+        collate_fn=lambda x: collate_fn(mode='train', batch=x, tokenizer=tokenizer, max_length=1024),
         drop_last=True,
     )
     eval_dataloader = DataLoader(
         eval_data,
-        batch_size=32,
-        collate_fn=lambda x: collate_fn(mode='eval', batch=x, tokenizer=tokenizer, max_length=512),
+        batch_size=128,
+        collate_fn=lambda x: collate_fn(mode='eval', batch=x, tokenizer=tokenizer, max_length=1024),
         drop_last=True,
     )
-    # model = get_13B_llama(model_args)
-    # state_dict = load_state_dict(model_args=model_args, s3_folder=llama_13b_path)
-    model = get_7B_llama(model_args)
-    state_dict = load_state_dict(model_args=model_args, s3_folder=llama_7b_path)
+    model = get_13B_llama(model_args)
+    state_dict = load_state_dict(model_args=model_args, s3_folder=llama_13b_path)
+    # model = get_7B_llama(model_args)
+    # state_dict = load_state_dict(model_args=model_args, s3_folder=llama_7b_path)
     model.load_state_dict(state_dict)
+    
+    optimizer = torch.optim.SGD(model.parameters(), lr=2e-5)
     trainer = ColossalaiTrainer(
         model=model,
+        optimizer=optimizer,
         train_dataloader=train_dataloader,
         eval_dataloader=eval_dataloader,
         tokenizer=tokenizer,
