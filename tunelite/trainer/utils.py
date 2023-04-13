@@ -10,7 +10,6 @@ def inplace_grad(model, lr=5e-4):
                     p.data -= (lr * p.grad.data)
                     p.grad = None
         return x
-
     return func
 
 class GPTLMLoss(torch.nn.Module):
