@@ -1,0 +1,29 @@
+# model
+source: "raw" # raw, hf
+protocol: "file" # file, s3
+model_path: "/remote-home/share/llama/7B"
+tokenizer_path: "/remote-home/share/llama/tokenizer.model"
+pp_size: 6
+dp_size: 1
+micro_batch_num: 1
+fp16: True
+checkpoint: True
+dense: "raw" # raw, fused, apex
+attention: "raw" # raw, flash, col_flash, mem_eff
+rotary_emb: "raw" # raw, fused
+rms_norm: "raw" # raw, apex
+# data
+dataset_name: 'openbookqa'
+refresh: false
+data_tag: 'src'
+max_length: 256
+few_shot_size: 30
+# tunelite
+# trainer
+epochs: 10
+eval_per_steps: 5
+eval_per_epoches: 1
+eval_max_length: 128
+# eval_stop_tokens: [2]
+eval_top_p: 0.95
+eval_temperature: 0.8

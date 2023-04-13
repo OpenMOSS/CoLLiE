@@ -17,13 +17,12 @@ def inplace_grad(model, lr=5e-4):
                     p.data -= (lr * p.grad.data)
                     p.grad = None
         return x
-
     return func
 
 class GPTLMLoss(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        self.loss = torch.nn.CrossEntropyLoss()
+        self.loss = torch.nn.CrossEntropyLoss(ignore_index=0)  # ignore <pad> when compute loss
 
     def forward(self, logits, labels):
         shift_logits = logits[..., :-1, :].contiguous()

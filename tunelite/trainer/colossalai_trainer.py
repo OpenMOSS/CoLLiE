@@ -1,3 +1,7 @@
+import sys
+sys.path.append("..")
+
+from .utils import GPTLMLoss, sample_top_p
 import os
 import tqdm
 import torch
@@ -5,10 +9,6 @@ from itertools import cycle
 from functools import partial
 from typing import List, Tuple, Dict
 from dataclasses import dataclass, field
-
-from .utils import GPTLMLoss
-# torch.cuda.set_per_process_memory_fraction(0.3, int(os.environ.get("RANK")))
-
 try:
     import colossalai
     from colossalai.core import global_context as gpc
@@ -16,12 +16,9 @@ try:
 except ModuleNotFoundError:
     raise ModuleNotFoundError(
         "Detected Colossal-AI is not installed. See https://github.com/hpcaitech/ColossalAI")
-        
+
 @dataclass
 class TrainerArgs:
-    learning_rate: float = field(
-        default=2e-5, 
-        metadata={"help": "The initial learning rate for SGD."})
     epochs: int = field(
         default=10,
         metadata={"help": "Total number of training epochs to perform. "
@@ -43,18 +40,21 @@ class TrainerArgs:
                   "If it is set to -1, the evaluation will run until the stop tokens are generated."})
     eval_stop_tokens: List[int] = field(
         default_factory=partial(list, [2]),
-        metadata={"help": "The stop tokens when evaluating."})
+        metadata={"help": "The stop tokens when evaluating or generating."})
     eval_top_p: float = field(
         default=0.9,
-        metadata={"help": "The top_p when evaluating."})
+        metadata={"help": "The top_p when evaluating or generating."})
     eval_temperature: float = field(
         default=1.0,
-        metadata={"help": "The temperature when evaluating."})
-    
+        metadata={"help": "The temperature when evaluating or generating."})
+    eval_use_cache : bool = field(
+        default=True,
+        metadata={"help": "Whether to use key/value cache when evaluating or generating."})
 
 class ColossalaiTrainer:
     def __init__(self,
                  model,
+                 optimizer,
                  tokenizer,
                  train_dataloader,
                  eval_dataloader,
@@ -64,7 +64,7 @@ class ColossalaiTrainer:
         self.tokenizer = tokenizer
         self.compute_metrics = compute_metrics
         self.trainer_args = trainer_args
-        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=trainer_args.learning_rate)
+        self.optimizer = optimizer
         self.engine, self.train_dataloader, self.eval_dataloader, _ = colossalai.initialize(
             model=self.model,
             train_dataloader=train_dataloader,
@@ -72,7 +72,7 @@ class ColossalaiTrainer:
             optimizer=self.optimizer,
             criterion=GPTLMLoss()
         )
-        
+
     def train(self):
         self.engine.train()
         def train_loop(epoch: int = 0):
@@ -86,7 +86,6 @@ class ColossalaiTrainer:
                         return_output_label=False,
                     )
                     self.engine.step()
-                    torch.cuda.empty_cache()
                     if gpc.is_pipeline_last_stage():
                         tqb.set_postfix({'epoch': epoch, 'step': step, 'loss': loss.item()})
                     if self.trainer_args.eval_per_steps == 0:
@@ -117,55 +116,84 @@ class ColossalaiTrainer:
                     self.eval(epoch, 0)
                 elif self.trainer_args.eval_per_epoches > 0 and (epoch + 1) % self.trainer_args.eval_per_epoches == 0:
                     self.eval(epoch, 0)
-                        
-    @torch.no_grad()           
+
+    @torch.no_grad()
     def generate(self,
-                 batch: Tuple[Dict[str, torch.Tensor], torch.Tensor],
+                 input_ids: torch.Tensor,
                  max_length: int = 1024,
+                 use_cache: bool = True,
                  stop_tokens: List[int] = [2]):
-        with tqdm.tqdm(range(max_length), disable=not gpc.is_pipeline_last_stage()) as tqb:
-            past_key_value = torch.empty(batch[0]["input_ids"].shape[0], 0).to(torch.device(f"cuda:{os.environ['LOCAL_RANK']}")) # shape: (batch_size, 0)
+        assert input_ids.ndim == 2, "input_ids must be 2D tensor (B, N)"
+        # flag vector to control early stop batch generate
+        stop_generate_flag_vector = torch.zeros(input_ids.shape[0], dtype=torch.bool)
+        min_len = min([len(torch.nonzero(sample)) for sample in input_ids])
+        if max_length > input_ids.shape[1]:
+            input_ids = torch.nn.functional.pad(input_ids, (0, max_length - input_ids.shape[1]), value=0)
+        cached_len = 0
+        # generate loop:
+        with tqdm.tqdm(range(min_len, max_length), disable=not gpc.is_pipeline_last_stage()) as tqb:
             for current_pos in tqb:
+                active_batch_idx = torch.flatten(torch.argwhere(~stop_generate_flag_vector))
                 try:
                     self.engine.eval()
-                    hidden_states, label, _ = self.engine.execute_schedule(
+                    hidden_states, _, _ = self.engine.execute_schedule(
                         cycle([({
-                            # "input_ids": batch[0]["input_ids"][:, current_pos:current_pos+1],
-                            "input_ids": batch[0]["input_ids"],
-                            # "past_key_value": past_key_value
-                        }, batch[0]["input_ids"])]),
+                            "input_ids": input_ids[:, cached_len:current_pos] if use_cache else input_ids[:, :current_pos],
+                            "use_cache": torch.ones(input_ids.shape[0], dtype=torch.bool) if use_cache else torch.zeros(input_ids.shape[0], dtype=torch.bool)
+                        }, input_ids)]),
                         forward_only=True,
                         return_loss=False,
                         return_output_label=True,
                     )
-                    current_pos += 1
-                    next_tokens = torch.zeros(batch[0]["input_ids"].shape[0], 1, dtype=torch.long).to(torch.device(f"cuda:{os.environ['LOCAL_RANK']}"))
+                    cached_len = current_pos
+                    next_tokens = torch.zeros(input_ids.shape[0], 1, dtype=torch.long).to(
+                        torch.device(f"cuda:{os.environ['LOCAL_RANK']}"))
                     if gpc.is_pipeline_last_stage():
-                        next_tokens = torch.argmax(hidden_states[:, -1, :], dim=-1)
+                        # top-p分布
+                        scores = hidden_states[:,-1,:]
+                        sorted_logits, sorted_indicies = torch.sort(scores, descending=True)
+                        cumulative_probs = sorted_logits.softmax(dim=-1).cumsum(dim=-1)
+                        sorted_indices_to_remove = cumulative_probs > self.trainer_args.eval_top_p
+                        sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+                        sorted_indices_to_remove[..., 0] = 0
+                        indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indicies, sorted_indices_to_remove)
+                        scores = scores.masked_fill(indices_to_remove, -float('inf'))
+                        # 温度采样
+                        scores = torch.exp(scores / self.trainer_args.eval_temperature)
+                        scores = scores / torch.sum(scores)
+                        # next_tokens = torch.argmax(hidden_states[:, -1, :], dim=-1)
+                        next_tokens = torch.multinomial(scores, num_samples=1).squeeze(1)
                         next_tokens = torch.unsqueeze(next_tokens, dim=-1)
                     torch.distributed.broadcast(next_tokens, src=gpc.get_world_size(ParallelMode.PIPELINE) - 1)
-                    next_tokens = next_tokens.to(batch[0]["input_ids"].device)
-                    while current_pos >= batch[0]["input_ids"].shape[1]:
-                        batch[0]["input_ids"] = torch.cat([batch[0]["input_ids"], torch.zeros_like(next_tokens)], dim=1)
-                    batch[0]["input_ids"][:, current_pos] = torch.where(batch[0]["input_ids"][:, current_pos] == 0, next_tokens[:, 0], batch[0]["input_ids"][:, current_pos])
+                    next_tokens = next_tokens.to(input_ids.device)
+                    input_ids[active_batch_idx, current_pos] = torch.where(input_ids[active_batch_idx, current_pos] == 0, next_tokens[active_batch_idx, 0],
+                                                                           input_ids[active_batch_idx, current_pos])
                     tqb.set_postfix({'generating': f"{current_pos}/{max_length}"})
-                    for i in torch.flatten(next_tokens).tolist():
-                            if i in stop_tokens:
-                                raise StopIteration
+                    # check if can stop generate using stop_generate_flag_vector
+                    for stop_token in stop_tokens:
+                        for i in range(len(stop_generate_flag_vector)):
+                            if not stop_generate_flag_vector[i] and \
+                                    stop_token in input_ids[i][:current_pos]:
+                                stop_generate_flag_vector[i] = True
+                    if all(stop_generate_flag_vector):
+                        raise StopIteration
                     torch.cuda.empty_cache()
                 except StopIteration:
                     break
-        return batch
-    
-    def eval(self, epoch, step):
+        return input_ids
+
+    def eval(self, epoch=0, step=0):
         with tqdm.tqdm(self.eval_dataloader, disable=not gpc.is_pipeline_last_stage()) as tqb:
             for eval_step, batch in enumerate(tqb, start=1):
+                input_dict = batch[0]
+                label = batch[1]
                 with torch.no_grad():
-                    generated_batch = self.generate(batch,
-                                                    max_length=self.trainer_args.eval_max_length,
-                                                    stop_tokens=self.trainer_args.eval_stop_tokens)
+                    input_dict['input_ids'] = self.generate(input_dict['input_ids'],
+                                                            max_length=self.trainer_args.eval_max_length,
+                                                            stop_tokens=self.trainer_args.eval_stop_tokens,
+                                                            use_cache=self.trainer_args.eval_use_cache)
+                    torch.cuda.empty_cache()
                     if gpc.is_pipeline_last_stage() and self.compute_metrics is not None:
-                        self.compute_metrics(batch, generated_batch, epoch, step)
+                        self.compute_metrics((input_dict, label), epoch, step)
                 tqb.set_postfix({'evaluating': f"{eval_step}/{len(self.eval_dataloader)}"})
             torch.cuda.empty_cache()
-            print(torch.cuda.memory_allocated())
