@@ -2,17 +2,13 @@ import sys
 sys.path.append("..")
 
 from .utils import GPTLMLoss, sample_top_p
-
 import os
 import tqdm
 import torch
 from itertools import cycle
 from functools import partial
-
 from typing import List, Tuple, Dict
-
 from dataclasses import dataclass, field
-
 try:
     import colossalai
     from colossalai.core import global_context as gpc

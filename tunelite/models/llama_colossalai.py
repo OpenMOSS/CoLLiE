@@ -8,8 +8,6 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from sentencepiece import SentencePieceProcessor
-
 import io
 import os
 import time
@@ -21,7 +19,7 @@ from io import BytesIO
 from einops import rearrange
 from dataclasses import dataclass
 from collections import OrderedDict
-from typing import Optional, Callable, List, Union, Dict
+from typing import Optional, Callable, Dict
 
 try:
     import colossalai
@@ -62,7 +60,6 @@ try:
 except ModuleNotFoundError:
     memory_efficient_attention = None
     LowerTriangularMask = None
-
 
 class Tokenizer:
     def __init__(self, model_path: str):
@@ -143,8 +140,7 @@ class HFLikeTokenizer:
 
     def decode(self, tokens):
         return self.tokenizer.decode(tokens)
-
-
+        
 @dataclass
 class ModelArgs:
     # model parameters
