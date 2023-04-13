@@ -49,13 +49,12 @@ def main():
     trainer_args.eval_per_steps = 100
     trainer_args.eval_per_epoches = 1
     trainer_args.learning_rate = 2e-5
-    trainer_args.inplace = False
     
     model = get_7B_llama(model_args)
     state_dict = load_state_dict(model_args=model_args, s3_folder="hdd:s3://opennlplab_hdd/models/llama/llama-7b-hf")
     model.load_state_dict(state_dict)
     train_dataloader = DataLoader(
-        [{"text": " ".join(["love" for i in range(512)])} for _ in range(64000)],
+        [{"text": "My name is MOSS, and my responsibility is to help people fine-tuning large language models more easily."} for _ in range(128)],
         batch_size=128,
         collate_fn=lambda x: collate_fn(x, tokenizer, 1024),
     )
@@ -70,7 +69,7 @@ def main():
                                 tokenizer=tokenizer,
                                 compute_metrics=compute_metrics,
                                 trainer_args=trainer_args)
-    trainer.eval()
+    trainer.train()
     
     
 # Command: CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 torchrun --standalone --nnodes=1 --nproc_per_node=8 train_colossalai.py

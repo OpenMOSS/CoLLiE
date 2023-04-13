@@ -54,19 +54,6 @@ class TrainerArgs:
     eval_use_cache : bool = field(
         default=True,
         metadata={"help": "Whether to use key/value cache when evaluating or generating."})
-    inplace : bool = field(
-        default=False,
-        metadata={"help": "Whether to use inplace gradient update."})
-
-def inplace_grad(model, lr=5e-4, micro_batch_num: int = 1):
-    def func(x):
-        with torch.no_grad():
-            for n, p in model.named_parameters():
-                if p.requires_grad and p.grad is not None and p.shape != torch.Size([0]):
-                    p.data -= (lr * p.grad.data) / micro_batch_num
-                    p.grad = None
-        return x
-    return func
 
 class ColossalaiTrainer:
     def __init__(self,
@@ -81,10 +68,6 @@ class ColossalaiTrainer:
         self.tokenizer = tokenizer
         self.compute_metrics = compute_metrics
         self.trainer_args = trainer_args
-        if self.trainer_args.inplace:
-            self.grad_func = inplace_grad(model, lr=trainer_args.learning_rate, micro_batch_num=model.model_args.micro_batch_num)
-            for n, p in self.model.named_parameters():
-                p.register_hook(self.grad_func)
         self.optimizer = optimizer
         self.engine, self.train_dataloader, self.eval_dataloader, _ = colossalai.initialize(
             model=self.model,
@@ -106,11 +89,9 @@ class ColossalaiTrainer:
                         return_loss=True,
                         return_output_label=False,
                     )
-                    if not self.trainer_args.inplace:
-                        self.engine.step()
+                    self.engine.step()
                     if gpc.is_pipeline_last_stage():
                         tqb.set_postfix({'epoch': epoch, 'step': step, 'loss': loss.item()})
-
                     if self.trainer_args.eval_per_steps == 0:
                         continue
                     elif self.trainer_args.eval_per_steps == -1:
