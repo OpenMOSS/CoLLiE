@@ -175,7 +175,7 @@ class InplaceTensorTrainer:
                     self.wandb.set_summary(f'{eval_prefix}/best_{self.tl_args.metric_for_best_model}', result_value)
                     self.wandb.set_summary(f'{eval_prefix}/best_epoch', epoch)
                     self.wandb.set_summary(f'{eval_prefix}/best_step', step)
-                    self.metric[prefix_metric_for_best_model] = result_value
+                    self.metrics[prefix_metric_for_best_model] = result_value
 
     def eval_step(self, batch):
         self.model.eval()
