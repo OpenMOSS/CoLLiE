@@ -6,7 +6,7 @@ refresh: false
 data_tag: 'dummy_data'
 train_on_inputs: false
 max_length: 32
-# tunelite
+# collie
 output_dir: './output'
 do_eval: true
 per_device_train_batch_size: 2

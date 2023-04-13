@@ -7,7 +7,7 @@ from torch.utils.data import RandomSampler, SequentialSampler, DataLoader
 from transformers.trainer_pt_utils import LengthGroupedSampler
 from transformers.trainer_utils import has_length, seed_worker
 
-from tunelite.log import print
+from collie.log import print
 from .utils import LearningRateScheduler, WandbLogger
 
 
@@ -15,7 +15,7 @@ class InplaceTensorTrainer:
     def __init__(
             self,
             model,
-            tl_args,
+            collie_args,
             data_collator,
             train_dataset,
             eval_dataset,
@@ -23,7 +23,7 @@ class InplaceTensorTrainer:
             compute_metrics,
     ):
         self.model = model
-        self.tl_args = tl_args
+        self.collie_args = collie_args
         if isinstance(data_collator, dict):
             assert 'train' in data_collator and 'eval' in data_collator, "data_collator should be a dict with keys 'train' and 'eval'."
             self.train_data_collator = data_collator['train']
@@ -34,8 +34,8 @@ class InplaceTensorTrainer:
         self.eval_dataset = eval_dataset
         self.tokenizer = tokenizer
         self.compute_metrics = compute_metrics
-        self.wandb = WandbLogger(tl_args)
-        self.allow_print = self.tl_args.local_rank in [0, -1]
+        self.wandb = WandbLogger(collie_args)
+        self.allow_print = self.collie_args.local_rank in [0, -1]
         self.metrics = {}
         
         self.train_dataloader = self.get_train_dataloader()
@@ -48,10 +48,10 @@ class InplaceTensorTrainer:
 
         self.num_steps_per_epoch = len(self.train_dataloader)
         self.global_step = 1
-        self.n_steps = self.num_steps_per_epoch * self.tl_args.num_train_epochs
-        self.lr_scheduler = LearningRateScheduler(learning_rate=self.tl_args.learning_rate,
-                                                  warmup=self.tl_args.warmup,
-                                                  schedule=self.tl_args.lr_scheduler_type,
+        self.n_steps = self.num_steps_per_epoch * self.collie_args.num_train_epochs
+        self.lr_scheduler = LearningRateScheduler(learning_rate=self.collie_args.learning_rate,
+                                                  warmup=self.collie_args.warmup,
+                                                  schedule=self.collie_args.lr_scheduler_type,
                                                   n_steps=self.n_steps)
         self.lr = 0
 
@@ -67,9 +67,9 @@ class InplaceTensorTrainer:
             with torch.no_grad():
                 for n, p in self.model.named_parameters():
                     if p.requires_grad and p.grad is not None and p.shape != torch.Size([0]):
-                        if self.tl_args.clip_grad_value is not None:
+                        if self.collie_args.clip_grad_value is not None:
                             # Graidiens are modified in-palce.
-                            p.grad.data.clamp_(min=-self.tl_args.clip_grad_value, max=self.tl_args.clip_grad_value)
+                            p.grad.data.clamp_(min=-self.collie_args.clip_grad_value, max=self.collie_args.clip_grad_value)
                         p.data -= (self.lr * p.grad.data)
                         p.grad = None
             return x
@@ -77,11 +77,11 @@ class InplaceTensorTrainer:
         return func
 
     def train(self):
-        for epoch in range(self.tl_args.num_train_epochs):
+        for epoch in range(self.collie_args.num_train_epochs):
             print(f"***** Running Training *****")
             print(f"  Num examples: {len(self.train_dataset)}")
-            print(f"  Num Epochs: {self.tl_args.num_train_epochs}")
-            print(f"  Batch Size: {self.tl_args.per_device_train_batch_size}")
+            print(f"  Num Epochs: {self.collie_args.num_train_epochs}")
+            print(f"  Batch Size: {self.collie_args.per_device_train_batch_size}")
             if self.allow_print:
                 self.wandb.log({'train/epoch': epoch}, step=self.global_step)
 
@@ -94,11 +94,11 @@ class InplaceTensorTrainer:
                     shift_logits = outs[..., :-1, :].contiguous()
                     shift_labels = batch['labels'][:, 1:].contiguous()
                     # Flatten the tokens
-                    if self.tl_args.clip_loss_value is not None:
+                    if self.collie_args.clip_loss_value is not None:
                         loss_fct = CrossEntropyLoss(reduction='none')
                         loss = loss_fct(shift_logits.view(shift_labels.shape[0] * shift_labels.shape[1], -1),
                                         shift_labels.view(-1))
-                        loss.data.clamp_(min=-self.tl_args.clip_loss_value, max=self.tl_args.clip_loss_value)
+                        loss.data.clamp_(min=-self.collie_args.clip_loss_value, max=self.collie_args.clip_loss_value)
                         loss = loss.mean()
                     else:
                         loss_fct = CrossEntropyLoss()
@@ -119,11 +119,12 @@ class InplaceTensorTrainer:
                                 'train/loss': loss.item(),
                                 'train/learning_rate': self.lr,
                                 'train/global_step': self.global_step,
-                            }
+                            },
+                            step=self.global_step
                         )
 
-                    if self.tl_args.do_eval and self.tl_args.evaluation_strategy == 'steps' and \
-                            self.global_step % self.tl_args.eval_steps == 0:
+                    if self.collie_args.do_eval and self.collie_args.evaluation_strategy == 'steps' and \
+                            self.global_step % self.collie_args.eval_steps == 0:
                         if isinstance(self.eval_dataset, dict):
                             for prefix in self.eval_dataset.keys():
                                 assert prefix in self.eval_dataloader.keys(), "eval_dataset and eval_dataloader should have the same keys."
@@ -131,7 +132,7 @@ class InplaceTensorTrainer:
                         else:
                             self.eval(self.global_step, epoch, self.eval_dataset, self.eval_dataloader, 'eval')
 
-            if self.tl_args.do_eval and self.tl_args.evaluation_strategy == 'epoch':
+            if self.collie_args.do_eval and self.collie_args.evaluation_strategy == 'epoch':
                 if isinstance(self.eval_dataset, dict):
                     for prefix in self.eval_dataset.keys():
                         assert prefix in self.eval_dataloader.keys(), "eval_dataset and eval_dataloader should have the same keys."
@@ -152,7 +153,7 @@ class InplaceTensorTrainer:
         """
         print(f"***** Running {eval_prefix} *****")
         print(f"  Num examples: {len(dataset)}")
-        print(f"  Batch size: {self.tl_args.per_device_eval_batch_size}")
+        print(f"  Batch size: {self.collie_args.per_device_eval_batch_size}")
 
         with tqdm.tqdm(dataloader, disable=not self.allow_print) as tqb:
             all_preds = None
@@ -164,15 +165,15 @@ class InplaceTensorTrainer:
 
             result = self.compute_metrics(all_preds, dataset)
             result = {f"{eval_prefix}/{k}": v for k, v in result.items()}
-            prefix_metric_for_best_model = f'{eval_prefix}/{self.tl_args.metric_for_best_model}'
+            prefix_metric_for_best_model = f'{eval_prefix}/{self.collie_args.metric_for_best_model}'
             result_value = result[prefix_metric_for_best_model]
 
             if self.allow_print:
-                print(f'epoch: {epoch}, step: {step}, {self.tl_args.metric_for_best_model}: {result_value}')
+                print(f'epoch: {epoch}, step: {step}, {self.collie_args.metric_for_best_model}: {result_value}')
                 self.wandb.log(result, step=step)
 
                 if self.is_better(result, prefix_metric_for_best_model):
-                    self.wandb.set_summary(f'{eval_prefix}/best_{self.tl_args.metric_for_best_model}', result_value)
+                    self.wandb.set_summary(f'{eval_prefix}/best_{self.collie_args.metric_for_best_model}', result_value)
                     self.wandb.set_summary(f'{eval_prefix}/best_epoch', epoch)
                     self.wandb.set_summary(f'{eval_prefix}/best_step', step)
                     self.metrics[prefix_metric_for_best_model] = result_value
@@ -181,9 +182,9 @@ class InplaceTensorTrainer:
         self.model.eval()
         logits = self.model.generate(
             batch['input_ids'], batch['attention_mask'],
-            max_new_tokens=self.tl_args.max_new_tokens,
-            temperature=self.tl_args.temperature,
-            top_p=self.tl_args.top_p
+            max_new_tokens=self.collie_args.max_new_tokens,
+            temperature=self.collie_args.temperature,
+            top_p=self.collie_args.top_p
         )
         logits = logits.tolist()
         pred_texts = self.tokenizer.batch_decode(logits)
@@ -195,7 +196,7 @@ class InplaceTensorTrainer:
 
         :param result:
         """
-        op = operator.gt if self.tl_args.greater_is_better else operator.lt
+        op = operator.gt if self.collie_args.greater_is_better else operator.lt
         return (
             key not in self.metrics or \
             op(result_dict[key], self.metrics[key])
@@ -207,14 +208,14 @@ class InplaceTensorTrainer:
 
         generator = torch.Generator(device='cuda')
         # for backwards compatibility, we generate a seed here (which is sampled from a generator seeded with
-        # `self.tl_args.seed`) if data_seed isn't provided.
-        # Further on in this method, we default to `self.tl_args.seed` instead.
-        seed = self.tl_args.data_seed if self.tl_args.data_seed is not None else self.tl_args.seed
+        # `self.collie_args.seed`) if data_seed isn't provided.
+        # Further on in this method, we default to `self.collie_args.seed` instead.
+        seed = self.collie_args.data_seed if self.collie_args.data_seed is not None else self.collie_args.seed
         generator.manual_seed(seed)
 
-        if self.tl_args.group_by_length:
+        if self.collie_args.group_by_length:
             return LengthGroupedSampler(
-                self.tl_args.per_device_train_batch_size * self.tl_args.gradient_accumulation_steps,
+                self.collie_args.per_device_train_batch_size * self.collie_args.gradient_accumulation_steps,
                 dataset=self.train_dataset,
                 lengths=None,
                 model_input_name="input_ids",
@@ -238,12 +239,12 @@ class InplaceTensorTrainer:
 
         return DataLoader(
             self.train_dataset,
-            batch_size=self.tl_args.per_device_train_batch_size,
+            batch_size=self.collie_args.per_device_train_batch_size,
             sampler=train_sampler,
             collate_fn=data_collator,
-            drop_last=self.tl_args.dataloader_drop_last,
-            num_workers=self.tl_args.dataloader_num_workers,
-            pin_memory=self.tl_args.dataloader_pin_memory,
+            drop_last=self.collie_args.dataloader_drop_last,
+            num_workers=self.collie_args.dataloader_num_workers,
+            pin_memory=self.collie_args.dataloader_pin_memory,
             worker_init_fn=seed_worker,
         )
 
@@ -271,9 +272,9 @@ class InplaceTensorTrainer:
         return DataLoader(
             eval_dataset,
             sampler=eval_sampler,
-            batch_size=self.tl_args.per_device_eval_batch_size,
+            batch_size=self.collie_args.per_device_eval_batch_size,
             collate_fn=data_collator,
-            drop_last=self.tl_args.dataloader_drop_last,
-            num_workers=self.tl_args.dataloader_num_workers,
-            pin_memory=self.tl_args.dataloader_pin_memory,
+            drop_last=self.collie_args.dataloader_drop_last,
+            num_workers=self.collie_args.dataloader_num_workers,
+            pin_memory=self.collie_args.dataloader_pin_memory,
         )

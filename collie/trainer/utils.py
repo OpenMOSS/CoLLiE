@@ -90,16 +90,16 @@ class WandbLogger:
     """
     使用 wandb 记录信息的类。
 
-    :param tl_args: Tunelite 的参数
+    :param collie_args: Collie 的参数
     """
-    def __init__(self, tl_args):
-        self.tl_args = tl_args
+    def __init__(self, collie_args):
+        self.collie_args = collie_args
         # report_to is a list
-        self.able = "wandb" in getattr(tl_args, "report_to", [])
+        self.able = "wandb" in getattr(collie_args, "report_to", [])
         if self.able and 'wandb' not in sys.modules:
             raise ModuleNotFoundError(
                 "Detected Wandb not installed while you have set "
-                "`report_to=['wandb']` in your tunelite config. Please "
+                "`report_to=['wandb']` in your collie config. Please "
                 "either set `report_to` to another value or install wandb.")
 
     def log(self, *args, **kwargs):

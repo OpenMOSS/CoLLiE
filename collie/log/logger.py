@@ -1,10 +1,10 @@
 r"""
-:class:`Logger` 是 **tunelite** 中记录日志的模块，**logger** 封装了 logging 模块的 Logger，
+:class:`Logger` 是 **collie** 中记录日志的模块，**logger** 封装了 logging 模块的 Logger，
 具体使用方式与直接使用 :class:`logging.Logger` 相同，同时也新增一些简单好用的API
 
 使用方式::
 
-    from tunelite import logger
+    from collie import logger
 
     # logger 可以和 logging.Logger 一样使用
     logger.info('your msg')
@@ -39,10 +39,10 @@ __all__ = [
     'logger'
 ]
 
-from tunelite.log.handler import StdoutStreamHandler, TqdmLoggingHandler
+from collie.log.handler import StdoutStreamHandler, TqdmLoggingHandler
 
 
-ROOT_NAME = 'tunelite'
+ROOT_NAME = 'collie'
 
 
 class LoggerSingleton(type):
@@ -54,7 +54,7 @@ class LoggerSingleton(type):
         return cls._instances[cls]
 
 
-class TuneLiteLogger(logging.Logger, metaclass=LoggerSingleton):
+class CollieLogger(logging.Logger, metaclass=LoggerSingleton):
     def __init__(self, name):
         super().__init__(name)
         self._warning_msgs = set()
@@ -66,7 +66,7 @@ class TuneLiteLogger(logging.Logger, metaclass=LoggerSingleton):
 
         :param path: 若 path 为文件路径（通过 path 是否包含后缀判定 path 是否表示文件名，例如 output.log 会被认为是文件，而
                 output 则认为是文件夹）则直接写入到给定文件中；如果判定为文件夹，则是在该文件夹下以 时间戳 创建一个日志文件。
-        :param level: 可选 ['INFO', 'WARNING', 'DEBUG', 'ERROR', 'AUTO'], 其中AUTO表示根据环境变量"TUNELITE_LOG_LEVEL'进行
+        :param level: 可选 ['INFO', 'WARNING', 'DEBUG', 'ERROR', 'AUTO'], 其中AUTO表示根据环境变量"COLLIE_LOG_LEVEL'进行
             设置。
         :param remove_other_handlers: 是否移除其它 handler ，如果移除，则terminal中将不会有 log 输出。
         :param mode: 可选为['w', 'a']，如果传入的 path 是存在的文件，'w' 会覆盖原有内容 'a' 则会在文件结尾处继续添加。
@@ -82,7 +82,7 @@ class TuneLiteLogger(logging.Logger, metaclass=LoggerSingleton):
         设置 log 的 terminal 输出形式。
 
         :param stdout: 可选['rich', 'naive', 'raw', 'none']。
-        :param level: 可选 ['INFO', 'WARNING', 'DEBUG', 'ERROR', 'AUTO'], 其中AUTO表示根据环境变量"TUNELITE_LOG_LEVEL'进行
+        :param level: 可选 ['INFO', 'WARNING', 'DEBUG', 'ERROR', 'AUTO'], 其中AUTO表示根据环境变量"COLLIE_LOG_LEVEL'进行
             设置。
         :return:
         """
@@ -214,7 +214,7 @@ class TuneLiteLogger(logging.Logger, metaclass=LoggerSingleton):
 
     def _set_distributed(self):
         """
-        在 tunelite 拉起进程的时候，调用一下这个方法，使得能够输出 rank 信息
+        在 collie 拉起进程的时候，调用一下这个方法，使得能够输出 rank 信息
 
         :return:
         """
@@ -281,7 +281,7 @@ def _add_file_handler(_logger: logging.Logger, path: Optional[Union[str, Path]] 
     # 这里只要检测到是分布式训练，我们就将 evaluate_fn 改为 "a"；这样会导致的一个问题在于，如果第二次训练也是分布式训练，logger记录的log不会重新
     #  覆盖掉原文件，而是会接着上一次的 log 继续添加；
     # 这样做主要是为了解决这样的情形所导致的问题：在分布式训练中，进程 1 比 进程 0 先运行到这里，然后使得进程 0 将进程 1 的 log 覆盖掉；
-    # if torch.distributed.is_initialized():# and int(os.environ.get(TUNELITE_GLOBAL_RANK, 0)) != 0:
+    # if torch.distributed.is_initialized():# and int(os.environ.get(COLLIE_GLOBAL_RANK, 0)) != 0:
     #     mode = "a"
 
     file_handler = logging.FileHandler(path, mode=mode)
@@ -353,7 +353,7 @@ def _init_logger(path=None, stdout='rich', level='INFO'):
     r"""initialize _logger"""
     level = _get_level(level)
 
-    logger = TuneLiteLogger(ROOT_NAME)
+    logger = CollieLogger(ROOT_NAME)
 
     logger.propagate = False
 

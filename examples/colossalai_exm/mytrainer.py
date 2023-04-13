@@ -11,7 +11,7 @@ except ModuleNotFoundError:
     raise ModuleNotFoundError(
         "Detected Colossal-AI is not installed. See https://github.com/hpcaitech/ColossalAI")
 
-from tunelite.trainer.colossalai_trainer import ColossalaiTrainer
+from collie.trainer.colossalai_trainer import ColossalaiTrainer
 
 IGNORE_INDEX = -100
 

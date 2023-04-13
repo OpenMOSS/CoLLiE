@@ -557,7 +557,7 @@ def load_state_dict(protocol: str = "s3",
                     s3_folder: str = "hdd:s3://opennlplab_hdd/models/llama/llama-7b-hf",
                     model_args: ModelArgs = ModelArgs()) -> Dict[str, torch.tensor]:
     assert source in ["hf", "raw",
-                      "tunelite"], "source must be hf or raw or tunelite"
+                      "collie"], "source must be hf or raw or collie"
     assert protocol in ["s3", "file"], "protocol must be one of s3, file"
     state_dict = OrderedDict()
     part_state_dict = OrderedDict()
@@ -568,7 +568,7 @@ def load_state_dict(protocol: str = "s3",
             client = Client()
             if not s3_folder.endswith("/"):
                 s3_folder = f"{s3_folder}/"
-            if source == "raw" or source == "tunelite":
+            if source == "raw" or source == "collie":
                 weights = [weight for weight in client.list(
                     s3_folder) if weight.endswith(".pth")]
             elif source == "hf":
@@ -604,14 +604,14 @@ def load_state_dict(protocol: str = "s3",
                             else:
                                 state_dict[key] = value
                             state_dict.update(raw_state_dict)
-                        elif source == "tunelite":
+                        elif source == "collie":
                             state_dict.update(raw_state_dict)
                     buffer.close()
                     pbar.update(1)
         elif protocol == "file":
             if not file_folder.endswith("/"):
                 file_folder = f"{file_folder}/"
-            if source == "raw" or source == "tunelite":
+            if source == "raw" or source == "collie":
                 weights = [weight for weight in list(
                     os.listdir(file_folder)) if weight.endswith(".pth")]
             elif source == "hf":
@@ -647,12 +647,12 @@ def load_state_dict(protocol: str = "s3",
                             else:
                                 state_dict[key] = value
                             state_dict.update(raw_state_dict)
-                        elif source == "tunelite":
+                        elif source == "collie":
                             state_dict.update(raw_state_dict)
                     pbar.update(1)
         parts = partition_uniform(
             model_args.num_hidden_layers, model_args.pp_size, num_chunks=1)
-        tempdir[0] = f"/dev/shm/TuneLite-{round(time.time() * 1000)}/"
+        tempdir[0] = f"/dev/shm/Collie-{round(time.time() * 1000)}/"
         os.makedirs(tempdir[0])
         for pp_rank, [(start, end)] in enumerate(parts):
             part_state_dict = OrderedDict()
@@ -725,12 +725,12 @@ def load_state_dict(protocol: str = "s3",
 def save_state_dict(model: nn.Module,
                     protocol: str = "s3",
                     file_folder: str = "/mnt/lustre/zhangshuo/model",
-                    s3_folder: str = "hdd:s3://opennlplab_hdd/models/llama-tunelite/llama-7b/",
+                    s3_folder: str = "hdd:s3://opennlplab_hdd/models/llama-collie/llama-7b/",
                     model_args: ModelArgs = ModelArgs()):
     assert protocol in ["s3", "file"], "protocol must be one of s3, file"
     tempdir = [""]
     if gpc.get_global_rank() == 0:
-        tempdir[0] = f"/dev/shm/TuneLite-{round(time.time() * 1000)}/"
+        tempdir[0] = f"/dev/shm/Collie-{round(time.time() * 1000)}/"
     torch.distributed.broadcast_object_list(tempdir, src=0)
     with open(os.path.join(tempdir[0], f"pipeline_{gpc.get_local_rank(ParallelMode.PIPELINE)}.pt"), "rb") as f:
         raw_state_dict = model.state_dict()
@@ -767,18 +767,18 @@ def save_state_dict(model: nn.Module,
         shutil.rmtree(tempdir[0])
 
 
-def conver_model(tl_model_folder: str,
+def conver_model(collie_model_folder: str,
                  raw_model_folder: Optional[str] = None,
                  hf_model_folder: Optional[str] = None,
                  model_args: ModelArgs = ModelArgs()):
     raw_state_dict = OrderedDict()
     hf_state_dict = OrderedDict()
     weights = [weight for weight in list(os.listdir(
-        tl_model_folder)) if weight.endswith(".pt")]
+        collie_model_folder)) if weight.endswith(".pt")]
     for weight in weights:
-        tl_state_dict = torch.load(os.path.join(
-            tl_model_folder, weight), map_location="cpu")
-        with tqdm.tqdm(tl_state_dict.items(), desc=f"Loading state dict", total=len(weights)) as pbar:
+        collie_state_dict = torch.load(os.path.join(
+            collie_model_folder, weight), map_location="cpu")
+        with tqdm.tqdm(collie_state_dict.items(), desc=f"Loading state dict", total=len(weights)) as pbar:
             for step, (key, value) in enumerate(pbar):
                 if hf_model_folder is not None:
                     if key.endswith("wqkv.weight"):

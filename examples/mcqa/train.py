@@ -15,9 +15,9 @@ python_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(_
 print("PYTHON_PATH", python_path)
 sys.path.append(python_path)
 
-from tunelite.models import llama
-from tunelite.log import print
-from arguments import ModelArguments, DataArguments, MyTuneLiteArguments
+from collie.models import llama
+from collie.log import print
+from arguments import ModelArguments, DataArguments, MyCollieArguments
 from mydatasets import MyDataset, get_dataset_info
 from mytrainer import MyInplaceTensorTrainer
 from utils import DataCollatorForCauselLM, EvalDataCollatorForCauselLM
@@ -36,55 +36,55 @@ def compute_metrics(all_pred, eval_dataset):
 def train():
     # ========== 1. logs and args ==========
     local_rank, world_size = llama.setup_model_parallel()
-    parser = HfArgumentParser((ModelArguments, DataArguments, MyTuneLiteArguments))
+    parser = HfArgumentParser((ModelArguments, DataArguments, MyCollieArguments))
     if sys.argv[-1].endswith(".yaml"):
-        model_args, data_args, tl_args = parser.parse_yaml_file(yaml_file=os.path.abspath(sys.argv[-1]))
+        model_args, data_args, collie_args = parser.parse_yaml_file(yaml_file=os.path.abspath(sys.argv[-1]))
     else:
-        model_args, data_args, tl_args = parser.parse_args_into_dataclasses()
-    set_seed(tl_args.seed)
-    assert local_rank == tl_args.local_rank
-    assert world_size == tl_args.world_size
+        model_args, data_args, collie_args = parser.parse_args_into_dataclasses()
+    set_seed(collie_args.seed)
+    assert local_rank == collie_args.local_rank
+    assert world_size == collie_args.world_size
 
     model_name = model_args.model_name_or_path.split('/')[-1]
-    tag_name = '_'.join([data_args.dataset_name, model_name, tl_args.tag] if tl_args.tag else [data_args.dataset_name, model_name])
+    tag_name = '_'.join([data_args.dataset_name, model_name, collie_args.tag] if collie_args.tag else [data_args.dataset_name, model_name])
     hparam_name = 'output'
-    if tl_args.optim != 'sgd':
-        hparam_name += '_' + tl_args.optim
-    if tl_args.learning_rate != 5e-4:
-        hparam_name += '_lr' + str(tl_args.learning_rate)
-    if tl_args.per_device_train_batch_size != 8:
-        hparam_name += '_bs' + str(tl_args.per_device_train_batch_size)
-    if tl_args.lr_scheduler_type != 'linear':
-        hparam_name += '_' + tl_args.lr_scheduler_type
-    if tl_args.warmup != 0:
-        hparam_name += '_warmup' + str(tl_args.warmup)
-    if tl_args.clip_grad_value:
-        hparam_name += '_clipgrad' + str(tl_args.clip_grad_value)
-    if tl_args.clip_loss_value:
-        hparam_name += '_cliploss' + str(tl_args.clip_loss_value)
-    assert tl_args.clip_grad_value is None or tl_args.clip_loss_value is None
-    tl_args.output_dir = os.path.join('outputs', tag_name, hparam_name)
+    if collie_args.optim != 'sgd':
+        hparam_name += '_' + collie_args.optim
+    if collie_args.learning_rate != 5e-4:
+        hparam_name += '_lr' + str(collie_args.learning_rate)
+    if collie_args.per_device_train_batch_size != 8:
+        hparam_name += '_bs' + str(collie_args.per_device_train_batch_size)
+    if collie_args.lr_scheduler_type != 'linear':
+        hparam_name += '_' + collie_args.lr_scheduler_type
+    if collie_args.warmup != 0:
+        hparam_name += '_warmup' + str(collie_args.warmup)
+    if collie_args.clip_grad_value:
+        hparam_name += '_clipgrad' + str(collie_args.clip_grad_value)
+    if collie_args.clip_loss_value:
+        hparam_name += '_cliploss' + str(collie_args.clip_loss_value)
+    assert collie_args.clip_grad_value is None or collie_args.clip_loss_value is None
+    collie_args.output_dir = os.path.join('outputs', tag_name, hparam_name)
 
-    if tl_args.tag == 'debug':
+    if collie_args.tag == 'debug':
         os.environ['WANDB_MODE'] = 'offline'
-    if tl_args.local_rank in [-1, 0]:
+    if collie_args.local_rank in [-1, 0]:
         wandb.init(
-            project="tunelite",
+            project="collie",
             name=tag_name if hparam_name == 'output' else '_'.join([tag_name, hparam_name.replace('output_', '')]),
-            config={'model_args': model_args, 'data_args': data_args, 'tl_args': tl_args}
+            config={'model_args': model_args, 'data_args': data_args, 'collie_args': collie_args}
         )
 
     # ========== 2. Load pretrained model and tokenizer. ==========
     model, tokenizer = llama.load_model(
         ckpt_dir=os.path.join(model_args.cache_dir, model_args.model_name_or_path.split('-')[-1]),  # 7B, 13B, 30B, 65B
         tokenizer_path=os.path.join(model_args.cache_dir, 'tokenizer.model'),
-        local_rank=tl_args.local_rank,
-        world_size=tl_args.world_size,
+        local_rank=collie_args.local_rank,
+        world_size=collie_args.world_size,
         froze_embeddings=False,
         zero=False,
         tensor_parallel=True,
         pipeline_parallel=False,
-        max_batch_size=4 * tl_args.per_device_eval_batch_size,
+        max_batch_size=4 * collie_args.per_device_eval_batch_size,
         max_seq_len=data_args.max_length,
     )
     torch.cuda.empty_cache()
@@ -104,7 +104,7 @@ def train():
     # ========== 4. Initialize our Trainer. ==========
     trainer = MyInplaceTensorTrainer(
         model=model,
-        tl_args=tl_args,
+        collie_args=collie_args,
         data_collator={'train': DataCollatorForCauselLM(tokenizer, max_length=data_args.max_length, padding_side='left'),
                        'eval': EvalDataCollatorForCauselLM(tokenizer, max_length=data_args.max_length, padding_side='left')},
         train_dataset=train_dataset,

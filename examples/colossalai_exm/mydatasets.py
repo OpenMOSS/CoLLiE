@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from tunelite.log import print
+from collie.log import print
 from prompts import QuestionPart, Exemplar
 
 IGNORE_INDEX = -100

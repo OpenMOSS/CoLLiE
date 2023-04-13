@@ -3,7 +3,7 @@ import tqdm
 import torch
 from torch.nn import CrossEntropyLoss
 from transformers.trainer_pt_utils import nested_numpify, nested_concat
-from tunelite.trainer import InplaceTensorTrainer
+from collie.trainer import InplaceTensorTrainer
 
 IGNORE_INDEX = -100
 
