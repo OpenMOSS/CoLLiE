@@ -75,32 +75,22 @@ def main():
         tokenizer=Tokenizer(tokenizer_path)
     )
 
-    def compute_metrics(batch, epoch, step, max_show_samples=4):
-        print("\n")
-        for tokens in batch[0]["input_ids"][:max_show_samples]:
-            print("-" * 20)
-            tokens = tokens.tolist()
-            # print(tokens)
-            sentence = tokenizer.decode(tokens)
-            print(sentence)
-            print("-" * 20)
-            input('press any key to confirm...')
-        print("\n")
+    
 
     model_args = ModelArgs()
     model_args.pp_size = 8
-    model_args.micro_batch_num = 128
+    model_args.micro_batch_num = 4
     model_args.fp16 = True
     model_args.checkpoint = True
-    model_args.dense: str = "raw"  # raw, fused, apex
+    model_args.dense: str = "fused"  # raw, fused, apex
     model_args.rms_norm: str = "raw"  # raw, apex
-    model_args.attention: str = "raw"  # raw, flash, col_flash, mem_eff
-    model_args.rotary_emb: str = "raw"  # raw, fused
+    model_args.attention: str = "flash"  # raw, flash, col_flash, mem_eff
+    model_args.rotary_emb: str = "fused"  # raw, fused
 
     trainer_args = TrainerArgs()
-    trainer_args.epochs = 3
+    trainer_args.epochs = 100
     trainer_args.eval_max_length = 128
-    trainer_args.eval_per_steps = 10
+    trainer_args.eval_per_steps = 500
     trainer_args.eval_per_epoches = 1
     trainer_args.eval_stop_tokens = [2]
     trainer_args.eval_use_cache = False
@@ -113,16 +103,16 @@ def main():
     # eval_data = alpaca_data[-32:] # reserve last 32 sample for eval
     # full data for real train
     train_data = alpaca_data[:49920]
-    eval_data = alpaca_data[-128:]  # reserve last 32 sample for eval
+    eval_data = alpaca_data[-32:]  # reserve last 32 sample for eval
     train_dataloader = DataLoader(
         train_data,
-        batch_size=128,
+        batch_size=4,
         collate_fn=lambda x: collate_fn(mode='train', batch=x, tokenizer=tokenizer, max_length=1024),
         drop_last=True,
     )
     eval_dataloader = DataLoader(
         eval_data,
-        batch_size=128,
+        batch_size=4,
         collate_fn=lambda x: collate_fn(mode='eval', batch=x, tokenizer=tokenizer, max_length=1024),
         drop_last=True,
     )
@@ -131,6 +121,18 @@ def main():
     # model = get_7B_llama(model_args)
     # state_dict = load_state_dict(model_args=model_args, s3_folder=llama_7b_path)
     model.load_state_dict(state_dict)
+    
+    def compute_metrics(batch, epoch, step, max_show_samples=4):
+        print("\n")
+        for tokens in batch[0]["input_ids"][:max_show_samples]:
+            print("-" * 20)
+            tokens = tokens.tolist()
+            # print(tokens)
+            sentence = tokenizer.decode(tokens)
+            print(sentence)
+            print("-" * 20)
+        print("\n")
+        save_state_dict()
     
     optimizer = torch.optim.SGD(model.parameters(), lr=2e-5)
     trainer = ColossalaiTrainer(

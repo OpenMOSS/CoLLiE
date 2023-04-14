@@ -13,6 +13,7 @@ try:
     import colossalai
     from colossalai.core import global_context as gpc
     from colossalai.context.parallel_mode import ParallelMode
+    from colossalai.zero.sharded_optim.low_level_optim import LowLevelZeroOptimizer
 except ModuleNotFoundError:
     raise ModuleNotFoundError(
         "Detected Colossal-AI is not installed. See https://github.com/hpcaitech/ColossalAI")
@@ -76,9 +77,8 @@ class ColossalaiTrainer:
     def train(self):
         self.engine.train()
         def train_loop(epoch: int = 0):
-            with tqdm.tqdm(self.train_dataloader, disable=not gpc.is_pipeline_last_stage()) as tqb:
+            with tqdm.tqdm(self.train_dataloader, disable=not gpc.is_pipeline_last_stage() or gpc.get_local_rank(ParallelMode.TENSOR) != gpc.get_world_size(ParallelMode.TENSOR) - 1) as tqb:
                 for step, batch in enumerate(tqb, start=1):
-                    self.engine.zero_grad()
                     _, _, loss = self.engine.execute_schedule(
                         cycle([batch]),
                         forward_only=False,
@@ -131,7 +131,7 @@ class ColossalaiTrainer:
             input_ids = torch.nn.functional.pad(input_ids, (0, max_length - input_ids.shape[1]), value=0)
         cached_len = 0
         # generate loop:
-        with tqdm.tqdm(range(min_len, max_length), disable=not gpc.is_pipeline_last_stage()) as tqb:
+        with tqdm.tqdm(range(min_len, max_length), disable=not gpc.is_pipeline_last_stage() or gpc.get_local_rank(ParallelMode.TENSOR) != gpc.get_world_size(ParallelMode.TENSOR) - 1) as tqb:
             for current_pos in tqb:
                 active_batch_idx = torch.flatten(torch.argwhere(~stop_generate_flag_vector))
                 try:
@@ -146,25 +146,33 @@ class ColossalaiTrainer:
                         return_output_label=True,
                     )
                     cached_len = current_pos
-                    next_tokens = torch.zeros(input_ids.shape[0], 1, dtype=torch.long).to(
-                        torch.device(f"cuda:{os.environ['LOCAL_RANK']}"))
+                    next_tokens_list = [torch.full((input_ids.shape[0], 1), -1, dtype=torch.long, device=torch.device(f"cuda:{os.environ['LOCAL_RANK']}")) for _ in range(int(os.environ.get("WORLD_SIZE")))]
                     if gpc.is_pipeline_last_stage():
+                        # if os.environ.get('LOCAL_RANK', '0') == '7':
+                        #     import pdb
+                        #     pdb.set_trace()
                         # top-p分布
-                        scores = hidden_states[:,-1,:]
-                        sorted_logits, sorted_indicies = torch.sort(scores, descending=True)
-                        cumulative_probs = sorted_logits.softmax(dim=-1).cumsum(dim=-1)
-                        sorted_indices_to_remove = cumulative_probs > self.trainer_args.eval_top_p
-                        sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
-                        sorted_indices_to_remove[..., 0] = 0
-                        indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indicies, sorted_indices_to_remove)
-                        scores = scores.masked_fill(indices_to_remove, -float('inf'))
-                        # 温度采样
-                        scores = torch.exp(scores / self.trainer_args.eval_temperature)
-                        scores = scores / torch.sum(scores)
-                        # next_tokens = torch.argmax(hidden_states[:, -1, :], dim=-1)
-                        next_tokens = torch.multinomial(scores, num_samples=1).squeeze(1)
-                        next_tokens = torch.unsqueeze(next_tokens, dim=-1)
-                    torch.distributed.broadcast(next_tokens, src=gpc.get_world_size(ParallelMode.PIPELINE) - 1)
+                        # scores = hidden_states[:,-1,:]
+                        # sorted_logits, sorted_indicies = torch.sort(scores, descending=True)
+                        # cumulative_probs = sorted_logits.softmax(dim=-1).cumsum(dim=-1)
+                        # sorted_indices_to_remove = cumulative_probs > self.trainer_args.eval_top_p
+                        # sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+                        # sorted_indices_to_remove[..., 0] = 0
+                        # indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indicies, sorted_indices_to_remove)
+                        # scores = scores.masked_fill(indices_to_remove, -float('inf'))
+                        # # 温度采样
+                        # scores = torch.exp(scores / self.trainer_args.eval_temperature)
+                        # scores = scores / torch.sum(scores)
+                        next_tokens_list[int(os.environ.get("RANK"))] = torch.argmax(hidden_states[:, -1, :], dim=-1)
+                        
+                        # next_tokens = torch.multinomial(scores, num_samples=1).squeeze(1)
+                        next_tokens_list[int(os.environ.get("RANK"))] = torch.unsqueeze(next_tokens_list[int(os.environ.get("RANK"))], dim=-1)
+                    torch.distributed.all_gather(next_tokens_list, next_tokens_list[int(os.environ.get("RANK"))])
+                    next_tokens = next_tokens_list[0]
+                    for i in range(len(next_tokens_list)):
+                        if next_tokens_list[i].sum() >= 0:
+                            next_tokens = next_tokens_list[i]
+                            break
                     next_tokens = next_tokens.to(input_ids.device)
                     input_ids[active_batch_idx, current_pos] = torch.where(input_ids[active_batch_idx, current_pos] == 0, next_tokens[active_batch_idx, 0],
                                                                            input_ids[active_batch_idx, current_pos])
@@ -193,7 +201,7 @@ class ColossalaiTrainer:
                                                             stop_tokens=self.trainer_args.eval_stop_tokens,
                                                             use_cache=self.trainer_args.eval_use_cache)
                     torch.cuda.empty_cache()
-                    if gpc.is_pipeline_last_stage() and self.compute_metrics is not None:
+                    if gpc.is_pipeline_last_stage() and gpc.get_local_rank(ParallelMode.TENSOR) == gpc.get_world_size(ParallelMode.TENSOR) - 1 and self.compute_metrics is not None:
                         self.compute_metrics((input_dict, label), epoch, step)
                 tqb.set_postfix({'evaluating': f"{eval_step}/{len(self.eval_dataloader)}"})
             torch.cuda.empty_cache()
