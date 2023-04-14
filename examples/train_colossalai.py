@@ -1,6 +1,6 @@
 import os
 import sys
-sys.path.append("/mnt/lustre/zhangshuo/projects/collie")
+sys.path.append("..")
 
 from datasets import load_dataset
 
@@ -36,25 +36,26 @@ def main():
         print("\n".join([tokenizer.decode(token.tolist()) for token in batch[0]["input_ids"]][:1]))
         print("\n")
     model_args = ModelArgs()
-    model_args.pp_size = 8
+    model_args.pp_size = 4
+    model_args.tp_size = 2
     model_args.micro_batch_num = 128
     model_args.fp16 = True
     model_args.checkpoint = True
-    model_args.dense = "fused"
-    model_args.attention = "flash"
-    model_args.rotary_emb = "fused"
+    model_args.dense = "raw"
+    model_args.attention = "raw"
+    model_args.rotary_emb = "raw"
     
     trainer_args = TrainerArgs()
     trainer_args.eval_max_length = 30
-    trainer_args.eval_per_steps = 100
+    trainer_args.eval_per_steps = 10
     trainer_args.eval_per_epoches = 1
-    trainer_args.learning_rate = 2e-5
     
     model = get_7B_llama(model_args)
+    optimizer = torch.optim.SGD(model.parameters(), lr=2e-5)
     state_dict = load_state_dict(model_args=model_args, s3_folder="hdd:s3://opennlplab_hdd/models/llama/llama-7b-hf")
     model.load_state_dict(state_dict)
     train_dataloader = DataLoader(
-        [{"text": "My name is MOSS, and my responsibility is to help people fine-tuning large language models more easily."} for _ in range(128)],
+        [{"text": "My name is MOSS, and my responsibility is to help people fine-tuning large language models more easily."} for _ in range(12800)],
         batch_size=128,
         collate_fn=lambda x: collate_fn(x, tokenizer, 1024),
     )
@@ -64,6 +65,7 @@ def main():
         collate_fn=lambda x: collate_fn(x, tokenizer, 1024, eos=False),
     )
     trainer = ColossalaiTrainer(model=model,
+                                optimizer=optimizer,
                                 train_dataloader=train_dataloader,
                                 eval_dataloader=eval_dataloader,
                                 tokenizer=tokenizer,
@@ -79,4 +81,4 @@ if __name__ == "__main__":
     except:
         import rich
         console = rich.console.Console()
-        console.print_exception(show_locals=True)
+        console.print_exception(show_locals=False)
