@@ -217,13 +217,23 @@ def get_llama(model_args):
             f"Unable to extract llama size from {model_args.model_path} or "
             "the size is not in the supported size [7B, 13B, 30B, 65B]."
         )
-    
-    state_dict = load_state_dict(
-        protocol=model_args.protocol,
-        model_args=model_args,
-        file_folder=model_args.model_path,
-        source=model_args.source
-    )
+
+    if model_args.protocol == "file":
+        state_dict = load_state_dict(
+            protocol=model_args.protocol,
+            model_args=model_args,
+            file_folder=model_args.model_path,
+            source=model_args.source
+        )
+    elif model_args.protocol == "s3":
+        state_dict = load_state_dict(
+            protocol=model_args.protocol,
+            model_args=model_args,
+            s3_folder=model_args.model_path,
+            source=model_args.source
+        )
+    else:
+        raise NotImplementedError("Unsupported protocol", model_args.protocol)
     model.load_state_dict(state_dict)
 
     return model, tokenizer
