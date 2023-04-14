@@ -66,9 +66,9 @@ class InplaceTensorTrainer:
         def func(x):
             with torch.no_grad():
                 for n, p in self.model.named_parameters():
-                    if p.requires_grad and p.grad is not None and p.shape != torch.Size([0]):
+                    if p.requires_grad and p.grad is not None:
                         if self.collie_args.clip_grad_value is not None:
-                            # Graidiens are modified in-palce.
+                            # Gradients are modified in-place.
                             p.grad.data.clamp_(min=-self.collie_args.clip_grad_value, max=self.collie_args.clip_grad_value)
                         p.data -= (self.lr * p.grad.data)
                         p.grad = None
