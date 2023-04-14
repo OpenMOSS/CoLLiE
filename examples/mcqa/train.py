@@ -1,3 +1,4 @@
+import copy
 import os
 import sys
 
@@ -7,7 +8,7 @@ import torch
 from torch.utils.data import Subset
 from transformers import HfArgumentParser
 from transformers import set_seed
-
+from dataclasses import asdict
 import wandb
 # os.environ['WANDB_MODE'] = 'debug'
 
@@ -68,10 +69,13 @@ def train():
     if collie_args.tag == 'debug':
         os.environ['WANDB_MODE'] = 'offline'
     if collie_args.local_rank in [-1, 0]:
+        wandb_config = copy.deepcopy(asdict(collie_args))
+        wandb_config.update(asdict(model_args))
+        wandb_config.update(asdict(data_args))
         wandb.init(
             project="collie",
             name=tag_name if hparam_name == 'output' else '_'.join([tag_name, hparam_name.replace('output_', '')]),
-            config={'model_args': model_args, 'data_args': data_args, 'collie_args': collie_args}
+            config=wandb_config
         )
 
     # ========== 2. Load pretrained model and tokenizer. ==========
