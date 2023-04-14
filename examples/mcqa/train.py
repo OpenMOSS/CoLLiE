@@ -1,7 +1,7 @@
 import os
 import sys
-
-from random import sample
+import copy
+from dataclasses import asdict
 
 import torch
 from torch.utils.data import Subset
@@ -47,6 +47,14 @@ def train():
 
     model_name = model_args.model_name_or_path.split('/')[-1]
     tag_name = '_'.join([data_args.dataset_name, model_name, collie_args.tag] if collie_args.tag else [data_args.dataset_name, model_name])
+    if data_args.prompt_type != 'natural':
+        tag_name += f"-{data_args.prompt_type}"
+    if collie_args.unconditional_normalization:
+        if not collie_args.length_normalization:
+            tag_name += '-onlyun'
+        else:
+            tag_name += '-un'
+
     hparam_name = 'output'
     if collie_args.optim != 'sgd':
         hparam_name += '_' + collie_args.optim
@@ -65,13 +73,17 @@ def train():
     assert collie_args.clip_grad_value is None or collie_args.clip_loss_value is None
     collie_args.output_dir = os.path.join('outputs', tag_name, hparam_name)
 
+    wandb_config = copy.deepcopy(asdict(collie_args))
+    wandb_config.update(asdict(model_args))
+    wandb_config.update(asdict(data_args))
     if collie_args.tag == 'debug':
         os.environ['WANDB_MODE'] = 'offline'
     if collie_args.local_rank in [-1, 0]:
         wandb.init(
             project="collie",
-            name=tag_name if hparam_name == 'output' else '_'.join([tag_name, hparam_name.replace('output_', '')]),
-            config={'model_args': model_args, 'data_args': data_args, 'collie_args': collie_args}
+            entity='collie_exp',
+            name=tag_name if collie_args.tag == 'zero-shot' or hparam_name == 'output' else '_'.join([tag_name, hparam_name.replace('output_', '')]),
+            config=wandb_config
         )
 
     # ========== 2. Load pretrained model and tokenizer. ==========
@@ -93,26 +105,29 @@ def train():
     # ========== 3. Preprocessing the datasets. ==========
     dataset_info = get_dataset_info(data_args.dataset_name)
     train_dataset = MyDataset(data_args, tokenizer, dataset_info, split=dataset_info.exemplar_split)
-    # if data_args.few_shot_size != -1:
-    #     # few_shot_indices = sample(range(len(train_dataset)), data_args.few_shot_size)
-    #     train_dataset = Subset(train_dataset, range(data_args.few_shot_size))
-    eval_dataset = MyDataset(data_args, tokenizer, dataset_info, split=dataset_info.eval_split)
-    if dataset_info.test_split:
-        test_dataset = MyDataset(data_args, tokenizer, dataset_info, split=dataset_info.test_split)
-        eval_dataset = {'validation': eval_dataset, 'test': test_dataset}
+    eval_dataset = {'test': MyDataset(data_args, tokenizer, dataset_info, split=dataset_info.test_split)}
+    # if dataset_info.test_split:
+    #     test_dataset = MyDataset(data_args, tokenizer, dataset_info, split=dataset_info.test_split)
+    #     eval_dataset = {'validation': eval_dataset, 'test': test_dataset}
 
     # ========== 4. Initialize our Trainer. ==========
+    set_seed(collie_args.seed)
     trainer = MyInplaceTensorTrainer(
         model=model,
         collie_args=collie_args,
         data_collator={'train': DataCollatorForCauselLM(tokenizer, max_length=data_args.max_length, padding_side='left'),
-                       'eval': EvalDataCollatorForCauselLM(tokenizer, max_length=data_args.max_length, padding_side='left')},
+                       'eval': EvalDataCollatorForCauselLM(tokenizer, max_length=data_args.max_length, padding_side='left',
+                                                           unconditional_normalization=collie_args.unconditional_normalization)},
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         tokenizer=tokenizer,
         compute_metrics=compute_metrics,
     )
-    trainer.train()
+
+    if collie_args.tag == 'zero-shot':
+        trainer.eval(trainer.global_step, 1, trainer.eval_dataset['test'], trainer.eval_dataloader['test'], 'test')
+    else:
+        trainer.train()
 
 
 # run with $torchrun --nproc_per_node 2 train_inplace_tensor.py config/tensor_args.yaml
