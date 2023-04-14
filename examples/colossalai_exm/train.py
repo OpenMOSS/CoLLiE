@@ -9,9 +9,10 @@ from torch.nn import CrossEntropyLoss
 from transformers import HfArgumentParser
 from transformers import set_seed
 from transformers.trainer_pt_utils import nested_numpify
+from colossalai.nn.lr_scheduler import LinearWarmupLR
 
 from collie.log import print
-from arguments import ModelArguments, DataArguments, TrainerArgs
+from arguments import ModelArguments, DataArguments, TrainerArguments
 from mydatasets import MyDataset, get_dataset_info
 from utils import DataCollatorForCauselLM, EvalDataCollatorForCauselLM
 from utils import get_llama
@@ -59,7 +60,7 @@ def train():
     """
     Parse args
     """
-    parser = HfArgumentParser((ModelArguments, DataArguments, TrainerArgs))
+    parser = HfArgumentParser((ModelArguments, DataArguments, TrainerArguments))
     if sys.argv[-1].endswith(".yaml"):
         model_args, data_args, collie_args = parser.parse_yaml_file(yaml_file=os.path.abspath(sys.argv[-1]))
     else:
@@ -87,9 +88,8 @@ def train():
         train_dataset, batch_size=model_args.micro_batch_num,
         collate_fn=DataCollatorForCauselLM(
             tokenizer, max_length=data_args.max_length, padding_side='left'
-        ), drop_last=True
+        ), drop_last=True, shuffle=True
     )
-    print(len(train_dataloader))
     eval_dataloader = DataLoader(
         eval_dataset, batch_size=model_args.micro_batch_num,
         collate_fn=EvalDataCollatorForCauselLM(
@@ -97,10 +97,14 @@ def train():
         ), drop_last=True
     )
     optimizer = torch.optim.SGD(llama_pipeline.parameters(), lr=collie_args.learning_rate)
+    lr_scheduler = LinearWarmupLR(
+        optimizer, total_steps=len(train_dataloader) * collie_args.epochs,
+        warmup_steps=collie_args.warmup
+    )
     # ========== 4. Initialize our Trainer. ==========
     trainer = MyColossalaiTrainer(
         model=llama_pipeline, tokenizer=tokenizer,
-        optimizer=optimizer,
+        optimizer=optimizer, lr_scheduler=lr_scheduler,
         train_dataloader=train_dataloader, eval_dataloader=eval_dataloader,
         compute_metrics=compute_metrics, trainer_args=collie_args
     )

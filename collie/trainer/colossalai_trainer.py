@@ -25,6 +25,9 @@ class TrainerArgs:
         metadata={"help": "Total number of training epochs to perform. "
                   "If it is set to -1, the training will run forever."
                   "If it is set to 0, the training will not run."})
+    learning_rate: int = field(
+        default=1e-3,
+        metadata={"help": "Learning rate of training."})
     eval_per_steps: int = field(
         default=10,
         metadata={"help": "The number of steps to perform evaluation. " 
@@ -59,6 +62,7 @@ class ColossalaiTrainer:
                  tokenizer,
                  train_dataloader,
                  eval_dataloader,
+                 lr_scheduler = None,
                  compute_metrics = None,
                  trainer_args: TrainerArgs = TrainerArgs()) -> None:
         self.model = model
@@ -66,6 +70,7 @@ class ColossalaiTrainer:
         self.compute_metrics = compute_metrics
         self.trainer_args = trainer_args
         self.optimizer = optimizer
+        self.lr_scheduler = lr_scheduler
         self.engine, self.train_dataloader, self.eval_dataloader, _ = colossalai.initialize(
             model=self.model,
             train_dataloader=train_dataloader,
@@ -86,6 +91,8 @@ class ColossalaiTrainer:
                         return_output_label=False,
                     )
                     self.engine.step()
+                    if self.lr_scheduler is not None:
+                        self.lr_scheduler.step()
                     if gpc.is_pipeline_last_stage():
                         tqb.set_postfix({'epoch': epoch, 'step': step, 'loss': loss.item()})
                     if self.trainer_args.eval_per_steps == 0:
@@ -174,8 +181,11 @@ class ColossalaiTrainer:
                             next_tokens = next_tokens_list[i]
                             break
                     next_tokens = next_tokens.to(input_ids.device)
-                    input_ids[active_batch_idx, current_pos] = torch.where(input_ids[active_batch_idx, current_pos] == 0, next_tokens[active_batch_idx, 0],
-                                                                           input_ids[active_batch_idx, current_pos])
+                    input_ids[active_batch_idx, current_pos] = torch.where(
+                        input_ids[active_batch_idx, current_pos] == 0,
+                        next_tokens[active_batch_idx, 0],
+                        input_ids[active_batch_idx, current_pos]
+                    )
                     tqb.set_postfix({'generating': f"{current_pos}/{max_length}"})
                     # check if can stop generate using stop_generate_flag_vector
                     for stop_token in stop_tokens:
@@ -192,14 +202,17 @@ class ColossalaiTrainer:
 
     def eval(self, epoch=0, step=0):
         with tqdm.tqdm(self.eval_dataloader, disable=not gpc.is_pipeline_last_stage()) as tqb:
+            result = {}
             for eval_step, batch in enumerate(tqb, start=1):
                 input_dict = batch[0]
                 label = batch[1]
                 with torch.no_grad():
-                    input_dict['input_ids'] = self.generate(input_dict['input_ids'],
-                                                            max_length=self.trainer_args.eval_max_length,
-                                                            stop_tokens=self.trainer_args.eval_stop_tokens,
-                                                            use_cache=self.trainer_args.eval_use_cache)
+                    input_dict['input_ids'] = self.generate(
+                        input_dict['input_ids'],
+                        max_length=self.trainer_args.eval_max_length,
+                        stop_tokens=self.trainer_args.eval_stop_tokens,
+                        use_cache=self.trainer_args.eval_use_cache
+                    )
                     torch.cuda.empty_cache()
                     if gpc.is_pipeline_last_stage() and gpc.get_local_rank(ParallelMode.TENSOR) == gpc.get_world_size(ParallelMode.TENSOR) - 1 and self.compute_metrics is not None:
                         self.compute_metrics((input_dict, label), epoch, step)

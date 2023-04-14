@@ -22,7 +22,7 @@ few_shot_size: -1
 # trainer
 learning_rate: 0.001
 epochs: 10
-warmup: 100
+warmup: 300
 eval_per_steps: 100
 eval_per_epoches: 1
 eval_max_length: 128
