@@ -63,8 +63,13 @@ class MyDataset(Dataset):
             def _tokenize_fn(source, target):
                 targets.append(target)
                 example = f"{source}{target}"
-                example_tokenized = self.tokenizer.tokenizer.encode(example, bos=True, eos=True)
-                source_tokenized = self.tokenizer.tokenizer.encode(source, bos=True, eos=False)
+                if hasattr(self.tokenizer, 'tokenizer'):  # 区分AutoTokenizer和MyTokenizer的使用方法
+                    example_tokenized = self.tokenizer.tokenizer.encode(example, bos=True, eos=True)
+                    source_tokenized = self.tokenizer.tokenizer.encode(source, bos=True, eos=False)
+                else:
+                    example_tokenized = self.tokenizer.encode(example)
+                    example_tokenized = example_tokenized + [self.tokenizer.eos_token_id]
+                    source_tokenized = self.tokenizer.encode(source)
 
                 input_ids = example_tokenized
                 labels = copy.deepcopy(input_ids)

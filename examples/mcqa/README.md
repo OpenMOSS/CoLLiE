@@ -1,6 +1,6 @@
 # CoLLiE example on OpenBookQA dataset
 
-Support on full dataset finetuning and few-shot finetuning on 3090.
+Support on full multi-choice QA dataset finetuning, few-shot finetuning, in-context learning and normalization on 3090.
 
 ## How to run the example
 
