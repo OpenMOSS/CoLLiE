@@ -19,7 +19,8 @@ from io import BytesIO
 from einops import rearrange
 from dataclasses import dataclass
 from collections import OrderedDict
-from typing import Optional, Callable, Dict
+from sentencepiece import SentencePieceProcessor
+from typing import Optional, Callable, Dict, List, Union
 
 try:
     import colossalai
@@ -31,6 +32,7 @@ try:
     from colossalai.context.parallel_mode import ParallelMode
     from colossalai.utils.activation_checkpoint import checkpoint
     from colossalai.nn.layer.wrapper import PipelineSharedModuleWrapper
+    from colossalai.nn.layer.parallel_1d import Linear1D_Col, Linear1D_Row
     from colossalai.utils.model.colo_init_context import ColoInitContext
     from colossalai.logging import get_dist_logger, disable_existing_loggers
 
@@ -156,9 +158,9 @@ class ModelArgs:
     attention: str = "raw"  # raw, flash, col_flash, mem_eff
     rotary_emb: str = "raw"  # raw, fused
     # parallel parameters
-    pp_size: int = 8
-    # tp_size: int = 1
-    # tp_type: str = "1d" # 1d, 2d, 2.5d, 3d
+    pp_size: int = 4
+    tp_size: int = 2
+    tp_type: str = "1d" # 1d, 2d, 2.5d, 3d
     dp_size: int = 1
     micro_batch_num: int = 1
     # other parameters
@@ -194,7 +196,7 @@ class RotaryPositionEmbedding(nn.Module):
                              * 2, device=freqs.device)
             freqs = torch.outer(t, freqs).float()
             self.freqs_cis = torch.polar(torch.ones_like(freqs), freqs).to(
-                torch.device(f"cuda:{gpc.get_local_rank(ParallelMode.PIPELINE)}"))
+                torch.device(f"cuda:{os.environ.get('LOCAL_RANK')}"))
         elif self.model_args.rotary_emb == "fused":
             assert RotaryEmbedding is not None, \
                 "Detected rotary_emb is not installed. See https://github.com/HazyResearch/flash-attention/tree/main/csrc/rotary"
@@ -224,7 +226,6 @@ class RotaryPositionEmbedding(nn.Module):
                 qkv=qkv, seqlen_offset=start_pos)
             return output[:, :, 0, ...], output[:, :, 1, ...]
 
-
 class TransformerBlock(nn.Module):
     def __init__(self, model_args: ModelArgs = ModelArgs()) -> None:
         super(TransformerBlock, self).__init__()
@@ -235,26 +236,38 @@ class TransformerBlock(nn.Module):
 
     def _construct(self):
         if self.model_args.dense == "raw":
-            self.attention["wqkv"] = col_nn.Linear(self.model_args.hidden_size,
-                                                   self.model_args.hidden_size * 3,
+            self.attention["wq"] = Linear1D_Col(self.model_args.hidden_size,
+                                                   self.model_args.hidden_size,
                                                    bias=False)
-            self.attention["wo"] = col_nn.Linear(self.model_args.hidden_size,
+            self.attention["wk"] = Linear1D_Col(self.model_args.hidden_size,
+                                                   self.model_args.hidden_size,
+                                                   bias=False)
+            self.attention["wv"] = Linear1D_Col(self.model_args.hidden_size,
+                                                   self.model_args.hidden_size,
+                                                   bias=False)
+            self.attention["wo"] = Linear1D_Row(self.model_args.hidden_size,
                                                  self.model_args.hidden_size,
                                                  bias=False)
-            self.mlp["w1"] = col_nn.Linear(self.model_args.hidden_size,
+            self.mlp["w1"] = Linear1D_Col(self.model_args.hidden_size,
                                            self.model_args.intermediate_size,
                                            bias=False)
-            self.mlp["w2"] = col_nn.Linear(self.model_args.intermediate_size,
+            self.mlp["w2"] = Linear1D_Row(self.model_args.intermediate_size,
                                            self.model_args.hidden_size,
                                            bias=False)
-            self.mlp["w3"] = col_nn.Linear(self.model_args.hidden_size,
+            self.mlp["w3"] = Linear1D_Col(self.model_args.hidden_size,
                                            self.model_args.intermediate_size,
                                            bias=False)
         elif self.model_args.dense == "fused":
             assert FlashAttnFusedDense is not None, \
                 "Detected fused_dense_lib is not installed. See https://github.com/HazyResearch/flash-attention/tree/main/csrc/fused_dense_lib"
-            self.attention["wqkv"] = FlashAttnFusedDense(self.model_args.hidden_size,
-                                                         self.model_args.hidden_size * 3,
+            self.attention["wq"] = FlashAttnFusedDense(self.model_args.hidden_size,
+                                                         self.model_args.hidden_size,
+                                                         bias=False)
+            self.attention["wk"] = FlashAttnFusedDense(self.model_args.hidden_size,
+                                                         self.model_args.hidden_size,
+                                                         bias=False)
+            self.attention["wv"] = FlashAttnFusedDense(self.model_args.hidden_size,
+                                                         self.model_args.hidden_size,
                                                          bias=False)
             self.attention["wo"] = FlashAttnFusedDense(self.model_args.hidden_size,
                                                        self.model_args.hidden_size,
@@ -271,7 +284,13 @@ class TransformerBlock(nn.Module):
         elif self.model_args.dense == "apex":
             assert ApexFusedDense is not None, \
                 "Detected apex is not installed. See https://github.com/NVIDIA/apex"
-            self.attention["wqkv"] = ApexFusedDense(self.model_args.hidden_size,
+            self.attention["wq"] = ApexFusedDense(self.model_args.hidden_size,
+                                                    self.model_args.hidden_size * 3,
+                                                    bias=False)
+            self.attention["wk"] = ApexFusedDense(self.model_args.hidden_size,
+                                                    self.model_args.hidden_size * 3,
+                                                    bias=False)
+            self.attention["wv"] = ApexFusedDense(self.model_args.hidden_size,
                                                     self.model_args.hidden_size * 3,
                                                     bias=False)
             self.attention["wo"] = ApexFusedDense(self.model_args.hidden_size,
@@ -389,11 +408,8 @@ class TransformerBlock(nn.Module):
         batch_size, seq_len, hidden_size = hidden_states.shape
         head_dim = self.model_args.hidden_size // self.model_args.num_attention_heads
         _hidden_states = self.attention["norm"](hidden_states)
-        qkv = self.attention["wqkv"](_hidden_states)
-        qkv = rearrange(qkv,
-                        "b n (three h d) -> b n three h d",
-                        h=self.model_args.num_attention_heads,
-                        three=3)
+        query, key, value = self.attention["wq"](_hidden_states), self.attention["wk"](_hidden_states), self.attention["wv"](_hidden_states)
+        qkv = rearrange(torch.stack([query, key, value], dim=2), "b n three (h d) -> b n three h d", h=self.model_args.num_attention_heads // gpc.get_world_size(ParallelMode.TENSOR))
         query, key, value = torch.split(
             qkv, split_size_or_sections=1, dim=2)
         query, key, value = query.squeeze(
@@ -404,6 +420,7 @@ class TransformerBlock(nn.Module):
             start_pos = 0
         query, key = rpoe(query=query, key=key,
                           start_pos=start_pos, seq_len=seq_len)
+        
         if use_cache:
             if self.key_cache[self.micro_batch_counter] is None or self.value_cache[self.micro_batch_counter] is None:
                 self.key_cache[self.micro_batch_counter] = key
@@ -447,7 +464,7 @@ class Transformer(nn.Module):
         self.is_start = is_start
         self.is_end = is_end
         if self.is_start:
-            self.token_embedding = col_nn.Embedding(
+            self.token_embedding = nn.Embedding(
                 self.model_args.vocab_size,
                 embedding_dim=self.model_args.hidden_size)
         self.blocks = nn.ModuleList(
@@ -460,9 +477,9 @@ class Transformer(nn.Module):
                     normalized_shape=self.model_args.hidden_size,
                     eps=self.model_args.layer_norm_epsilon)
             if self.model_args.rms_norm == "raw":
-                self.language_model_head = col_nn.Linear(self.model_args.hidden_size,
-                                                         self.model_args.vocab_size,
-                                                         bias=False)
+                self.language_model_head = nn.Linear(self.model_args.hidden_size,
+                                                     self.model_args.vocab_size,
+                                                     bias=False)
             elif self.model_args.rms_norm == "fused":
                 assert FlashAttnFusedDense is not None, \
                     "Detected fused_dense_lib is not installed. See https://github.com/HazyResearch/flash-attention/tree/main/csrc/fused_dense_lib"
@@ -509,7 +526,7 @@ def prepare_distribution(model_args: ModelArgs = ModelArgs()) -> dict:
     CONFIG = dict(NUM_MICRO_BATCHES=model_args.micro_batch_num,
                   parallel=dict(
                       pipeline=int(model_args.pp_size),
-                      tensor=dict(size=1, mode="1d")
+                      tensor=dict(size=model_args.tp_size, mode=model_args.tp_type)
                   )
                   )
     if model_args.fp16:
@@ -520,13 +537,16 @@ def prepare_distribution(model_args: ModelArgs = ModelArgs()) -> dict:
         gpc.is_pipeline_last_stage = lambda: True
         gpc._local_ranks[ParallelMode.PIPELINE] = 0
         gpc._world_sizes[ParallelMode.PIPELINE] = 1
+    if "tensor" in CONFIG["parallel"] and CONFIG["parallel"]["tensor"]["size"] == 1:
+        gpc._local_ranks[ParallelMode.TENSOR] = 0
+        gpc._world_sizes[ParallelMode.TENSOR] = 1
 
 
 def build_pipe(model_args: ModelArgs = ModelArgs()):
     prepare_distribution(model_args=model_args)
     disable_existing_loggers()
     logger = get_dist_logger()
-    with ColoInitContext(device=torch.device(f"cuda:{gpc.get_local_rank(ParallelMode.PIPELINE)}")):
+    with ColoInitContext(device=torch.device(f"cuda:{os.environ.get('LOCAL_RANK')}"), dtype=torch.float16 if model_args.fp16 else torch.float32):
         if model_args.pp_size > 1:
             wrapper = PipelineSharedModuleWrapper(
                 [0, model_args.pp_size - 1])
@@ -535,7 +555,7 @@ def build_pipe(model_args: ModelArgs = ModelArgs()):
         chunk_list = []
         for start, end in parts:
             logger.info(
-                f'Rank{gpc.get_local_rank(ParallelMode.PIPELINE)} build layer {start}-{end}, {end - start}/{model_args.num_hidden_layers} layers')
+                f'Rank{os.environ.get("LOCAL_RANK")} build layer {start}-{end}, {end - start}/{model_args.num_hidden_layers} layers')
             chunk = Transformer(is_start=gpc.is_pipeline_first_stage(),
                                 is_end=gpc.is_pipeline_last_stage(),
                                 num_blocks=end - start,
@@ -545,6 +565,7 @@ def build_pipe(model_args: ModelArgs = ModelArgs()):
             if gpc.is_pipeline_last_stage() and gpc.get_world_size(ParallelMode.PIPELINE) > 1:
                 wrapper.register_module(chunk.language_model_head)
             chunk_list.append(chunk)
+        
         if len(chunk_list) == 1:
             return chunk_list[0]
         else:
@@ -671,13 +692,9 @@ def load_state_dict(protocol: str = "s3",
             for idx, key in enumerate(list(range(start, end))):
                 if source == "hf":
                     part_state_dict[f"blocks.{idx}.attention.wo.weight"] = state_dict[f"model.layers.{key}.self_attn.o_proj.weight"]
-                    part_state_dict[f"blocks.{idx}.attention.wqkv.weight"] = torch.cat(
-                        (
-                            state_dict[f"model.layers.{key}.self_attn.q_proj.weight"],
-                            state_dict[f"model.layers.{key}.self_attn.k_proj.weight"],
-                            state_dict[f"model.layers.{key}.self_attn.v_proj.weight"]
-                        ), dim=0
-                    )
+                    part_state_dict[f"blocks.{idx}.attention.wq.weight"] = state_dict[f"model.layers.{key}.self_attn.q_proj.weight"]
+                    part_state_dict[f"blocks.{idx}.attention.wk.weight"] = state_dict[f"model.layers.{key}.self_attn.k_proj.weight"]
+                    part_state_dict[f"blocks.{idx}.attention.wv.weight"] = state_dict[f"model.layers.{key}.self_attn.v_proj.weight"]
                     part_state_dict[f"blocks.{idx}.attention.norm.weight"] = state_dict[
                         f"model.layers.{key}.input_layernorm.weight"]
                     part_state_dict[f"blocks.{idx}.mlp.w1.weight"] = state_dict[f"model.layers.{key}.mlp.gate_proj.weight"]
@@ -687,29 +704,14 @@ def load_state_dict(protocol: str = "s3",
                         f"model.layers.{key}.post_attention_layernorm.weight"]
                 elif source == "raw":
                     part_state_dict[f"blocks.{idx}.attention.wo.weight"] = state_dict[f"layers.{key}.attention.wo.weight"]
-                    part_state_dict[f"blocks.{idx}.attention.wqkv.weight"] = torch.cat(
-                        (
-                            state_dict[f"layers.{key}.attention.wq.weight"],
-                            state_dict[f"layers.{key}.attention.wk.weight"],
-                            state_dict[f"layers.{key}.attention.wv.weight"]
-                        ), dim=0
-                    )
+                    part_state_dict[f"blocks.{idx}.attention.wq.weight"] = state_dict[f"layers.{key}.attention.wq.weight"]
+                    part_state_dict[f"blocks.{idx}.attention.wk.weight"] = state_dict[f"layers.{key}.attention.wk.weight"]
+                    part_state_dict[f"blocks.{idx}.attention.wv.weight"] = state_dict[f"layers.{key}.attention.wv.weight"]
                     part_state_dict[f"blocks.{idx}.attention.norm.weight"] = state_dict[f"layers.{key}.attention_norm.weight"]
                     part_state_dict[f"blocks.{idx}.mlp.w1.weight"] = state_dict[f"layers.{key}.feed_forward.w1.weight"]
                     part_state_dict[f"blocks.{idx}.mlp.w2.weight"] = state_dict[f"layers.{key}.feed_forward.w2.weight"]
                     part_state_dict[f"blocks.{idx}.mlp.w3.weight"] = state_dict[f"layers.{key}.feed_forward.w3.weight"]
                     part_state_dict[f"blocks.{idx}.mlp.norm.weight"] = state_dict[f"layers.{key}.ffn_norm.weight"]
-            # special cases
-            for key in list(part_state_dict.keys()):
-                if model_args.dense == "raw" and "blocks" in key and "norm" not in key:
-                    part_state_dict[key.replace(
-                        "weight", "module.module.weight")] = part_state_dict.pop(key)
-                if "language_model_head" in key:
-                    part_state_dict[key.replace(
-                        "weight", "module.module.weight")] = part_state_dict.pop(key)
-                if "token_embedding" in key:
-                    part_state_dict[key.replace(
-                        "weight", "module.weight")] = part_state_dict.pop(key)
             with open(os.path.join(tempdir[0], f"pipeline_{pp_rank}.pt"), "wb+") as f:
                 torch.save(part_state_dict, f)
     del state_dict, part_state_dict
@@ -733,18 +735,7 @@ def save_state_dict(model: nn.Module,
         tempdir[0] = f"/dev/shm/Collie-{round(time.time() * 1000)}/"
     torch.distributed.broadcast_object_list(tempdir, src=0)
     with open(os.path.join(tempdir[0], f"pipeline_{gpc.get_local_rank(ParallelMode.PIPELINE)}.pt"), "rb") as f:
-        raw_state_dict = model.state_dict()
-        for key in list(raw_state_dict.keys()):
-            if model_args.dense == "raw" and "blocks" in key and "norm" not in key:
-                raw_state_dict[key.replace(
-                    "module.module.weight", "weight")] = raw_state_dict.pop(key)
-            if "language_model_head" in key:
-                raw_state_dict[key.replace(
-                    "module.module.weight", "weight")] = raw_state_dict.pop(key)
-            if "token_embedding" in key:
-                raw_state_dict[key.replace(
-                    "module.weight", "weight")] = raw_state_dict.pop(key)
-        torch.save(raw_state_dict, f)
+        torch.save(model.state_dict(), f)
     torch.distributed.barrier()
     if gpc.get_global_rank() == 0:
         state_dict = OrderedDict()
@@ -915,6 +906,17 @@ def get_30B_llama(model_args: ModelArgs = ModelArgs()):
         "intermediate_size": 17920,
         "num_hidden_layers": 60,
         "num_attention_heads": 52
+    }.items():
+        setattr(model_args, key, value)
+    return build_pipe(model_args)
+
+def get_65B_llama(model_args: ModelArgs = ModelArgs()):
+    for key, value in {
+        "vocab_size": 32000,
+        "hidden_size": 8192,
+        "intermediate_size": 22016,
+        "num_hidden_layers": 80,
+        "num_attention_heads": 64
     }.items():
         setattr(model_args, key, value)
     return build_pipe(model_args)

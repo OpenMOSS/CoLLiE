@@ -1,5 +1,7 @@
 import os
 import copy
+import json
+import random
 from tqdm import tqdm
 from typing import Callable, Any
 
@@ -13,6 +15,7 @@ from collie.log import print
 from prompts import QuestionPart, Exemplar
 
 IGNORE_INDEX = -100
+REPRODUCIBILITY_SEED = 0
 
 
 class MyDataset(Dataset):
@@ -25,6 +28,13 @@ class MyDataset(Dataset):
         save_dir = os.path.join(data_args.data_dir, data_args.dataset_name, data_args.data_tag)
         if not os.path.exists(save_dir):
             os.makedirs(save_dir, exist_ok=True)
+
+        if self.data_args.in_context_learning and split != 'train':
+            # 重新load train.pt作为exemplars
+            exemplars = torch.load(os.path.join(save_dir, 'train.pt'))
+            assert len(exemplars) == self.data_args.few_shot_size
+            self.exemplars = self.concat_exemplars(exemplars)
+
         save_file = os.path.join(save_dir, f'{split}.pt')
         if data_args.refresh or not os.path.exists(save_file):
             dataset = load_dataset(dataset_info.path, name=dataset_info.name, split=split)
@@ -33,6 +43,8 @@ class MyDataset(Dataset):
             print('Loading data from', save_file)
             self.data = torch.load(save_file)
         print('Data format:', self.data[0])
+        print('Max length:', max([len(d['input_ids']) for d in self.data])) if self.split == 'train' else \
+            print('Max length:', max([max([len(d) for d in dd['input_ids']]) for dd in self.data]))
 
     def process(self, extractor, dataset, save_file):
         data = []
@@ -43,6 +55,9 @@ class MyDataset(Dataset):
             else:
                 prompt = exemplar.get_brown_prompt()
             source = prompt['source']
+            if self.data_args.in_context_learning and self.split != 'train':
+                source = f"{self.exemplars}\n\n{source}"
+
             targets = []
 
             def _tokenize_fn(source, target):
@@ -74,9 +89,21 @@ class MyDataset(Dataset):
                          'target': targets,
                          'answer': exemplar.answer_idx})
 
+        if self.split == 'train' and self.data_args.few_shot_size > 0:
+            random.seed(REPRODUCIBILITY_SEED)
+            possible_idxs = list(range(len(data)))
+            sampled_idxs = random.sample(possible_idxs, self.data_args.few_shot_size)
+            data = [data[i] for i in sampled_idxs]
+            print('Sampled exemplars:', sampled_idxs)
+
         torch.save(data, save_file)
         print('Saving data to', save_file)
         return data
+
+    def concat_exemplars(self, exemplars):
+        exemplar_prompts = [f"{e['source']}{e['target'][0]}" for e in exemplars]
+        exemplars = "\n\n".join(exemplar_prompts)
+        return exemplars
 
     def __len__(self):
         return len(self.data)
@@ -189,3 +216,29 @@ def get_dataset_info(dataset_name):
         )
     else:
         raise NotImplementedError
+
+
+if __name__ == '__main__':
+    from collie.models import llama
+    from transformers import HfArgumentParser
+    from arguments import ModelArguments, DataArguments
+
+    parser = HfArgumentParser((ModelArguments, DataArguments))
+    model_args, data_args = parser.parse_args_into_dataclasses()
+    model_args.model_name_or_path = 'llama-13B'
+    data_args.dataset_name = 'openbookqa'
+    data_args.refresh = True
+    data_args.data_tag = 'debug'
+    data_args.max_length = 256
+
+    tokenizer = llama.Tokenizer(os.path.join(model_args.cache_dir, 'tokenizer.model'))
+    tokenizer = llama.HFLikeTokenizer(tokenizer)
+    tokenizer.pad_token_id = 0
+
+    dataset_info = get_dataset_info(data_args.dataset_name)
+    # train_dataset = MyDataset(data_args, tokenizer, dataset_info, split=dataset_info.exemplar_split)
+    eval_dataset = MyDataset(data_args, tokenizer, dataset_info, split=dataset_info.eval_split)
+    test_dataset = MyDataset(data_args, tokenizer, dataset_info, split=dataset_info.test_split)
+
+
+

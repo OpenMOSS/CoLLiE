@@ -1,11 +1,11 @@
 # model
-source: "raw" # raw, hf
-protocol: "file" # file, s3
-model_path: "/remote-home/share/llama/7B"
-tokenizer_path: "/remote-home/share/llama/tokenizer.model"
+source: "hf" # raw, hf
+protocol: "s3" # file, s3
+model_path: "hdd:s3://opennlplab_hdd/models/llama/llama-7b-hf"
+tokenizer_path: "./tokenizer.model"
 pp_size: 6
 dp_size: 1
-micro_batch_num: 1
+micro_batch_num: 10
 fp16: True
 checkpoint: True
 dense: "raw" # raw, fused, apex
@@ -17,13 +17,16 @@ dataset_name: 'openbookqa'
 refresh: false
 data_tag: 'src'
 max_length: 256
-few_shot_size: 30
-# collie
+few_shot_size: -1
+# tunelite
 # trainer
+learning_rate: 0.001
 epochs: 10
-eval_per_steps: 5
+warmup: 100
+eval_per_steps: 100
 eval_per_epoches: 1
 eval_max_length: 128
 # eval_stop_tokens: [2]
 eval_top_p: 0.95
 eval_temperature: 0.8
+# eval_use_cache: True

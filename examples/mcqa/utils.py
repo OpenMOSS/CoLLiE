@@ -1,4 +1,7 @@
+import copy
 from dataclasses import dataclass
+
+import numpy as np
 from transformers.utils import PaddingStrategy
 from transformers.trainer import *
 
@@ -132,6 +135,7 @@ class EvalDataCollatorForCauselLM:
     label_pad_token_id: int = -100
     return_tensors: str = "pt"
     padding_side: str = 'left'
+    unconditional_normalization: bool = False
 
     def __call__(self, features, return_tensors=None):
         padding_side = self.padding_side
@@ -142,7 +146,10 @@ class EvalDataCollatorForCauselLM:
         for feature in features:
             split_size.append(len(feature["labels"]))
             for op_input_ids, op_labels in zip(feature["input_ids"], feature["labels"]):
-                new_features.append({"input_ids": op_input_ids, "labels": op_labels})
+                un_mask = np.zeros_like(op_labels)
+                un_mask_index = np.where(op_labels == self.label_pad_token_id, 1, 0).sum() - 2
+                un_mask[:un_mask_index] = 1
+                new_features.append({"input_ids": op_input_ids, "labels": op_labels, "un_mask": un_mask})
 
         labels = [feature["labels"] for feature in new_features]
         # We have to pad the labels before calling `tokenizer.pad` as this method won't pad them and needs them of the
@@ -164,8 +171,10 @@ class EvalDataCollatorForCauselLM:
                     )
                 elif padding_side == "right":
                     feature["labels"] = np.concatenate([feature["labels"], remainder]).astype(np.int64)
+                    feature["un_mask"] = np.concatenate([feature["un_mask"], np.ones_like(remainder)]).astype(np.int64)
                 else:
                     feature["labels"] = np.concatenate([remainder, feature["labels"]]).astype(np.int64)
+                    feature["un_mask"] = np.concatenate([np.ones_like(remainder), feature["un_mask"]]).astype(np.int64)
 
         max_length = max(len(feature['input_ids']) for feature in new_features)
         if padding_side == 'right':
@@ -181,11 +190,13 @@ class EvalDataCollatorForCauselLM:
         else:
             raise ValueError("Invalid padding strategy:" + str(padding_side))
 
-        new_features = {
+        batched_features = {
             'input_ids': torch.tensor(input_ids).long(),
             'attention_mask': torch.tensor(attention_mask).long(),
             'labels': torch.tensor(np.array([feature['labels'] for feature in new_features])).long(),
             'split_size': split_size
         }
+        if self.unconditional_normalization:
+            batched_features['un_mask'] = torch.tensor(np.array([feature['un_mask'] for feature in new_features])).bool()
 
-        return new_features
+        return batched_features
