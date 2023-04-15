@@ -67,6 +67,8 @@ def train():
         hparam_name += '_' + collie_args.lr_scheduler_type
     if collie_args.warmup != 0:
         hparam_name += '_warmup' + str(collie_args.warmup)
+    if collie_args.clip_grad_norm:
+        hparam_name += '_clipgradnorm' + str(collie_args.clip_grad_norm)
     if collie_args.clip_grad_value:
         hparam_name += '_clipgrad' + str(collie_args.clip_grad_value)
     if collie_args.clip_loss_value:
