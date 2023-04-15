@@ -1,6 +1,7 @@
 import operator
 
 import tqdm
+from itertools import chain
 import torch
 from torch.nn import CrossEntropyLoss
 from torch.utils.data import RandomSampler, SequentialSampler, DataLoader
@@ -54,6 +55,9 @@ class InplaceTensorTrainer:
                                                   schedule=self.collie_args.lr_scheduler_type,
                                                   n_steps=self.n_steps)
         self.lr = 0
+        self.gather_norm = False
+        self.norm_dict = {}
+        self.clip_coef = None
 
         # register inplace grad hook
         self.grad_func = self.inplace_grad()
@@ -67,11 +71,20 @@ class InplaceTensorTrainer:
             with torch.no_grad():
                 for n, p in self.model.named_parameters():
                     if p.requires_grad and p.grad is not None:
-                        if self.collie_args.clip_grad_value is not None:
-                            # Gradients are modified in-place.
-                            p.grad.data.clamp_(min=-self.collie_args.clip_grad_value, max=self.collie_args.clip_grad_value)
-                        p.data -= (self.lr * p.grad.data)
-                        p.grad = None
+                        if self.gather_norm:
+                            device = str(p.grad.device)
+                            if device not in self.norm_dict:
+                                self.norm_dict[device] = []
+                            self.norm_dict[device].append(torch.norm(p.grad, 2.0))
+                            p.grad = None
+                        else:
+                            if self.collie_args.clip_grad_value is not None and self.collie_args.clip_grad_value > 0:
+                                # Gradients are modified in-place.
+                                p.grad.data.clamp_(min=-self.collie_args.clip_grad_value, max=self.collie_args.clip_grad_value)
+                            if self.collie_args.clip_grad_norm is not None and self.collie_args.clip_grad_norm > 0 and self.clip_coef is not None:
+                                p.grad.data.mul_(self.clip_coef.to(p.grad.device))
+                            p.data -= (self.lr * p.grad.data)
+                            p.grad = None
             return x
 
         return func
@@ -108,10 +121,31 @@ class InplaceTensorTrainer:
                     # update the learning rate
                     self.global_step = self.num_steps_per_epoch * epoch + step
                     self.lr = self.lr_scheduler.step(self.global_step)
-                    loss.backward()
+                    if self.collie_args.clip_grad_norm is not None and self.collie_args.clip_grad_norm > 0:
+                        self.gather_norm = True
+                        self.norm_dict = {}
 
+                        loss.backward(retain_graph=True)
+                        # update the last one since the hook function will not be called for the last parameter
+                        self.grad_func(0)
+
+                        with torch.no_grad():
+                            # The norm is computed over all gradients together, as if they were
+                            # concatenated into a single vector. Gradients are modified in-place.
+                            norms = list(chain(*list(self.norm_dict.values())))
+                            gather_norms = [None for _ in range(self.collie_args.world_size)]
+                            torch.distributed.all_gather_object(gather_norms, norms)
+                            all_norms = list(chain(*gather_norms))
+
+                            total_norm = torch.norm(torch.stack([x.to(0) for x in all_norms]), 2)
+                            self.clip_coef = float(self.collie_args.clip_grad_norm) / (total_norm + 1e-6)
+                            self.clip_coef = torch.clamp(self.clip_coef, max=1.0)
+                        self.gather_norm = False
+
+                    loss.backward()
                     # update the last one since the hook function will not be called for the last parameter
                     self.grad_func(0)
+
                     tqb.set_postfix({'loss': loss.item()})
                     if self.allow_print:
                         self.wandb.log(
