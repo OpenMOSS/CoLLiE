@@ -24,7 +24,8 @@ weight_decay: 0
 num_train_epochs: 10
 lr_scheduler_type: 'linear'
 warmup: 0.05
-clip_grad_value: 1.0
+clip_grad_norm: 1.0
+#clip_grad_value: 1.0
 #clip_loss_value: 5.0
 log_level: 'info'
 logging_steps: 1
