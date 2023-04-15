@@ -21,8 +21,10 @@ class DataArguments:
     train_on_inputs: bool = field(default=False, metadata={"help": "Whether to train on input."})
     max_length: int = field(default=1024)
     few_shot_size: int = field(default=-1)
+    in_context_learning: bool = field(default=False, metadata={"help": "Whether to use in-context learning."})
 
 
 @dataclass
 class MyCollieArguments(CollieArguments):
-    pass
+    length_normalization: bool = field(default=True, metadata={"help": "Whether to normalize the loss by the length of the input."})
+    unconditional_normalization: bool = field(default=False, metadata={"help": "Whether to normalize the loss by the length of the input."})
