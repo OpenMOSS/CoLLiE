@@ -19,6 +19,6 @@
 
     "gradient_accumulation_steps": 1,
     "steps_per_print": 2000,
-    "train_micro_batch_num_per_gpu": 2,
+    "train_micro_batch_size_per_gpu": 2,
     "wall_clock_breakdown": false
 }
