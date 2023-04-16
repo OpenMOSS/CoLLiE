@@ -1,5 +1,5 @@
 # model
-model_name_or_path: '/remote-home/share/llama_hf/13B'
+model_name_or_path: '/remote-home/share/llama_hf/7B'
 # data
 dataset_name: 'openbookqa'
 refresh: false
@@ -10,11 +10,11 @@ max_length: 256
 tag: 'test'
 output_dir: 'outputs'
 overwrite_output_dir: true
-deepspeed: 'ds_config.json'
+deepspeed: 'mcqa/ds_config.json'
 do_train: true
-do_eval: true
-evaluation_strategy: 'epoch'
-per_device_train_batch_size: 4
+do_eval: false
+evaluation_strategy: 'no'
+per_device_train_batch_size: 1
 per_device_eval_batch_size: 8
 learning_rate: 0.005
 weight_decay: 0
@@ -33,8 +33,8 @@ remove_unused_columns: false
 load_best_model_at_end: false
 metric_for_best_model: 'acc'
 optim: 'sgd'
-group_by_length: true
-report_to: 'wandb'
+group_by_length: false
+#report_to: 'wandb'
 dataloader_pin_memory: false
 gradient_checkpointing: false
 predict_with_generate: true

@@ -1,5 +1,6 @@
 # model
-model_name_or_path: 'llama-7B'
+model_name_or_path: 'llama-13B'
+cache_dir: '/remote-home/share/llama'
 # data
 dataset_name: 'openbookqa'
 refresh: false
