@@ -37,10 +37,11 @@ class InplaceZeroTrainer:
         self.train_dataset = train_dataset
         self.eval_dataset = eval_dataset
         self.tokenizer = tokenizer
-        self.compute_metrics = compute_metrics
         self.wandb = WandbLogger(collie_args)
         self.allow_print = self.collie_args.local_rank in [0, -1]
-        self.metrics = {}
+        if self.collie_args.do_eval:
+            self.metrics = {}
+            self.compute_metrics = compute_metrics
 
         if 'deepspeed' not in sys.modules:
             raise ModuleNotFoundError(
@@ -56,16 +57,18 @@ class InplaceZeroTrainer:
         if isinstance(data_collator, dict):
             assert 'train' in data_collator and 'eval' in data_collator, "data_collator should be a dict with keys 'train' and 'eval'."
             self.train_data_collator = data_collator['train']
-            self.eval_data_collator = data_collator['eval']
+            if self.collie_args.do_eval:
+                self.eval_data_collator = data_collator['eval']
         else:
             self.train_data_collator = self.eval_data_collator = data_collator
         self.train_dataloader = self.get_train_dataloader()
-        if isinstance(self.eval_dataset, dict):
-            self.eval_dataloader = {}
-            for prefix in self.eval_dataset.keys():
-                self.eval_dataloader[prefix] = self.get_eval_dataloader(self.eval_dataset[prefix])
-        else:
-            self.eval_dataloader = self.get_eval_dataloader()
+        if self.collie_args.do_eval:
+            if isinstance(self.eval_dataset, dict):
+                self.eval_dataloader = {}
+                for prefix in self.eval_dataset.keys():
+                    self.eval_dataloader[prefix] = self.get_eval_dataloader(self.eval_dataset[prefix])
+            else:
+                self.eval_dataloader = self.get_eval_dataloader()
 
         # setup learning rate
         self.num_steps_per_epoch = len(self.train_dataloader)
