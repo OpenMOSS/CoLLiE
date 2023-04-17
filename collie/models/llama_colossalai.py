@@ -15,6 +15,7 @@ import math
 import tqdm
 import json
 import shutil
+import warnings
 from io import BytesIO
 from einops import rearrange
 from dataclasses import dataclass
@@ -35,7 +36,7 @@ try:
     from colossalai.nn.layer.parallel_1d import Linear1D_Col, Linear1D_Row
     from colossalai.utils.model.colo_init_context import ColoInitContext
     from colossalai.logging import get_dist_logger, disable_existing_loggers
-
+    from colossalai.nn.layer.parallel_1d.layers import VocabParallelEmbedding1D, VocabParallelClassifier1D
 except ModuleNotFoundError:
     raise ModuleNotFoundError(
         "Detected Colossal-AI is not installed. See https://github.com/hpcaitech/ColossalAI")
@@ -158,10 +159,8 @@ class ModelArgs:
     attention: str = "raw"  # raw, flash, col_flash, mem_eff
     rotary_emb: str = "raw"  # raw, fused
     # parallel parameters
-    pp_size: int = 4
-    tp_size: int = 2
-    tp_type: str = "1d" # 1d, 2d, 2.5d, 3d
-    dp_size: int = 1
+    pp_size: int = 8
+    tp_size: int = 1
     micro_batch_num: int = 1
     # other parameters
     checkpoint: bool = False
@@ -464,9 +463,13 @@ class Transformer(nn.Module):
         self.is_start = is_start
         self.is_end = is_end
         if self.is_start:
-            self.token_embedding = nn.Embedding(
+            # self.token_embedding = nn.Embedding(
+            #     self.model_args.vocab_size,
+            #     embedding_dim=self.model_args.hidden_size)
+            self.token_embedding = VocabParallelEmbedding1D(
                 self.model_args.vocab_size,
-                embedding_dim=self.model_args.hidden_size)
+                embedding_dim=self.model_args.hidden_size
+            )
         self.blocks = nn.ModuleList(
             [TransformerBlock(self.model_args) for _ in range(num_blocks)])
         if self.is_end:
@@ -477,9 +480,13 @@ class Transformer(nn.Module):
                     normalized_shape=self.model_args.hidden_size,
                     eps=self.model_args.layer_norm_epsilon)
             if self.model_args.rms_norm == "raw":
-                self.language_model_head = nn.Linear(self.model_args.hidden_size,
-                                                     self.model_args.vocab_size,
-                                                     bias=False)
+                self.language_model_head = VocabParallelClassifier1D(self.model_args.hidden_size,
+                                                        self.model_args.vocab_size,
+                                                        bias=False,
+                                                        gather_output=True)
+                # self.language_model_head = nn.Linear(self.model_args.hidden_size,
+                #                                         self.model_args.vocab_size,
+                #                                         bias=False)
             elif self.model_args.rms_norm == "fused":
                 assert FlashAttnFusedDense is not None, \
                     "Detected fused_dense_lib is not installed. See https://github.com/HazyResearch/flash-attention/tree/main/csrc/fused_dense_lib"
@@ -518,7 +525,6 @@ class Transformer(nn.Module):
         if self.is_end:
             hidden_states = self.norm(hidden_states)
             hidden_states = self.language_model_head(hidden_states)
-
         return hidden_states
 
 
@@ -526,11 +532,15 @@ def prepare_distribution(model_args: ModelArgs = ModelArgs()) -> dict:
     CONFIG = dict(NUM_MICRO_BATCHES=model_args.micro_batch_num,
                   parallel=dict(
                       pipeline=int(model_args.pp_size),
-                      tensor=dict(size=model_args.tp_size, mode=model_args.tp_type)
+                      tensor=dict(size=model_args.tp_size, mode="1d")
                   )
                   )
     if model_args.fp16:
         CONFIG["fp16"] = dict(mode=AMP_TYPE.NAIVE)
+    if model_args.tp_size > 1:
+        if model_args.dense != "raw":
+            warnings.warn("Fused dense is not supported in tensor parallelism. ")
+            model_args.dense = "raw"
     colossalai.launch_from_torch(config=CONFIG, backend=model_args.backend)
     if "pipeline" in CONFIG["parallel"] and CONFIG["parallel"]["pipeline"] == 1:
         gpc.is_pipeline_first_stage = lambda: True
@@ -734,8 +744,23 @@ def save_state_dict(model: nn.Module,
     if gpc.get_global_rank() == 0:
         tempdir[0] = f"/dev/shm/Collie-{round(time.time() * 1000)}/"
     torch.distributed.broadcast_object_list(tempdir, src=0)
-    with open(os.path.join(tempdir[0], f"pipeline_{gpc.get_local_rank(ParallelMode.PIPELINE)}.pt"), "rb") as f:
-        torch.save(model.state_dict(), f)
+    with ParallelLayer.use_local_state_dict():
+        part_state_dict = model.state_dict()
+    for key in list(part_state_dict.keys()):
+        module = model
+        for subkey in key.split(".")[:-1]:
+            if subkey.isdigit():
+                module = module[int(subkey)]
+            else:
+                module = getattr(module, subkey)
+        if "col" in module.__class__.__name__.lower():
+            part_state_dict[f"{key}-col"] = part_state_dict[key].cpu()
+        elif "row" in module.__class__.__name__.lower() or "vocab" in module.__class__.__name__.lower():
+            part_state_dict[f"{key}-row"] = part_state_dict[key].cpu()
+        else:
+            part_state_dict[key] = part_state_dict[key].cpu()
+    with open(os.path.join(tempdir[0], f"pipeline_{gpc.get_local_rank(ParallelMode.PIPELINE)}_tensor_{gpc.get_local_rank(ParallelMode.TENSOR)}.pt"), "wb") as f:
+        torch.save(part_state_dict, f)
     torch.distributed.barrier()
     if gpc.get_global_rank() == 0:
         state_dict = OrderedDict()
@@ -758,33 +783,46 @@ def save_state_dict(model: nn.Module,
         shutil.rmtree(tempdir[0])
 
 
-def conver_model(collie_model_folder: str,
+def convert_model(collie_model_folder: str,
                  raw_model_folder: Optional[str] = None,
                  hf_model_folder: Optional[str] = None,
+                 raw_tp_size: int = 1,
+                 raw_tp_device_map: Optional[Dict] = None,
                  model_args: ModelArgs = ModelArgs()):
     raw_state_dict = OrderedDict()
     hf_state_dict = OrderedDict()
     weights = [weight for weight in list(os.listdir(
         collie_model_folder)) if weight.endswith(".pt")]
+    inv_freq = 1.0 / (10000.0 ** (torch.arange(0, model_args.hidden_size // model_args.num_attention_heads,
+                          2).float() / model_args.hidden_size // model_args.num_attention_heads))
+    if raw_tp_device_map is None:
+        raw_tp_device_map = {device: device for device in range(raw_tp_size)}
+    def set_tensor_parallel(w: torch.Tensor, dim: int):
+        if raw_tp_size == 1:
+            return w
+        else:
+            return [tensor.cuda(raw_tp_device_map[device]) 
+                    for tensor, device in zip(torch.chunk(w, raw_tp_size, dim=dim), list(range(raw_tp_size)))]
+        
+    def reshape_wq_wk(w: torch.Tensor):
+        return w.view(model_args.num_attention_heads, model_args.hidden_size // model_args.num_attention_heads //
+                      2, 2, model_args.hidden_size).transpose(1, 2).reshape(model_args.hidden_size, model_args.hidden_size)
+        
     for weight in weights:
         collie_state_dict = torch.load(os.path.join(
             collie_model_folder, weight), map_location="cpu")
         with tqdm.tqdm(collie_state_dict.items(), desc=f"Loading state dict", total=len(weights)) as pbar:
             for step, (key, value) in enumerate(pbar):
                 if hf_model_folder is not None:
-                    if key.endswith("wqkv.weight"):
-                        wq = value[:model_args.hidden_size, :]
-                        wk = value[model_args.hidden_size:2 *
-                                   model_args.hidden_size, :]
-                        wv = value[2*model_args.hidden_size:, :]
-                        wq, wk = map(lambda x: x.view(model_args.num_attention_heads, model_args.hidden_size // model_args.num_attention_heads //
-                                     2, 2, model_args.hidden_size).transpose(1, 2).reshape(model_args.hidden_size, model_args.hidden_size), [wq, wk])
+                    if key.endswith("wq.weight"):
                         raw_state_dict[key.replace("blocks", "model.layers").replace(
-                            "attention.wqkv.weight", "self_attn.q_proj.weight")] = wq
+                            "attention.wq.weight", "self_attn.q_proj.weight")] = reshape_wq_wk(value)
+                    if key.endswith("wk.weight"):
                         raw_state_dict[key.replace("blocks", "model.layers").replace(
-                            "attention.wqkv.weight", "self_attn.k_proj.weight")] = wk
+                            "attention.wk.weight", "self_attn.k_proj.weight")] = reshape_wq_wk(value)
+                    if key.endswith("wv.weight"):
                         raw_state_dict[key.replace("blocks", "model.layers").replace(
-                            "attention.wqkv.weight", "self_attn.v_proj.weight")] = wv
+                            "attention.wv.weight", "self_attn.v_proj.weight")] = value
                     if key.endswith("wo.weight"):
                         raw_state_dict[key.replace("blocks", "model.layers").replace(
                             "attention.wo.weight", "self_attn.o_proj.weight")] = value
@@ -810,29 +848,17 @@ def conver_model(collie_model_folder: str,
                     if key.endswith("norm.weight"):
                         raw_state_dict["model.norm.weight"] = value
                 if raw_model_folder is not None:
-                    if key.endswith("wqkv.weight"):
-                        wq = value[:model_args.hidden_size, :]
-                        wk = value[model_args.hidden_size:2 *
-                                   model_args.hidden_size, :]
-                        wv = value[2*model_args.hidden_size:, :]
-                        raw_state_dict[key.replace("blocks", "layers").replace(
-                            "attention.wqkv.weight", "attention.wq.weight")] = wq
-                        raw_state_dict[key.replace("blocks", "layers").replace(
-                            "attention.wqkv.weight", "attention.wk.weight")] = wk
-                        raw_state_dict[key.replace("blocks", "layers").replace(
-                            "attention.wqkv.weight", "attention.wv.weight")] = wv
+                    if key.endswith("wq.weight") or key.endswith("wk.weight") or \
+                        key.endswith("wv.weight"):
+                        raw_state_dict[key.replace("blocks", "model.layers")] = set_tensor_parallel(value, dim=1)
                     if key.endswith("wo.weight"):
+                        raw_state_dict[key.replace("blocks", "model.layers")] = set_tensor_parallel(value, dim=0)
+                    if key.endswith("mlp.w1.weight") or key.endswith("mlp.w3.weight"):
                         raw_state_dict[key.replace("blocks", "layers").replace(
-                            "attention.wo.weight", "attention.wo.weight")] = value
-                    if key.endswith("mlp.w1.weight"):
-                        raw_state_dict[key.replace("blocks", "layers").replace(
-                            "mlp.w1.weight", "feed_forward.w1.weight")] = value
+                            "mlp", "feed_forward")] = set_tensor_parallel(value, dim=1)
                     if key.endswith("mlp.w2.weight"):
                         raw_state_dict[key.replace("blocks", "layers").replace(
-                            "mlp.w1.weight", "feed_forward.w2.weight")] = value
-                    if key.endswith("mlp.w3.weight"):
-                        raw_state_dict[key.replace("blocks", "layers").replace(
-                            "mlp.w1.weight", "feed_forward.w3.weight")] = value
+                            "mlp", "feed_forward")] = set_tensor_parallel(value, dim=0)
                     if key.endswith("attention.norm.weight"):
                         raw_state_dict[key.replace("blocks", "layers").replace(
                             "attention.norm.weight", "attention_norm.weight")] = value
@@ -840,22 +866,25 @@ def conver_model(collie_model_folder: str,
                         raw_state_dict[key.replace("blocks", "layers").replace(
                             "mlp.norm.weight", "ffn_norm.weight")] = value
                     if key.endswith("token_embedding.weight"):
-                        raw_state_dict["tok_embeddings.weight"] = value
+                        raw_state_dict["tok_embeddings.weight"] = set_tensor_parallel(value, dim=0)
                     if key.endswith("language_model_head.weight"):
-                        raw_state_dict["output.weight"] = value
+                        raw_state_dict["output.weight"] = set_tensor_parallel(value, dim=0)
                     if key.endswith("norm.weight"):
                         raw_state_dict["norm.weight"] = value
                 pbar.update(1)
     if len(raw_state_dict) > 0:
-        with open(os.path.join(raw_model_folder, "consolidated.00.pth"), "wb") as f:
-            torch.save(raw_state_dict, f)
+        os.makedirs(raw_model_folder, exist_ok=True)
+        raw_state_dict['rope.freqs'] = inv_freq
+        for i in range(raw_tp_size):
+            with open(os.path.join(raw_model_folder, "consolidated.{:0>2}.pth".format(i)), "wb") as f:
+                torch.save({key: value[i] if isinstance(value, list) else value
+                    for key, value in raw_state_dict.items()}, f)
     if len(hf_state_dict) > 0:
+        os.makedirs(hf_model_folder, exist_ok=True)
         model_index = OrderedDict({
             "weight_map": {},
             "metadata": {"total_size": 0}
         })
-        inv_freq = 1.0 / (10000.0 ** (torch.arange(0, model_args.hidden_size // model_args.num_attention_heads,
-                          2).float() / model_args.hidden_size // model_args.num_attention_heads))
         for layer in range(model_args.num_hidden_layers):
             filename = f"pytorch_model-{layer + 1}-of-{model_args.num_hidden_layers + 1}.bin"
             layer_state_dict = {key: value for key, value in hf_state_dict.items(
@@ -920,3 +949,49 @@ def get_65B_llama(model_args: ModelArgs = ModelArgs()):
     }.items():
         setattr(model_args, key, value)
     return build_pipe(model_args)
+
+def get_7B_llama_config(model_args: ModelArgs = ModelArgs()):
+    for key, value in {
+        "vocab_size": 32000,
+        "hidden_size": 4096,
+        "intermediate_size": 11008,
+        "num_hidden_layers": 32,
+        "num_attention_heads": 32
+    }.items():
+        setattr(model_args, key, value)
+    return model_args
+
+
+def get_13B_llama_config(model_args: ModelArgs = ModelArgs()):
+    for key, value in {
+        "vocab_size": 32000,
+        "hidden_size": 5120,
+        "intermediate_size": 13824,
+        "num_hidden_layers": 40,
+        "num_attention_heads": 40
+    }.items():
+        setattr(model_args, key, value)
+    return model_args
+
+
+def get_30B_llama_config(model_args: ModelArgs = ModelArgs()):
+    for key, value in {
+        "vocab_size": 32000,
+        "hidden_size": 6656,
+        "intermediate_size": 17920,
+        "num_hidden_layers": 60,
+        "num_attention_heads": 52
+    }.items():
+        setattr(model_args, key, value)
+    return model_args
+
+def get_65B_llama_config(model_args: ModelArgs = ModelArgs()):
+    for key, value in {
+        "vocab_size": 32000,
+        "hidden_size": 8192,
+        "intermediate_size": 22016,
+        "num_hidden_layers": 80,
+        "num_attention_heads": 64
+    }.items():
+        setattr(model_args, key, value)
+    return model_args
