@@ -13,7 +13,8 @@ output_dir: 'output_codegen'
 deepspeed: 'ds_config.json'
 do_train: true
 do_eval: true
-evaluation_strategy: 'epoch'
+evaluation_strategy: 'epoch' # epoch, steps
+# eval_steps: 50
 per_device_train_batch_size: 4
 per_device_eval_batch_size: 8
 learning_rate: 0.005

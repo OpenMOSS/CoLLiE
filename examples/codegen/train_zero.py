@@ -1,11 +1,11 @@
 import os
 import sys
 sys.path.append("../../")
-import torch
 
+import torch
+from torch.utils.data import Subset
 from transformers import HfArgumentParser
 from transformers import set_seed
-from transformers.deepspeed import HfDeepSpeedConfig
 
 from collie.models.codegen import CodeGenForCausalLM, CodeGenConfig
 from collie.models.codegen_tokenizer import CodeGenTokenizer
@@ -48,9 +48,10 @@ def train():
     # ========== 3. Preprocessing the datasets. ==========
     dataset_info = get_dataset_info(data_args.dataset_name)
     train_dataset = MyDataset(data_args, tokenizer, dataset_info, split=dataset_info.exemplar_split)
-    # if data_args.few_shot_size != -1:
-    #     # few_shot_indices = sample(range(len(train_dataset)), data_args.few_shot_size)
-    #     train_dataset = Subset(train_dataset, range(data_args.few_shot_size))
+    if data_args.few_shot_size != -1:
+        # few_shot_indices = sample(range(len(train_dataset)), data_args.few_shot_size)
+        train_dataset = Subset(train_dataset, range(data_args.few_shot_size))
+
     eval_dataset = MyDataset(data_args, tokenizer, dataset_info, split=dataset_info.eval_split)
     if dataset_info.test_split:
         test_dataset = MyDataset(data_args, tokenizer, dataset_info, split=dataset_info.test_split)
