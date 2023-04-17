@@ -34,3 +34,10 @@ class ModelArguments(ModelArgs):
     protocol: str = field(
         default="file",
         metadata={"help": "protocol to load state dict to pipieline model. including ['file', 's3']."})
+    
+@dataclass
+class TrainerArguments(TrainerArgs):
+    warmup: int = field(
+        default=0,
+        metadata={"help": "Number of warmup steps for linear scheduler"}
+    )
