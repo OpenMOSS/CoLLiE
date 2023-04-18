@@ -17,6 +17,7 @@ python setup.py install
 ```
 
 ## Features
+
 1. Utilizes Colossal-AI's pipeline parallelism mode (requires installing [Colossal-AI](https://github.com/hpcaitech/ColossalAI)).
 2. Replaces the original attention structure with flash-attention (requires installing [flash-attn](https://github.com/HazyResearch/flash-attention)).
 3. Replaces the original dense layer with fused-dense (requires installing [fused_dense_lib](https://github.com/HazyResearch/flash-attention/tree/main/csrc/fused_dense_lib)).
@@ -32,9 +33,25 @@ python setup.py install
 + [x] Utilizes Deepspeed's ZeRO.
 + [x] Implement Inplace SGD.
 + [x] Reimplement LlaMA with Colossal-AI APIs.
++ [x] Speed Benchmark.
 + [ ] Support Colossal-AI's tensor parallelism and ZeRO CPU offload.
-+ [ ] Speed Benchmark.
 + [ ] Add more examples.
+
+## Speed Benchmark
+
+#### LLAMA with Colossal-AI parallelism
+
+| LLAMA | Parallel   | Optimizer | Time (us/token) | Mem (GB/GPU) |
+| ----- | ---------- | --------- | --------------- | ------------ |
+| 7B    | pp=8, tp=1 | SGD       | 236.51          | 13.933       |
+| 7B    | pp=4, tp=2 | SGD       | 440.06          | 13.841       |
+| 7B    | pp=2, tp=4 | SGD       | 885.00          | 14.081       |
+| 7B    | pp=1, tp=8 | SGD       | 2885.74         | 14.173       |
+| 13B   | pp=8, tp=1 | SGD       | 358.58          | 24.265       |
+| 13B   | pp=4, tp=2 | SGD       | 716.32          | 23.799       |
+| 13B   | pp=2, tp=4 | SGD       | 1386.33         | 23.835       |
+| 13B   | pp=1, tp=8 | SGD       | 5009.76         | 23.967       |
+
 
 ## How to use CoLLiE
 
