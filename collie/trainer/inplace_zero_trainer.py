@@ -1,7 +1,7 @@
 import os.path
 import sys
 import operator
-from typing import Iterable
+from collections import OrderedDict
 from itertools import chain
 
 import tqdm
@@ -345,142 +345,48 @@ class InplaceZeroTrainer:
         )
 
     def save_model(self):
-        with GatheredParameters(self.model.parameters(), modifier_rank=0) as gathered_params:
-            if self.collie_args.local_rank == 0:
-                state_dict = self.model.module.state_dict()
-                torch.save(state_dict, os.path.join(self.collie_args.output_dir, 'pytorch_model.bin'))
-            torch.distributed.barrier()
+        state_dict = OrderedDict()
+        output_dir = self.collie_args.output_dir
+        for n, p in self.model.module.named_parameters():
+            state_dict[n] = (p.ds_tensor.detach().cpu(), p.ds_numel, p.ds_shape)
+        os.makedirs(output_dir, exist_ok=True)
+        # save model shards
+        with open(os.path.join(output_dir, f'pytorch_model-{self.collie_args.local_rank}.bin'), 'wb') as f:
+            torch.save(state_dict, f)
+        torch.distributed.barrier()
+        # merge model shards
+        if self.collie_args.local_rank == 0:
+            # save config
+            self.model.module.config.save_pretrained(output_dir)
+            for rank in range(1, self.collie_args.world_size):
+                with open(os.path.join(output_dir, f'pytorch_model-{rank}.bin'), 'rb') as f:
+                    state_dict_rank = torch.load(f)
+                    for n in state_dict_rank:
+                        print(n, state_dict[n][0].shape)
+                        state_dict[n] = (
+                            torch.cat([state_dict[n][0], state_dict_rank[n][0]], dim=0),
+                            state_dict[n][1],
+                            state_dict[n][2]
+                        )
+                        print(n, state_dict[n][0].shape)
+                # remove shard files
+                os.remove(os.path.join(output_dir, f'pytorch_model-{rank}.bin'))
+            # reshape to original shape
+            for n in state_dict:
+                numel = state_dict[n][1]
+                shape = state_dict[n][2]
+                state_dict[n] = state_dict[n][0][:numel].view(shape)
+
+            # save inv_freq for llama
+            if self.model.module.config.model_type == "llama":
+                num_layers = self.model.module.config.num_hidden_layers
+                head_dim = self.model.module.config.hidden_size // self.model.module.config.num_attention_heads
+                base = 10000.0
+                inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2).float() / head_dim))
+                for layer in num_layers:
+                    state_dict[f'model.layers.{layer}.self_attn.rotary_emb.inv_freq'] = inv_freq
 
 
-class GatheredParameters:
-    def __init__(self, params, modifier_rank=None, fwd_module=None, enabled=True):
-        """A context that collects parameters that were partitioned via a
-        :class:`deepspeed.zero.Init` context. The parameters are partitioned
-        again upon exit.
-
-        Args:
-            params (``torch.nn.Parameter``): A single parameter, or an iterable of parameters (list, tuple, generator) of parameters to collect.
-                It's assumed that all parameters are zero params.
-            modifier_rank (int, optional): If specified, this rank's parameter will be
-                broadcasted on exit from the context. This argument is required if ``params`` are
-                modified, so that all processes have a consistent view of the data. Defaults
-                to ``None``.
-            fwd_module (``torch.nn.Module``, optional): If specified, ``params`` will be
-                registered as external parameters of ``fwd_module``. See :meth:`deepspeed.zero.register_external_parameter`.
-            enabled (bool, optional): If ``False``, this context is a no-op. Defaults to ``True``.
-
-        Important: Make sure to use ``modifier_rank`` that is not ``None`` (e.g., ``modifier_rank=0``)
-        if you need the GPU memory allocated by gather to be released upon exit from the context manager.
-
-        Important: if ``params`` isn't an iterable of parameters or a single parameter it'll be silently ignored!
-
-        Examples
-        ========
-
-        #. Allocate a partitioned module, initialize its weight on rank 0, and update all
-           processes.
-
-            .. code-block:: python
-
-                with deepspeed.zero.Init():
-                    linear = torch.nn.Linear(1000,1000)
-
-                with deepspeed.zero.GatheredParameters(linear.weight,
-                                                       modifier_rank=0):
-                    if deepspeed.comm.get_rank() == 0:
-                        linear.weight.zero_()
-
-                with deepspeed.zero.GatheredParameters(linear.weight,
-                                                       modifier_rank=0):
-                    if deepspeed.comm.get_rank() == 0:
-                        linear.weight.zero_()
-
-        #. Collect a partitioned weight to pass to another module during
-           training. The parameter will be registered as an external parameter
-           and made available during the backward pass.
-
-            .. code-block:: python
-                :emphasize-lines: 6
-
-                def forward(self, input):
-                    x = self.layer1(input)
-
-                    # self.layer1.weight is required by self.layer2.forward
-                    with deepspeed.zero.GatheredParameters(self.layer1.weight,
-                                                           fwd_module=self):
-                        y = self.layer2(x, self.layer1.weight)
-                    return y
-
-
-        #. Pretrained model loading
-
-            .. code-block:: python
-
-                with deepspeed.zero.Init():
-                    model = MyModel()
-
-                state_dict = torch.load(model_path, map_location="cpu")
-
-                def load(module: nn.Module, prefix=""):
-                    # because zero3 puts placeholders in model params, this context
-                    # manager gathers (unpartitions) the params of the current layer, then loads from
-                    # the state dict and then re-partitions them again
-                    with deepspeed.zero.GatheredParameters(list(module.parameters(recurse=False)), modifier_rank=0):
-                        if deepspeed.comm.get_rank() == 0:
-                            module._load_from_state_dict(state_dict, prefix)
-
-                    for name, child in module._modules.items():
-                        if child is not None:
-                            load(child, prefix + name + ".")
-
-                load(model, prefix="")
-
-        If this approach is not used, then the full model will first be copied to each GPU. For models
-        bigger than the memory of a single GPU, this method is required.
-        """
-
-        self.enabled = enabled
-        if not enabled:
-            return
-
-        if isinstance(params, Iterable) and not isinstance(params, torch.Tensor):
-            # deal with generators like model.parameters()
-            # must convert to list to be able to iterate more than once if we get a generator
-            params = list(params)
-        else:
-            # single param
-            params = [params]
-
-        self.params = [p for p in params if hasattr(p, "ds_id")]
-        self.src_rank = None
-        if modifier_rank is not None:
-            if self.params[0].ds_process_group == dist.get_world_group():
-                self.src_rank = modifier_rank
-            else:
-                # A group was specified; convert DP rank to global rank
-                self.src_rank = dist.get_global_rank(self.params[0].ds_process_group,
-                                                     modifier_rank)
-
-    def __enter__(self):
-        if not self.enabled:
-            return
-        self.params[0].all_gather(param_list=self.params)
-
-    def __exit__(self, *exc):
-        if not self.enabled:
-            return
-        if self.src_rank is None:
-            self.params[0].partition(param_list=self.params, has_been_updated=False)
-            return
-
-        handles = [
-            dist.broadcast(p,
-                           self.src_rank,
-                           group=p.ds_process_group,
-                           async_op=True) for p in self.params
-        ]
-        for h in handles:
-            h.wait()
-        for p in self.params[0]:
-            p.active_sub_modules = None
-        self.params[0].partition(param_list=self.params, has_been_updated=True)
+            with open(os.path.join(output_dir, f'pytorch_model.bin'), 'wb') as f:
+                torch.save(state_dict, f)
+        torch.distributed.barrier()
