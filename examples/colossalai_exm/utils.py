@@ -43,7 +43,7 @@ class DataCollatorForCauselLM:
     padding: Union[bool, str, PaddingStrategy] = True
     max_length: Optional[int] = None
     pad_to_multiple_of: Optional[int] = None
-    label_pad_token_id: int = -100
+    label_pad_token_id: int = 0
     return_tensors: str = "pt"
     padding_side: str = 'right'
 
@@ -131,7 +131,7 @@ class EvalDataCollatorForCauselLM:
     padding: Union[bool, str, PaddingStrategy] = True
     max_length: Optional[int] = None
     pad_to_multiple_of: Optional[int] = None
-    label_pad_token_id: int = -100
+    label_pad_token_id: int = 0
     return_tensors: str = "pt"
     padding_side: str = 'left'
 

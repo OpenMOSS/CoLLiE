@@ -12,7 +12,7 @@ except:
 class GPTLMLoss(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        self.loss = torch.nn.CrossEntropyLoss(ignore_index=-100)  # ignore <pad> when compute loss
+        self.loss = torch.nn.CrossEntropyLoss(ignore_index=0)  # ignore <pad> when compute loss
 
     def forward(self, logits, labels):
         shift_logits = logits[..., :-1, :].contiguous()

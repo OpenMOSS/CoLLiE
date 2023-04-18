@@ -12,7 +12,7 @@ from torch.utils.data import Dataset
 from collie.log import print
 from prompts import QuestionPart, Exemplar
 
-IGNORE_INDEX = -100
+IGNORE_INDEX = 0
 
 
 class MyDataset(Dataset):
