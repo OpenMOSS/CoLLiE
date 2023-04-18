@@ -10,7 +10,7 @@ max_length: 256
 tag: 'test'
 output_dir: 'outputs'
 overwrite_output_dir: true
-deepspeed: 'mcqa/ds_config.json'
+deepspeed: 'ds_config.json'
 do_train: true
 do_eval: false
 evaluation_strategy: 'no'
