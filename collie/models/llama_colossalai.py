@@ -753,9 +753,9 @@ def save_state_dict(model: nn.Module,
                 module = module[int(subkey)]
             else:
                 module = getattr(module, subkey)
-        if "col" in module.__class__.__name__.lower():
+        if "col" in module.__class__.__name__.lower()  or "vocab" in module.__class__.__name__.lower():
             part_state_dict[f"{key}-col"] = part_state_dict[key].cpu()
-        elif "row" in module.__class__.__name__.lower() or "vocab" in module.__class__.__name__.lower():
+        elif "row" in module.__class__.__name__.lower():
             part_state_dict[f"{key}-row"] = part_state_dict[key].cpu()
         else:
             part_state_dict[key] = part_state_dict[key].cpu()
@@ -764,9 +764,39 @@ def save_state_dict(model: nn.Module,
     torch.distributed.barrier()
     if gpc.get_global_rank() == 0:
         state_dict = OrderedDict()
-        for i in range(gpc.get_pipeline_model_parallel_size()):
-            with open(os.path.join(tempdir[0], f"pipeline_{i}.pt"), "rb") as f:
-                state_dict.update(torch.load(f))
+        files = [file for file in list(os.listdir(tempdir[0])) if file.endswith(".pt")]
+        pp_tp_map = OrderedDict({file: list(map(int, re.match(r'pipeline_(\d+)_tensor_(\d+)\.pt', file).groups())) for file in files})
+        pp_size = max([value[0] for value in pp_tp_map.values()]) + 1
+        tp_size = max([value[1] for value in pp_tp_map.values()]) + 1
+        for pp in range(pp_size):
+            max_layer = max([-1] + [int(match.groups()[0]) for match in [re.match(r'blocks\.(\d+)\..*', key) for key in state_dict.keys()] if match is not None])
+            for tp in range(tp_size):
+                with open(os.path.join(tempdir[0], f'pipeline_{pp}_tensor_{tp}.pt'), "rb") as f:
+                    part_state_dict = torch.load(f, map_location="cpu")
+                    for key in list(part_state_dict.keys()):
+                        if key.startswith("blocks."):
+                            idx = int(re.match(r'blocks\.(\d+)\..*', key).groups()[0])
+                            part_state_dict[f"blocks.{idx + max_layer + 1}.{'.'.join(key.split('.')[2:])}"] = part_state_dict.pop(key)
+                    for key in list(part_state_dict.keys()):
+                        if key.endswith("-col") or key.endswith("-row"):
+                            if key not in state_dict.keys():
+                                state_dict[key] = [None] * tp_size
+                                state_dict[key][tp] = part_state_dict[key]
+                            else:
+                                state_dict[key][tp] = part_state_dict[key]
+                        else:
+                            state_dict[key] = part_state_dict[key]
+        for key in list(state_dict.keys()):
+            if key.endswith("-col") and isinstance(state_dict[key], List):
+                if len(state_dict[key]) == 1:
+                    state_dict[key.replace("-col", "")] = state_dict.pop(key)[0]
+                else:
+                    state_dict[key.replace("-col", "")] = torch.cat(state_dict.pop(key), dim=0)
+            elif key.endswith("-row") and isinstance(state_dict[key], List):
+                if len(state_dict[key]) == 1:
+                    state_dict[key.replace("-row", "")] = state_dict.pop(key)[0]
+                else:
+                    state_dict[key.replace("-row", "")] = torch.cat(state_dict.pop(key), dim=1)
         if protocol == "s3":
             if not s3_folder.endswith("/"):
                 s3_folder += "/"
@@ -789,6 +819,8 @@ def convert_model(collie_model_folder: str,
                  raw_tp_size: int = 1,
                  raw_tp_device_map: Optional[Dict] = None,
                  model_args: ModelArgs = ModelArgs()):
+    if os.environ.get("LOCAL_RANK", "0") != "0":
+        return
     raw_state_dict = OrderedDict()
     hf_state_dict = OrderedDict()
     weights = [weight for weight in list(os.listdir(
@@ -831,10 +863,10 @@ def convert_model(collie_model_folder: str,
                             "w1.weight", "gate_proj.weight")] = value
                     if key.endswith("mlp.w2.weight"):
                         hf_state_dict[key.replace("blocks", "model.layers").replace(
-                            "w1.weight", "up_proj.weight")] = value
+                            "w2.weight", "up_proj.weight")] = value
                     if key.endswith("mlp.w3.weight"):
                         hf_state_dict[key.replace("blocks", "model.layers").replace(
-                            "w1.weight", "down_proj.weight")] = value
+                            "w3.weight", "down_proj.weight")] = value
                     if key.endswith("attention.norm.weight"):
                         hf_state_dict[key.replace("blocks", "model.layers").replace(
                             "attention.norm.weight", "input_layernorm.weight")] = value
@@ -902,6 +934,26 @@ def convert_model(collie_model_folder: str,
                 torch.save(layer_state_dict, f)
         with open(os.path.join(hf_model_folder, "pytorch_model.bin.index.json"), "w") as f:
             f.write(json.dumps(model_index, indent=4))
+        config = {"architectures": ["LLaMAForCausalLM"], 
+                  "bos_token_id": 0, 
+                  "eos_token_id": 1, 
+                  "hidden_act": "silu", 
+                  "hidden_size": 4096, 
+                  "intermediate_size": model_args.intermediate_size, 
+                  "initializer_range": 0.02, 
+                  "max_sequence_length": 2048, 
+                  "model_type": "llama", 
+                  "num_attention_heads": model_args.num_attention_heads, 
+                  "num_hidden_layers": model_args.num_hidden_layers, 
+                  "pad_token_id": -1, 
+                  "rms_norm_eps": model_args.layer_norm_epsilon, 
+                  "torch_dtype": "float16" if model_args.fp16 else "float32", 
+                  "transformers_version": "4.27.0.dev0", 
+                  "use_cache": True, 
+                  "vocab_size": model_args.vocab_size}
+        with open(os.path.join(hf_model_folder, "config.json"), "w") as f:
+            f.write(json.dumps(config, indent=4))
+
 
 
 def get_7B_llama(model_args: ModelArgs = ModelArgs()):

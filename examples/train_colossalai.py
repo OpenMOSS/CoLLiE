@@ -41,8 +41,8 @@ def main():
     model_args.micro_batch_num = 128
     model_args.fp16 = True
     model_args.checkpoint = True
-    model_args.dense = "fused"
-    model_args.attention = "raw"
+    model_args.dense = "raw"
+    model_args.attention = "flash"
     model_args.rotary_emb = "raw"
     
     trainer_args = TrainerArgs()

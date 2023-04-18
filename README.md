@@ -52,7 +52,7 @@ python setup.py install
 | 13B   | pp=2, tp=4 | SGD       | 181.71 s    | 23835 MB  | 90.1  |
 | 13B   | pp=1, tp=8 | SGD       | 656.64 s    | 23967 MB  | 25.0  |
 
-<font size=2>* experiment detail: batch size: 128, micro batch size: 128 sentence length: 1024</font>
+<font size=2>* experiment detail: batch size: 128, micro batch size: 128, sentence length: 1024</font>
 
 #### LLAMA with DeepSpeed Inplace ZeRO
 
@@ -64,6 +64,8 @@ python setup.py install
 | 65B   | 8    | 512     | 2          | 67.1 s      | 15.26  |
 
 <font size=2>* TGS = tokens / gpu /s</font>
+
+<font size=2>* All of our benchmarks were conducted on RTX 3090</font>
 
 ## How to use CoLLiE
 
