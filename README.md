@@ -41,17 +41,18 @@ python setup.py install
 
 #### LLAMA with Colossal-AI parallelism
 
-| LLAMA | Parallel   | Optimizer | Time (us/token) | Mem (GB/GPU) |
-| ----- | ---------- | --------- | --------------- | ------------ |
-| 7B    | pp=8, tp=1 | SGD       | 236.51          | 13.933       |
-| 7B    | pp=4, tp=2 | SGD       | 440.06          | 13.841       |
-| 7B    | pp=2, tp=4 | SGD       | 885.00          | 14.081       |
-| 7B    | pp=1, tp=8 | SGD       | 2885.74         | 14.173       |
-| 13B   | pp=8, tp=1 | SGD       | 358.58          | 24.265       |
-| 13B   | pp=4, tp=2 | SGD       | 716.32          | 23.799       |
-| 13B   | pp=2, tp=4 | SGD       | 1386.33         | 23.835       |
-| 13B   | pp=1, tp=8 | SGD       | 5009.76         | 23.967       |
+| Model | Parallel   | Optimizer | Time / step | Mem / GPU | TGS   |
+| ----- | ---------- | --------- | ----------- | --------- | ----- |
+| 7B    | pp=8, tp=1 | SGD       | 30.99 s     | 13933 MB  | 528.5 |
+| 7B    | pp=4, tp=2 | SGD       | 57.68s      | 13841 MB  | 284.0 |
+| 7B    | pp=2, tp=4 | SGD       | 115s        | 14081 MB  | 141.2 |
+| 7B    | pp=1, tp=8 | SGD       | 378.24s     | 14173 MB  | 43.3  |
+| 13B   | pp=8, tp=1 | SGD       | 46.99s      | 24265 MB  | 348.5 |
+| 13B   | pp=4, tp=2 | SGD       | 93.89s      | 23799 MB  | 174.5 |
+| 13B   | pp=2, tp=4 | SGD       | 181.71s     | 23835 MB  | 90.1  |
+| 13B   | pp=1, tp=8 | SGD       | 656.64s     | 23967 MB  | 25.0  |
 
+<font size=2>* experiment detail: batch size: 128, micro batch size: 128 sentence length: 1024</font>
 
 ## How to use CoLLiE
 
