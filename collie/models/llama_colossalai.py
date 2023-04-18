@@ -863,10 +863,10 @@ def convert_model(collie_model_folder: str,
                             "w1.weight", "gate_proj.weight")] = value
                     if key.endswith("mlp.w2.weight"):
                         hf_state_dict[key.replace("blocks", "model.layers").replace(
-                            "w2.weight", "up_proj.weight")] = value
+                            "w2.weight", "down_proj.weight")] = value
                     if key.endswith("mlp.w3.weight"):
                         hf_state_dict[key.replace("blocks", "model.layers").replace(
-                            "w3.weight", "down_proj.weight")] = value
+                            "w3.weight", "up_proj.weight")] = value
                     if key.endswith("attention.norm.weight"):
                         hf_state_dict[key.replace("blocks", "model.layers").replace(
                             "attention.norm.weight", "input_layernorm.weight")] = value
