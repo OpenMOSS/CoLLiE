@@ -44,15 +44,26 @@ python setup.py install
 | Model | Parallel   | Optimizer | Time / step | Mem / GPU | TGS   |
 | ----- | ---------- | --------- | ----------- | --------- | ----- |
 | 7B    | pp=8, tp=1 | SGD       | 30.99 s     | 13933 MB  | 528.5 |
-| 7B    | pp=4, tp=2 | SGD       | 57.68s      | 13841 MB  | 284.0 |
-| 7B    | pp=2, tp=4 | SGD       | 115s        | 14081 MB  | 141.2 |
-| 7B    | pp=1, tp=8 | SGD       | 378.24s     | 14173 MB  | 43.3  |
-| 13B   | pp=8, tp=1 | SGD       | 46.99s      | 24265 MB  | 348.5 |
-| 13B   | pp=4, tp=2 | SGD       | 93.89s      | 23799 MB  | 174.5 |
-| 13B   | pp=2, tp=4 | SGD       | 181.71s     | 23835 MB  | 90.1  |
-| 13B   | pp=1, tp=8 | SGD       | 656.64s     | 23967 MB  | 25.0  |
+| 7B    | pp=4, tp=2 | SGD       | 57.68 s     | 13841 MB  | 284.0 |
+| 7B    | pp=2, tp=4 | SGD       | 115 s       | 14081 MB  | 141.2 |
+| 7B    | pp=1, tp=8 | SGD       | 378.24 s    | 14173 MB  | 43.3  |
+| 13B   | pp=8, tp=1 | SGD       | 46.99 s     | 24265 MB  | 348.5 |
+| 13B   | pp=4, tp=2 | SGD       | 93.89 s     | 23799 MB  | 174.5 |
+| 13B   | pp=2, tp=4 | SGD       | 181.71 s    | 23835 MB  | 90.1  |
+| 13B   | pp=1, tp=8 | SGD       | 656.64 s    | 23967 MB  | 25.0  |
 
 <font size=2>* experiment detail: batch size: 128, micro batch size: 128 sentence length: 1024</font>
+
+#### LLAMA with DeepSpeed Inplace ZeRO
+
+| Model | GPUs | Seq len | Batch size | Time / step | TGS   |
+| ----- | ---- | ------- | ---------- | ----------- | ----- |
+| 7B    | 1    | 1024    | 3          | 3.96 s      | 832.5 |
+| 13B   | 2    | 1024    | 4          | 11.7 s      | 53.2  |
+| 30B   | 4    | 960     | 2          | 34.06 s     | 56.37 |
+| 65B   | 8    | 512     | 2          | 67.1 s      | 15.26 |
+
+<font size=2>* TGS = tokens / gpu /s</font>
 
 ## How to use CoLLiE
 
