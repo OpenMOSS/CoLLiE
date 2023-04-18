@@ -815,38 +815,38 @@ def convert_model(collie_model_folder: str,
             for step, (key, value) in enumerate(pbar):
                 if hf_model_folder is not None:
                     if key.endswith("wq.weight"):
-                        raw_state_dict[key.replace("blocks", "model.layers").replace(
+                        hf_state_dict[key.replace("blocks", "model.layers").replace(
                             "attention.wq.weight", "self_attn.q_proj.weight")] = reshape_wq_wk(value)
                     if key.endswith("wk.weight"):
-                        raw_state_dict[key.replace("blocks", "model.layers").replace(
+                        hf_state_dict[key.replace("blocks", "model.layers").replace(
                             "attention.wk.weight", "self_attn.k_proj.weight")] = reshape_wq_wk(value)
                     if key.endswith("wv.weight"):
-                        raw_state_dict[key.replace("blocks", "model.layers").replace(
+                        hf_state_dict[key.replace("blocks", "model.layers").replace(
                             "attention.wv.weight", "self_attn.v_proj.weight")] = value
                     if key.endswith("wo.weight"):
-                        raw_state_dict[key.replace("blocks", "model.layers").replace(
+                        hf_state_dict[key.replace("blocks", "model.layers").replace(
                             "attention.wo.weight", "self_attn.o_proj.weight")] = value
                     if key.endswith("mlp.w1.weight"):
-                        raw_state_dict[key.replace("blocks", "model.layers").replace(
+                        hf_state_dict[key.replace("blocks", "model.layers").replace(
                             "w1.weight", "gate_proj.weight")] = value
                     if key.endswith("mlp.w2.weight"):
-                        raw_state_dict[key.replace("blocks", "model.layers").replace(
+                        hf_state_dict[key.replace("blocks", "model.layers").replace(
                             "w1.weight", "up_proj.weight")] = value
                     if key.endswith("mlp.w3.weight"):
-                        raw_state_dict[key.replace("blocks", "model.layers").replace(
+                        hf_state_dict[key.replace("blocks", "model.layers").replace(
                             "w1.weight", "down_proj.weight")] = value
                     if key.endswith("attention.norm.weight"):
-                        raw_state_dict[key.replace("blocks", "model.layers").replace(
+                        hf_state_dict[key.replace("blocks", "model.layers").replace(
                             "attention.norm.weight", "input_layernorm.weight")] = value
                     if key.endswith("mlp.norm.weight"):
-                        raw_state_dict[key.replace("blocks", "model.layers").replace(
+                        hf_state_dict[key.replace("blocks", "model.layers").replace(
                             "mlp.norm.weight", "post_attention_layernorm.weight")] = value
                     if key.endswith("token_embedding.weight"):
-                        raw_state_dict["model.embed_tokens.weight"] = value
+                        hf_state_dict["model.embed_tokens.weight"] = value
                     if key.endswith("language_model_head.weight"):
-                        raw_state_dict["lm_head.weight"] = value
+                        hf_state_dict["lm_head.weight"] = value
                     if key.endswith("norm.weight"):
-                        raw_state_dict["model.norm.weight"] = value
+                        hf_state_dict["model.norm.weight"] = value
                 if raw_model_folder is not None:
                     if key.endswith("wq.weight") or key.endswith("wk.weight") or \
                         key.endswith("wv.weight"):
