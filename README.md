@@ -56,12 +56,12 @@ python setup.py install
 
 #### LLAMA with DeepSpeed Inplace ZeRO
 
-| Model | GPUs | Seq len | Batch size | Time / step | TGS   |
-| ----- | ---- | ------- | ---------- | ----------- | ----- |
-| 7B    | 1    | 1024    | 3          | 3.96 s      | 832.5 |
-| 13B   | 2    | 1024    | 4          | 11.7 s      | 53.2  |
-| 30B   | 4    | 960     | 2          | 34.06 s     | 56.37 |
-| 65B   | 8    | 512     | 2          | 67.1 s      | 15.26 |
+| Model | GPUs | Seq len | Batch size | Time / step | TGS    |
+| ----- | ---- | ------- | ---------- | ----------- | ------ |
+| 7B    | 1    | 1024    | 3          | 3.96 s      | 832.5  |
+| 13B   | 2    | 1024    | 4          | 11.7 s      | 350.09 |
+| 30B   | 4    | 960     | 2          | 34.06 s     | 56.37  |
+| 65B   | 8    | 512     | 2          | 67.1 s      | 15.26  |
 
 <font size=2>* TGS = tokens / gpu /s</font>
 
