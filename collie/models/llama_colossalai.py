@@ -396,6 +396,12 @@ class TransformerBlock(nn.Module):
         self.key_cache = [None for _ in range(self.model_args.micro_batch_num)]
         self.value_cache = [None for _ in range(self.model_args.micro_batch_num)]
         self.micro_batch_counter = 0 # 现在自己处于第几个 micro batch
+        
+    def clean_cache(self):
+        self.key_cache = [None for _ in range(self.model_args.micro_batch_num)]
+        self.value_cache = [None for _ in range(self.model_args.micro_batch_num)]
+        self.micro_batch_counter = 0 # 现在自己处于第几个 micro batch
+        torch.cuda.empty_cache()
 
     def forward(self,
                 hidden_states: Optional[torch.Tensor],

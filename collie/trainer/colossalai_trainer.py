@@ -155,24 +155,20 @@ class ColossalaiTrainer:
                     cached_len = current_pos
                     next_tokens_list = [torch.full((input_ids.shape[0], 1), -1, dtype=torch.long, device=torch.device(f"cuda:{os.environ['LOCAL_RANK']}")) for _ in range(int(os.environ.get("WORLD_SIZE")))]
                     if gpc.is_pipeline_last_stage():
-                        # if os.environ.get('LOCAL_RANK', '0') == '7':
-                        #     import pdb
-                        #     pdb.set_trace()
                         # top-p分布
-                        # scores = hidden_states[:,-1,:]
-                        # sorted_logits, sorted_indicies = torch.sort(scores, descending=True)
-                        # cumulative_probs = sorted_logits.softmax(dim=-1).cumsum(dim=-1)
-                        # sorted_indices_to_remove = cumulative_probs > self.trainer_args.eval_top_p
-                        # sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
-                        # sorted_indices_to_remove[..., 0] = 0
-                        # indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indicies, sorted_indices_to_remove)
-                        # scores = scores.masked_fill(indices_to_remove, -float('inf'))
-                        # # 温度采样
-                        # scores = torch.exp(scores / self.trainer_args.eval_temperature)
-                        # scores = scores / torch.sum(scores)
-                        next_tokens_list[int(os.environ.get("RANK"))] = torch.argmax(hidden_states[:, -1, :], dim=-1)
+                        scores = hidden_states[:,-1,:]
+                        sorted_logits, sorted_indicies = torch.sort(scores, descending=True)
+                        cumulative_probs = sorted_logits.softmax(dim=-1).cumsum(dim=-1)
+                        sorted_indices_to_remove = cumulative_probs > self.trainer_args.eval_top_p
+                        sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+                        sorted_indices_to_remove[..., 0] = 0
+                        indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indicies, sorted_indices_to_remove)
+                        scores = scores.masked_fill(indices_to_remove, -float('inf'))
+                        # 温度采样
+                        scores = torch.nn.functional.softmax(scores / self.trainer_args.eval_temperature, dim=-1)
+                        # next_tokens_list[int(os.environ.get("RANK"))] = torch.argmax(hidden_states[:, -1, :], dim=-1)
                         
-                        # next_tokens = torch.multinomial(scores, num_samples=1).squeeze(1)
+                        next_tokens_list[int(os.environ.get("RANK"))] = torch.multinomial(scores, num_samples=1).squeeze(1)
                         next_tokens_list[int(os.environ.get("RANK"))] = torch.unsqueeze(next_tokens_list[int(os.environ.get("RANK"))], dim=-1)
                     torch.distributed.all_gather(next_tokens_list, next_tokens_list[int(os.environ.get("RANK"))])
                     next_tokens = next_tokens_list[0]
@@ -198,11 +194,18 @@ class ColossalaiTrainer:
                     torch.cuda.empty_cache()
                 except StopIteration:
                     break
+        # clean caches for key & value
+        try:
+            _ = [block.clean_cache() for block in self.engine.model.blocks]
+        except AttributeError:
+            try:
+                _ = [block.clean_cache() for block in self.engine.model.model.blocks]
+            except AttributeError:
+                pass
         return input_ids
 
     def eval(self, epoch=0, step=0):
         with tqdm.tqdm(self.eval_dataloader, disable=not gpc.is_pipeline_last_stage()) as tqb:
-            result = {}
             for eval_step, batch in enumerate(tqb, start=1):
                 input_dict = batch[0]
                 label = batch[1]
