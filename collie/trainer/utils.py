@@ -91,6 +91,10 @@ class WandbLogger:
                 "Detected Wandb not installed while you have set "
                 "`report_to=['wandb']` in your collie config. Please "
                 "either set `report_to` to another value or install wandb.")
+        
+    def init(self, *args, **kwargs):
+        if self.able:
+            wandb.init(*args, **kwargs)
 
     def log(self, *args, **kwargs):
         if self.able:
