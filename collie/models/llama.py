@@ -436,6 +436,7 @@ class Transformer(nn.Module):
     ):
         generated_tokens = []
         pre_pos = 0
+        old_input_ids = input_ids
         start_pos = input_ids.shape[1] # length of prompt
 
         for cur_pos in range(start_pos, start_pos+max_new_tokens):
@@ -455,7 +456,7 @@ class Transformer(nn.Module):
             pre_pos = cur_pos
 
         sequences = torch.concat(
-            (input_ids, torch.stack(generated_tokens, dim=1)), dim=1
+            (old_input_ids, torch.stack(generated_tokens, dim=1)), dim=1
         )
         return sequences
 
