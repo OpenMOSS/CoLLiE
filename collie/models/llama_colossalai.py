@@ -8,6 +8,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
+import re
 import io
 import os
 import time
@@ -30,11 +31,12 @@ try:
     from colossalai.amp import AMP_TYPE
     from colossalai.core import global_context as gpc
     from colossalai.pipeline.utils import partition_uniform
+    from colossalai.nn.layer.base_layer import ParallelLayer
     from colossalai.context.parallel_mode import ParallelMode
     from colossalai.utils.activation_checkpoint import checkpoint
     from colossalai.nn.layer.wrapper import PipelineSharedModuleWrapper
-    from colossalai.nn.layer.parallel_1d import Linear1D_Col, Linear1D_Row
     from colossalai.utils.model.colo_init_context import ColoInitContext
+    from colossalai.nn.layer.parallel_1d import Linear1D_Col, Linear1D_Row
     from colossalai.logging import get_dist_logger, disable_existing_loggers
     from colossalai.nn.layer.parallel_1d.layers import VocabParallelEmbedding1D, VocabParallelClassifier1D
 except ModuleNotFoundError:
@@ -191,7 +193,7 @@ class RotaryPositionEmbedding(nn.Module):
         if self.model_args.rotary_emb == "raw":
             freqs = 1.0 / (10000.0 ** (
                 torch.arange(0, head_dim, 2)[: (head_dim // 2)].float() / head_dim))
-            t = torch.arange(1024
+            t = torch.arange((2 ** 16)
                              * 2, device=freqs.device)
             freqs = torch.outer(t, freqs).float()
             self.freqs_cis = torch.polar(torch.ones_like(freqs), freqs).to(
@@ -395,7 +397,7 @@ class TransformerBlock(nn.Module):
             object.__setattr__(self, "attention_fn", attention)
         self.key_cache = [None for _ in range(self.model_args.micro_batch_num)]
         self.value_cache = [None for _ in range(self.model_args.micro_batch_num)]
-        self.micro_batch_counter = 0 # 现在自己处于第几个 micro batch
+        self.micro_batch_counter = 0
         
     def clean_cache(self):
         self.key_cache = [None for _ in range(self.model_args.micro_batch_num)]
@@ -589,26 +591,25 @@ def build_pipe(model_args: ModelArgs = ModelArgs()):
 
 
 def load_state_dict(protocol: str = "s3",
-                    source: str = "hf",
+                    format: str = "hf",
                     file_folder: str = "/remote-home/share/llama/7B",
                     s3_folder: str = "hdd:s3://opennlplab_hdd/models/llama/llama-7b-hf",
                     model_args: ModelArgs = ModelArgs()) -> Dict[str, torch.tensor]:
-    assert source in ["hf", "raw",
-                      "collie"], "source must be hf or raw or collie"
+    assert format in ["hf", "raw"], "format must be hf or raw"
     assert protocol in ["s3", "file"], "protocol must be one of s3, file"
     state_dict = OrderedDict()
     part_state_dict = OrderedDict()
     tempdir = [""]
-    if gpc.get_global_rank() == 0:
+    if not torch.distributed.is_initialized() or gpc.get_local_rank(ParallelMode.GLOBAL) == 0:
         if protocol == "s3":
             from petrel_client.client import Client
             client = Client()
             if not s3_folder.endswith("/"):
                 s3_folder = f"{s3_folder}/"
-            if source == "raw" or source == "collie":
+            if format == "raw":
                 weights = [weight for weight in client.list(
-                    s3_folder) if weight.endswith(".pth")]
-            elif source == "hf":
+                    s3_folder) if weight.endswith(".pth") or weight.endswith(".pt")]
+            elif format == "hf":
                 weights = [weight for weight in client.list(
                     s3_folder) if weight.endswith(".bin")]
             with tqdm.tqdm(desc=f"Loading state dict", total=len(weights)) as pbar:
@@ -618,7 +619,7 @@ def load_state_dict(protocol: str = "s3",
                     buffer.seek(0)
                     raw_state_dict = torch.load(buffer, map_location="cpu")
                     for key, value in raw_state_dict.items():
-                        if source == "hf":
+                        if format == "hf":
                             if key.endswith("q_proj.weight") or key.endswith("k_proj.weight"):
                                 raw_state_dict[key] = rearrange(
                                     value,
@@ -628,7 +629,7 @@ def load_state_dict(protocol: str = "s3",
                                         model_args.hidden_size,
                                         model_args.hidden_size)
                             state_dict.update(raw_state_dict)
-                        elif source == "raw":
+                        elif format == "raw":
                             if key in state_dict.keys():
                                 if key.endswith("wo.weight") or key.endswith("w2.weight") or key.endswith("embeddings.weight"):
                                     state_dict[key] = torch.cat(
@@ -641,17 +642,17 @@ def load_state_dict(protocol: str = "s3",
                             else:
                                 state_dict[key] = value
                             state_dict.update(raw_state_dict)
-                        elif source == "collie":
+                        elif format == "collie":
                             state_dict.update(raw_state_dict)
                     buffer.close()
                     pbar.update(1)
         elif protocol == "file":
             if not file_folder.endswith("/"):
                 file_folder = f"{file_folder}/"
-            if source == "raw" or source == "collie":
+            if format == "raw":
                 weights = [weight for weight in list(
                     os.listdir(file_folder)) if weight.endswith(".pth")]
-            elif source == "hf":
+            elif format == "hf":
                 weights = [weight for weight in list(
                     os.listdir(file_folder)) if weight.endswith(".bin")]
             weights.sort(key=lambda s: int(s[-6:-4]))
@@ -661,7 +662,7 @@ def load_state_dict(protocol: str = "s3",
                     raw_state_dict = torch.load(os.path.join(
                         file_folder, weight), map_location="cpu")
                     for key, value in raw_state_dict.items():
-                        if source == "hf":
+                        if format == "hf":
                             if key.endswith("q_proj.weight") or key.endswith("k_proj.weight"):
                                 raw_state_dict[key] = rearrange(
                                     value,
@@ -671,7 +672,7 @@ def load_state_dict(protocol: str = "s3",
                                         model_args.hidden_size,
                                         model_args.hidden_size)
                                 state_dict.update(raw_state_dict)
-                        elif source == "raw":
+                        elif format == "raw":
                             if key in state_dict.keys():
                                 if key.endswith("wo.weight") or key.endswith("w2.weight") or key.endswith("embeddings.weight"):
                                     state_dict[key] = torch.cat(
@@ -684,29 +685,29 @@ def load_state_dict(protocol: str = "s3",
                             else:
                                 state_dict[key] = value
                             state_dict.update(raw_state_dict)
-                        elif source == "collie":
+                        elif format == "collie":
                             state_dict.update(raw_state_dict)
                     pbar.update(1)
         parts = partition_uniform(
-            model_args.num_hidden_layers, model_args.pp_size, num_chunks=1)
+            model_args.num_hidden_layers, model_args.pp_size if torch.distributed.is_initialized() else 1, num_chunks=1)
         tempdir[0] = f"/dev/shm/Collie-{round(time.time() * 1000)}/"
-        os.makedirs(tempdir[0])
+        os.makedirs(tempdir[0], exist_ok=True)
         for pp_rank, [(start, end)] in enumerate(parts):
             part_state_dict = OrderedDict()
-            if source == "hf":
+            if format == "hf":
                 if start == 0:
                     part_state_dict["token_embedding.weight"] = state_dict["model.embed_tokens.weight"]
                 if end == model_args.num_hidden_layers:
                     part_state_dict["language_model_head.weight"] = state_dict["lm_head.weight"]
                     part_state_dict["norm.weight"] = state_dict["model.norm.weight"]
-            elif source == "raw":
+            elif format == "raw":
                 if start == 0:
                     part_state_dict["token_embedding.weight"] = state_dict["tok_embeddings.weight"]
                 if end == model_args.num_hidden_layers:
                     part_state_dict["language_model_head.weight"] = state_dict["output.weight"]
                     part_state_dict["norm.weight"] = state_dict["norm.weight"]
             for idx, key in enumerate(list(range(start, end))):
-                if source == "hf":
+                if format == "hf":
                     part_state_dict[f"blocks.{idx}.attention.wo.weight"] = state_dict[f"model.layers.{key}.self_attn.o_proj.weight"]
                     part_state_dict[f"blocks.{idx}.attention.wq.weight"] = state_dict[f"model.layers.{key}.self_attn.q_proj.weight"]
                     part_state_dict[f"blocks.{idx}.attention.wk.weight"] = state_dict[f"model.layers.{key}.self_attn.k_proj.weight"]
@@ -718,7 +719,7 @@ def load_state_dict(protocol: str = "s3",
                     part_state_dict[f"blocks.{idx}.mlp.w3.weight"] = state_dict[f"model.layers.{key}.mlp.up_proj.weight"]
                     part_state_dict[f"blocks.{idx}.mlp.norm.weight"] = state_dict[
                         f"model.layers.{key}.post_attention_layernorm.weight"]
-                elif source == "raw":
+                elif format == "raw":
                     part_state_dict[f"blocks.{idx}.attention.wo.weight"] = state_dict[f"layers.{key}.attention.wo.weight"]
                     part_state_dict[f"blocks.{idx}.attention.wq.weight"] = state_dict[f"layers.{key}.attention.wq.weight"]
                     part_state_dict[f"blocks.{idx}.attention.wk.weight"] = state_dict[f"layers.{key}.attention.wk.weight"]
@@ -731,24 +732,33 @@ def load_state_dict(protocol: str = "s3",
             with open(os.path.join(tempdir[0], f"pipeline_{pp_rank}.pt"), "wb+") as f:
                 torch.save(part_state_dict, f)
     del state_dict, part_state_dict
-    torch.distributed.broadcast_object_list(tempdir, src=0)
-    with open(os.path.join(tempdir[0], f"pipeline_{gpc.get_local_rank(ParallelMode.PIPELINE)}.pt"), "rb") as f:
-        state_dict = torch.load(f)
-    torch.distributed.barrier()
-    if gpc.get_global_rank() == 0:
+    if torch.distributed.is_initialized():
+        torch.distributed.broadcast_object_list(tempdir, src=0)
+        with open(os.path.join(tempdir[0], f"pipeline_{gpc.get_local_rank(ParallelMode.PIPELINE)}.pt"), "rb") as f:
+            state_dict = torch.load(f)
+        torch.distributed.barrier()
+    else:
+        with open(os.path.join(tempdir[0], f"pipeline_0.pt"), "rb") as f:
+            state_dict = torch.load(f)
+    if not torch.distributed.is_initialized() or gpc.get_local_rank(ParallelMode.GLOBAL) == 0:
         shutil.rmtree(tempdir[0])
     return state_dict
 
 
-def save_state_dict(model: nn.Module,
-                    protocol: str = "s3",
-                    file_folder: str = "/mnt/lustre/zhangshuo/model",
-                    s3_folder: str = "hdd:s3://opennlplab_hdd/models/llama-collie/llama-7b/",
-                    model_args: ModelArgs = ModelArgs()):
+def save_parallel_model(model: nn.Module,
+                        protocol: str = "s3",
+                        format: str = "hf",
+                        file_folder: str = "/mnt/lustre/zhangshuo/model",
+                        s3_folder: str = "hdd:s3://opennlplab_hdd/models/llama-collie/llama-7b/",
+                        raw_tp_size: int = 1,
+                        raw_tp_device_map: Optional[Dict] = None,
+                        model_args: ModelArgs = ModelArgs()):
     assert protocol in ["s3", "file"], "protocol must be one of s3, file"
+    assert format in ["hf", "raw"], "format must be hf or raw"
     tempdir = [""]
-    if gpc.get_global_rank() == 0:
+    if gpc.get_local_rank(ParallelMode.GLOBAL) == 0:
         tempdir[0] = f"/dev/shm/Collie-{round(time.time() * 1000)}/"
+        os.makedirs(tempdir[0], exist_ok=True)
     torch.distributed.broadcast_object_list(tempdir, src=0)
     with ParallelLayer.use_local_state_dict():
         part_state_dict = model.state_dict()
@@ -768,25 +778,27 @@ def save_state_dict(model: nn.Module,
     with open(os.path.join(tempdir[0], f"pipeline_{gpc.get_local_rank(ParallelMode.PIPELINE)}_tensor_{gpc.get_local_rank(ParallelMode.TENSOR)}.pt"), "wb") as f:
         torch.save(part_state_dict, f)
     torch.distributed.barrier()
-    if gpc.get_global_rank() == 0:
+    if gpc.get_local_rank(ParallelMode.GLOBAL) == 0:
         state_dict = OrderedDict()
+        parts = partition_uniform(model_args.num_hidden_layers, model_args.pp_size, num_chunks=1)
         files = [file for file in list(os.listdir(tempdir[0])) if file.endswith(".pt")]
         pp_tp_map = OrderedDict({file: list(map(int, re.match(r'pipeline_(\d+)_tensor_(\d+)\.pt', file).groups())) for file in files})
-        pp_size = max([value[0] for value in pp_tp_map.values()]) + 1
-        tp_size = max([value[1] for value in pp_tp_map.values()]) + 1
-        for pp in range(pp_size):
-            max_layer = max([-1] + [int(match.groups()[0]) for match in [re.match(r'blocks\.(\d+)\..*', key) for key in state_dict.keys()] if match is not None])
-            for tp in range(tp_size):
+        pp_range = range(min([value[0] for value in pp_tp_map.values()]), max([value[0] for value in pp_tp_map.values()]) + 1)
+        tp_range = range(max([value[1] for value in pp_tp_map.values()]) + 1)
+        for pp in pp_range:
+            # max_layer = max([-1] + [int(match.groups()[0]) for match in [re.match(r'blocks\.(\d+)\..*', key) for key in state_dict.keys()] if match is not None])
+            lower_bound, upper_bound = parts[pp]
+            for tp in tp_range:
                 with open(os.path.join(tempdir[0], f'pipeline_{pp}_tensor_{tp}.pt'), "rb") as f:
                     part_state_dict = torch.load(f, map_location="cpu")
                     for key in list(part_state_dict.keys()):
                         if key.startswith("blocks."):
                             idx = int(re.match(r'blocks\.(\d+)\..*', key).groups()[0])
-                            part_state_dict[f"blocks.{idx + max_layer + 1}.{'.'.join(key.split('.')[2:])}"] = part_state_dict.pop(key)
+                            part_state_dict[f"blocks.{idx + lower_bound}.{'.'.join(key.split('.')[2:])}"] = part_state_dict.pop(key)
                     for key in list(part_state_dict.keys()):
                         if key.endswith("-col") or key.endswith("-row"):
                             if key not in state_dict.keys():
-                                state_dict[key] = [None] * tp_size
+                                state_dict[key] = [None] * len(tp_range)
                                 state_dict[key][tp] = part_state_dict[key]
                             else:
                                 state_dict[key][tp] = part_state_dict[key]
@@ -803,122 +815,137 @@ def save_state_dict(model: nn.Module,
                     state_dict[key.replace("-row", "")] = state_dict.pop(key)[0]
                 else:
                     state_dict[key.replace("-row", "")] = torch.cat(state_dict.pop(key), dim=1)
-        if protocol == "s3":
-            if not s3_folder.endswith("/"):
-                s3_folder += "/"
-            from petrel_client.client import Client
-            client = Client()
-            buffer = io.BytesIO()
-            torch.save(state_dict, buffer)
-            buffer.seek(0)
-            client.put(f"{s3_folder}model.pth", buffer)
-            buffer.close()
-        elif protocol == "file":
-            with open(os.path.join(file_folder, "model.pt"), "wb+") as f:
-                torch.save(state_dict, f)
+        save_state_dict(
+            state_dict, 
+            protocol=protocol, 
+            format=format, 
+            file_folder=file_folder, 
+            s3_folder=s3_folder, 
+            raw_tp_size=raw_tp_size, 
+            raw_tp_device_map=raw_tp_device_map, 
+            model_args=model_args)
         shutil.rmtree(tempdir[0])
 
-
-def convert_model(collie_model_folder: str,
-                 raw_model_folder: Optional[str] = None,
-                 hf_model_folder: Optional[str] = None,
-                 raw_tp_size: int = 1,
-                 raw_tp_device_map: Optional[Dict] = None,
-                 model_args: ModelArgs = ModelArgs()):
-    if os.environ.get("LOCAL_RANK", "0") != "0":
+def save_state_dict(state_dict: Dict,
+                    protocol: str = "s3",
+                    format: str = "hf",
+                    file_folder: str = "/mnt/lustre/zhangshuo/model",
+                    s3_folder: str = "hdd:s3://opennlplab_hdd/models/llama-collie/llama-7b/",
+                    raw_tp_size: int = 1,
+                    raw_tp_device_map: Optional[Dict] = None,
+                    model_args: ModelArgs = ModelArgs()):
+    if torch.distributed.is_initialized() and torch.distributed.get_rank() != 0:
+        warnings.warn("Only rank 0 should save the state_dict.")
         return
+    folder = {
+        "s3": s3_folder,
+        "file": file_folder
+    }
     raw_state_dict = OrderedDict()
     hf_state_dict = OrderedDict()
-    weights = [weight for weight in list(os.listdir(
-        collie_model_folder)) if weight.endswith(".pt")]
     inv_freq = 1.0 / (10000.0 ** (torch.arange(0, model_args.hidden_size // model_args.num_attention_heads,
                           2).float() / model_args.hidden_size // model_args.num_attention_heads))
     if raw_tp_device_map is None:
-        raw_tp_device_map = {device: device for device in range(raw_tp_size)}
+        raw_tp_device_map = {device: 'cpu' for device in range(raw_tp_size)}
     def set_tensor_parallel(w: torch.Tensor, dim: int):
         if raw_tp_size == 1:
             return w
         else:
-            return [tensor.cuda(raw_tp_device_map[device]) 
+            return [tensor.to(torch.device(raw_tp_device_map[device] if isinstance(raw_tp_device_map[device], str) else f"cuda:{raw_tp_device_map[device]}"))
                     for tensor, device in zip(torch.chunk(w, raw_tp_size, dim=dim), list(range(raw_tp_size)))]
         
     def reshape_wq_wk(w: torch.Tensor):
         return w.view(model_args.num_attention_heads, model_args.hidden_size // model_args.num_attention_heads //
                       2, 2, model_args.hidden_size).transpose(1, 2).reshape(model_args.hidden_size, model_args.hidden_size)
         
-    for weight in weights:
-        collie_state_dict = torch.load(os.path.join(
-            collie_model_folder, weight), map_location="cpu")
-        with tqdm.tqdm(collie_state_dict.items(), desc=f"Loading state dict", total=len(weights)) as pbar:
-            for step, (key, value) in enumerate(pbar):
-                if hf_model_folder is not None:
-                    if key.endswith("wq.weight"):
-                        hf_state_dict[key.replace("blocks", "model.layers").replace(
-                            "attention.wq.weight", "self_attn.q_proj.weight")] = reshape_wq_wk(value)
-                    if key.endswith("wk.weight"):
-                        hf_state_dict[key.replace("blocks", "model.layers").replace(
-                            "attention.wk.weight", "self_attn.k_proj.weight")] = reshape_wq_wk(value)
-                    if key.endswith("wv.weight"):
-                        hf_state_dict[key.replace("blocks", "model.layers").replace(
-                            "attention.wv.weight", "self_attn.v_proj.weight")] = value
-                    if key.endswith("wo.weight"):
-                        hf_state_dict[key.replace("blocks", "model.layers").replace(
-                            "attention.wo.weight", "self_attn.o_proj.weight")] = value
-                    if key.endswith("mlp.w1.weight"):
-                        hf_state_dict[key.replace("blocks", "model.layers").replace(
-                            "w1.weight", "gate_proj.weight")] = value
-                    if key.endswith("mlp.w2.weight"):
-                        hf_state_dict[key.replace("blocks", "model.layers").replace(
-                            "w2.weight", "down_proj.weight")] = value
-                    if key.endswith("mlp.w3.weight"):
-                        hf_state_dict[key.replace("blocks", "model.layers").replace(
-                            "w3.weight", "up_proj.weight")] = value
-                    if key.endswith("attention.norm.weight"):
-                        hf_state_dict[key.replace("blocks", "model.layers").replace(
-                            "attention.norm.weight", "input_layernorm.weight")] = value
-                    if key.endswith("mlp.norm.weight"):
-                        hf_state_dict[key.replace("blocks", "model.layers").replace(
-                            "mlp.norm.weight", "post_attention_layernorm.weight")] = value
-                    if key.endswith("token_embedding.weight"):
-                        hf_state_dict["model.embed_tokens.weight"] = value
-                    if key.endswith("language_model_head.weight"):
-                        hf_state_dict["lm_head.weight"] = value
-                    if key.endswith("norm.weight"):
-                        hf_state_dict["model.norm.weight"] = value
-                if raw_model_folder is not None:
-                    if key.endswith("wq.weight") or key.endswith("wk.weight") or \
-                        key.endswith("wv.weight"):
-                        raw_state_dict[key.replace("blocks", "model.layers")] = set_tensor_parallel(value, dim=1)
-                    if key.endswith("wo.weight"):
-                        raw_state_dict[key.replace("blocks", "model.layers")] = set_tensor_parallel(value, dim=0)
-                    if key.endswith("mlp.w1.weight") or key.endswith("mlp.w3.weight"):
-                        raw_state_dict[key.replace("blocks", "layers").replace(
-                            "mlp", "feed_forward")] = set_tensor_parallel(value, dim=1)
-                    if key.endswith("mlp.w2.weight"):
-                        raw_state_dict[key.replace("blocks", "layers").replace(
-                            "mlp", "feed_forward")] = set_tensor_parallel(value, dim=0)
-                    if key.endswith("attention.norm.weight"):
-                        raw_state_dict[key.replace("blocks", "layers").replace(
-                            "attention.norm.weight", "attention_norm.weight")] = value
-                    if key.endswith("mlp.norm.weight"):
-                        raw_state_dict[key.replace("blocks", "layers").replace(
-                            "mlp.norm.weight", "ffn_norm.weight")] = value
-                    if key.endswith("token_embedding.weight"):
-                        raw_state_dict["tok_embeddings.weight"] = set_tensor_parallel(value, dim=0)
-                    if key.endswith("language_model_head.weight"):
-                        raw_state_dict["output.weight"] = set_tensor_parallel(value, dim=0)
-                    if key.endswith("norm.weight"):
-                        raw_state_dict["norm.weight"] = value
-                pbar.update(1)
-    if len(raw_state_dict) > 0:
-        os.makedirs(raw_model_folder, exist_ok=True)
+    def save_obj(obj, path, protocol: str="file"):
+        if protocol == "file":
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            if isinstance(obj, str):
+                with open(path, "w") as f:
+                    f.write(obj)
+            else:
+                with open(path, "wb") as f:
+                    torch.save(obj, f)
+        elif protocol == "s3":
+            from petrel_client.client import Client
+            client = Client()
+            buffer = BytesIO()
+            if isinstance(obj, str):
+                buffer.write(obj.encode())
+            else:
+                torch.save(obj, buffer)
+            buffer.seek(0)
+            client.put(path, buffer)
+            buffer.close()
+
+    with tqdm.tqdm(state_dict.items(), desc=f"Converting state dict", total=len(state_dict.items())) as pbar:
+        for step, (key, value) in enumerate(pbar):
+            if format == "hf":
+                if key.endswith("wq.weight"):
+                    hf_state_dict[key.replace("blocks", "model.layers").replace(
+                        "attention.wq.weight", "self_attn.q_proj.weight")] = reshape_wq_wk(value)
+                if key.endswith("wk.weight"):
+                    hf_state_dict[key.replace("blocks", "model.layers").replace(
+                        "attention.wk.weight", "self_attn.k_proj.weight")] = reshape_wq_wk(value)
+                if key.endswith("wv.weight"):
+                    hf_state_dict[key.replace("blocks", "model.layers").replace(
+                        "attention.wv.weight", "self_attn.v_proj.weight")] = value
+                if key.endswith("wo.weight"):
+                    hf_state_dict[key.replace("blocks", "model.layers").replace(
+                        "attention.wo.weight", "self_attn.o_proj.weight")] = value
+                if key.endswith("mlp.w1.weight"):
+                    hf_state_dict[key.replace("blocks", "model.layers").replace(
+                        "w1.weight", "gate_proj.weight")] = value
+                if key.endswith("mlp.w2.weight"):
+                    hf_state_dict[key.replace("blocks", "model.layers").replace(
+                        "w2.weight", "down_proj.weight")] = value
+                if key.endswith("mlp.w3.weight"):
+                    hf_state_dict[key.replace("blocks", "model.layers").replace(
+                        "w3.weight", "up_proj.weight")] = value
+                if key.endswith("attention.norm.weight"):
+                    hf_state_dict[key.replace("blocks", "model.layers").replace(
+                        "attention.norm.weight", "input_layernorm.weight")] = value
+                if key.endswith("mlp.norm.weight"):
+                    hf_state_dict[key.replace("blocks", "model.layers").replace(
+                        "mlp.norm.weight", "post_attention_layernorm.weight")] = value
+                if key.endswith("token_embedding.weight"):
+                    hf_state_dict["model.embed_tokens.weight"] = value
+                if key.endswith("language_model_head.weight"):
+                    hf_state_dict["lm_head.weight"] = value
+                if key == "norm.weight":
+                    hf_state_dict["model.norm.weight"] = value
+            if format == "raw":
+                if key.endswith("wq.weight") or key.endswith("wk.weight") or \
+                    key.endswith("wv.weight"):
+                    raw_state_dict[key.replace("blocks", "model.layers")] = set_tensor_parallel(value, dim=1)
+                if key.endswith("wo.weight"):
+                    raw_state_dict[key.replace("blocks", "model.layers")] = set_tensor_parallel(value, dim=0)
+                if key.endswith("mlp.w1.weight") or key.endswith("mlp.w3.weight"):
+                    raw_state_dict[key.replace("blocks", "layers").replace(
+                        "mlp", "feed_forward")] = set_tensor_parallel(value, dim=1)
+                if key.endswith("mlp.w2.weight"):
+                    raw_state_dict[key.replace("blocks", "layers").replace(
+                        "mlp", "feed_forward")] = set_tensor_parallel(value, dim=0)
+                if key.endswith("attention.norm.weight"):
+                    raw_state_dict[key.replace("blocks", "layers").replace(
+                        "attention.norm.weight", "attention_norm.weight")] = value
+                if key.endswith("mlp.norm.weight"):
+                    raw_state_dict[key.replace("blocks", "layers").replace(
+                        "mlp.norm.weight", "ffn_norm.weight")] = value
+                if key.endswith("token_embedding.weight"):
+                    raw_state_dict["tok_embeddings.weight"] = set_tensor_parallel(value, dim=0)
+                if key.endswith("language_model_head.weight"):
+                    raw_state_dict["output.weight"] = set_tensor_parallel(value, dim=0)
+                if key == "norm.weight":
+                    raw_state_dict["norm.weight"] = value
+            pbar.update(1)
+    if format == "raw":
         raw_state_dict['rope.freqs'] = inv_freq
         for i in range(raw_tp_size):
-            with open(os.path.join(raw_model_folder, "consolidated.{:0>2}.pth".format(i)), "wb") as f:
-                torch.save({key: value[i] if isinstance(value, list) else value
-                    for key, value in raw_state_dict.items()}, f)
-    if len(hf_state_dict) > 0:
-        os.makedirs(hf_model_folder, exist_ok=True)
+            save_obj({key: value[i] if isinstance(value, list) else value
+                    for key, value in raw_state_dict.items()}, os.path.join(folder[protocol], "consolidated.{:0>2}.pth".format(i)), protocol)
+    if format == "hf":
         model_index = OrderedDict({
             "weight_map": {},
             "metadata": {"total_size": 0}
@@ -932,14 +959,13 @@ def convert_model(collie_model_folder: str,
             if layer == model_args.num_hidden_layers - 1:
                 layer_state_dict["lm_head.weight"] = hf_state_dict["lm_head.weight"]
                 layer_state_dict["model.norm.weight"] = hf_state_dict["model.norm.weight"]
+            
             layer_state_dict[f"model.layers.{layer}.self_attn.rotary_emb.inv_freq"] = inv_freq
             model_index["weight_map"].update({
                 key: filename for key in layer_state_dict.keys()
             })
-            with open(os.path.join(hf_model_folder, filename), "wb") as f:
-                torch.save(layer_state_dict, f)
-        with open(os.path.join(hf_model_folder, "pytorch_model.bin.index.json"), "w") as f:
-            f.write(json.dumps(model_index, indent=4))
+            save_obj(layer_state_dict, os.path.join(folder[protocol], filename), protocol)
+        save_obj(json.dumps(model_index, indent=4), os.path.join(folder[protocol], "pytorch_model.bin.index.json"), protocol)
         config = {"architectures": ["LLaMAForCausalLM"], 
                   "bos_token_id": 0, 
                   "eos_token_id": 1, 
@@ -957,8 +983,7 @@ def convert_model(collie_model_folder: str,
                   "transformers_version": "4.27.0.dev0", 
                   "use_cache": True, 
                   "vocab_size": model_args.vocab_size}
-        with open(os.path.join(hf_model_folder, "config.json"), "w") as f:
-            f.write(json.dumps(config, indent=4))
+        save_obj(json.dumps(config, indent=4), os.path.join(folder[protocol], "config.json"), protocol)
 
 
 

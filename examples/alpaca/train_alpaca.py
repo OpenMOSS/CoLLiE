@@ -132,7 +132,6 @@ def main():
             print(sentence)
             print("-" * 20)
         print("\n")
-        save_state_dict()
     
     optimizer = torch.optim.SGD(model.parameters(), lr=2e-5)
     trainer = ColossalaiTrainer(
