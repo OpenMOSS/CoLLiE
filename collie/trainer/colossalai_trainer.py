@@ -152,6 +152,7 @@ class ColossalaiTrainer:
                         return_loss=False,
                         return_output_label=True,
                     )
+                    torch.cuda.empty_cache()
                     cached_len = current_pos
                     next_tokens_list = [torch.full((input_ids.shape[0], 1), -1, dtype=torch.long, device=torch.device(f"cuda:{os.environ['LOCAL_RANK']}")) for _ in range(int(os.environ.get("WORLD_SIZE")))]
                     if gpc.is_pipeline_last_stage():
