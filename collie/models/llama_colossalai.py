@@ -698,7 +698,7 @@ def load_state_dict(protocol: str = "s3",
                     }.items():
                         setattr(model_args, key, value)
                 weights = [weight for weight in list(
-                    os.listdir(file_folder)) if weight.endswith(".pth")]
+                    os.listdir(file_folder)) if weight.endswith(".pth") or weight.endswith(".pt")]
             elif format == "hf":
                 if os.path.exists(os.path.join(file_folder, "config.json")):
                     config = json.loads(open(os.path.join(file_folder, "config.json"), mode="r").read())
