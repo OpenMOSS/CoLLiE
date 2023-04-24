@@ -534,9 +534,6 @@ class Transformer(nn.Module):
                 input_ids: Optional[torch.Tensor] = None,
                 use_cache: torch.Tensor = torch.zeros(1, dtype=torch.bool),
                 **kwargs):
-        if gpc.is_pipeline_first_stage():
-            import pdb
-            pdb.set_trace()
         if self.is_start:
             assert input_ids is not None, "`input_ids` is not allowed to be None in the first pipeline node. "
             hidden_states = self.token_embedding(input_ids)
