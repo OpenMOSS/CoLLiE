@@ -40,9 +40,29 @@ try:
     from colossalai.logging import get_dist_logger, disable_existing_loggers
     from colossalai.nn.layer.parallel_1d.layers import VocabParallelEmbedding1D, VocabParallelClassifier1D
 except ModuleNotFoundError:
-    raise ModuleNotFoundError(
+    warnings.warn(
         "Detected Colossal-AI is not installed. See https://github.com/hpcaitech/ColossalAI")
-
+    # raise ModuleNotFoundError(
+    #     "Detected Colossal-AI is not installed. See https://github.com/hpcaitech/ColossalAI")
+    K = None
+    gpc = None
+    col_nn = None
+    AMP_TYPE = None
+    checkpoint = None
+    colossalai = None
+    ParallelMode = None
+    Linear1D_Col = None
+    Linear1D_Row = None
+    ParallelMode = None
+    ParallelLayer = None
+    get_dist_logger = None
+    ColoInitContext = None
+    partition_uniform = None
+    VocabParallelEmbedding1D = None
+    disable_existing_loggers = None
+    VocabParallelClassifier1D = None
+    PipelineSharedModuleWrapper = None
+    
 try:
     from apex.fused_dense import FusedDense as ApexFusedDense
     from apex.normalization.fused_layer_norm import FusedRMSNorm
@@ -607,9 +627,31 @@ def load_state_dict(protocol: str = "s3",
             if not s3_folder.endswith("/"):
                 s3_folder = f"{s3_folder}/"
             if format == "raw":
+                if client.contains(os.path.join(s3_folder, "params.json")):
+                    params = json.loads(client.get(os.path.join(s3_folder, "params.json")).decode())
+                    for key, value in {
+                        "hidden_size": params["dim"],
+                        "intermediate_size": params["multiple_of"] * ((int(2 * 4 * model_args.hidden_size / 3) + params["multiple_of"] - 1) // params["multiple_of"]),
+                        "num_hidden_layers": params["n_layers"],
+                        "num_attention_heads": params["n_heads"],
+                        "layer_norm_epsilon": params["norm_eps"]
+                    }.items():
+                        setattr(model_args, key, value)
                 weights = [weight for weight in client.list(
                     s3_folder) if weight.endswith(".pth") or weight.endswith(".pt")]
             elif format == "hf":
+                if client.contains(os.path.join(s3_folder, "config.json")):
+                    config = json.loads(client.get(os.path.join(s3_folder, "config.json")).decode())
+                    for key, value in {
+                        "vocab_size": config["vocab_size"],
+                        "hidden_size": config["hidden_size"],
+                        "intermediate_size": config["intermediate_size"],
+                        "num_hidden_layers": config["num_hidden_layers"],
+                        "num_attention_heads": config["num_attention_heads"],
+                        "fp16": config["torch_dtype"] == "float16",
+                        "layer_norm_epsilon": config["rms_norm_eps"]
+                    }.items():
+                        setattr(model_args, key, value)
                 weights = [weight for weight in client.list(
                     s3_folder) if weight.endswith(".bin")]
             with tqdm.tqdm(desc=f"Loading state dict", total=len(weights)) as pbar:
@@ -641,21 +683,37 @@ def load_state_dict(protocol: str = "s3",
                                         (state_dict[key], value), dim=0)
                             else:
                                 state_dict[key] = value
-                            state_dict.update(raw_state_dict)
-                        elif format == "collie":
-                            state_dict.update(raw_state_dict)
                     buffer.close()
                     pbar.update(1)
         elif protocol == "file":
-            if not file_folder.endswith("/"):
-                file_folder = f"{file_folder}/"
             if format == "raw":
+                if os.path.exists(os.path.join(file_folder, "params.json")):
+                    params = json.loads(open(os.path.join(file_folder, "params.json"), mode="r").read())
+                    for key, value in {
+                        "hidden_size": params["dim"],
+                        "intermediate_size": params["multiple_of"] * ((int(2 * 4 * model_args.hidden_size / 3) + params["multiple_of"] - 1) // params["multiple_of"]),
+                        "num_hidden_layers": params["n_layers"],
+                        "num_attention_heads": params["n_heads"],
+                        "layer_norm_epsilon": params["norm_eps"]
+                    }.items():
+                        setattr(model_args, key, value)
                 weights = [weight for weight in list(
-                    os.listdir(file_folder)) if weight.endswith(".pth")]
+                    os.listdir(file_folder)) if weight.endswith(".pth") or weight.endswith(".pt")]
             elif format == "hf":
+                if os.path.exists(os.path.join(file_folder, "config.json")):
+                    config = json.loads(open(os.path.join(file_folder, "config.json"), mode="r").read())
+                    for key, value in {
+                        "vocab_size": config["vocab_size"],
+                        "hidden_size": config["hidden_size"],
+                        "intermediate_size": config["intermediate_size"],
+                        "num_hidden_layers": config["num_hidden_layers"],
+                        "num_attention_heads": config["num_attention_heads"],
+                        "fp16": config["torch_dtype"] == "float16",
+                        "layer_norm_epsilon": config["rms_norm_eps"]
+                    }.items():
+                        setattr(model_args, key, value)
                 weights = [weight for weight in list(
                     os.listdir(file_folder)) if weight.endswith(".bin")]
-            weights.sort(key=lambda s: int(s[-6:-4]))
             state_dict = OrderedDict()
             with tqdm.tqdm(desc=f"Loading state dict", total=len(weights)) as pbar:
                 for weight in weights:
@@ -672,6 +730,8 @@ def load_state_dict(protocol: str = "s3",
                                         model_args.hidden_size,
                                         model_args.hidden_size)
                                 state_dict.update(raw_state_dict)
+                            else:
+                                state_dict.update(raw_state_dict)
                         elif format == "raw":
                             if key in state_dict.keys():
                                 if key.endswith("wo.weight") or key.endswith("w2.weight") or key.endswith("embeddings.weight"):
@@ -684,9 +744,6 @@ def load_state_dict(protocol: str = "s3",
                                         (state_dict[key], value), dim=0)
                             else:
                                 state_dict[key] = value
-                            state_dict.update(raw_state_dict)
-                        elif format == "collie":
-                            state_dict.update(raw_state_dict)
                     pbar.update(1)
         parts = partition_uniform(
             model_args.num_hidden_layers, model_args.pp_size if torch.distributed.is_initialized() else 1, num_chunks=1)
@@ -787,7 +844,7 @@ def save_parallel_model(model: nn.Module,
         tp_range = range(max([value[1] for value in pp_tp_map.values()]) + 1)
         for pp in pp_range:
             # max_layer = max([-1] + [int(match.groups()[0]) for match in [re.match(r'blocks\.(\d+)\..*', key) for key in state_dict.keys()] if match is not None])
-            lower_bound, upper_bound = parts[pp]
+            lower_bound, upper_bound = parts[pp][0]
             for tp in tp_range:
                 with open(os.path.join(tempdir[0], f'pipeline_{pp}_tensor_{tp}.pt'), "rb") as f:
                     part_state_dict = torch.load(f, map_location="cpu")
@@ -833,18 +890,22 @@ def save_state_dict(state_dict: Dict,
                     s3_folder: str = "hdd:s3://opennlplab_hdd/models/llama-collie/llama-7b/",
                     raw_tp_size: int = 1,
                     raw_tp_device_map: Optional[Dict] = None,
+                    raw_multiple_of: int = 256,
+                    save_to_buffer: bool = False,
                     model_args: ModelArgs = ModelArgs()):
     if torch.distributed.is_initialized() and torch.distributed.get_rank() != 0:
         warnings.warn("Only rank 0 should save the state_dict.")
         return
+    if save_to_buffer:
+        buffers = {}
     folder = {
         "s3": s3_folder,
         "file": file_folder
     }
     raw_state_dict = OrderedDict()
     hf_state_dict = OrderedDict()
-    inv_freq = 1.0 / (10000.0 ** (torch.arange(0, model_args.hidden_size // model_args.num_attention_heads,
-                          2).float() / model_args.hidden_size // model_args.num_attention_heads))
+    inv_freq = 1.0 / (10000.0 ** (torch.arange(0, (model_args.hidden_size // model_args.num_attention_heads),
+                          2).float() / (model_args.hidden_size // model_args.num_attention_heads)))
     if raw_tp_device_map is None:
         raw_tp_device_map = {device: 'cpu' for device in range(raw_tp_size)}
     def set_tensor_parallel(w: torch.Tensor, dim: int):
@@ -859,25 +920,34 @@ def save_state_dict(state_dict: Dict,
                       2, 2, model_args.hidden_size).transpose(1, 2).reshape(model_args.hidden_size, model_args.hidden_size)
         
     def save_obj(obj, path, protocol: str="file"):
-        if protocol == "file":
-            os.makedirs(os.path.dirname(path), exist_ok=True)
+        if save_to_buffer:
             if isinstance(obj, str):
-                with open(path, "w") as f:
-                    f.write(obj)
+                buffers[path] = obj.encode()
             else:
-                with open(path, "wb") as f:
-                    torch.save(obj, f)
-        elif protocol == "s3":
-            from petrel_client.client import Client
-            client = Client()
-            buffer = BytesIO()
-            if isinstance(obj, str):
-                buffer.write(obj.encode())
-            else:
+                buffer = BytesIO()
                 torch.save(obj, buffer)
-            buffer.seek(0)
-            client.put(path, buffer)
-            buffer.close()
+                buffer.seek(0)
+                buffers[path] = buffer.read()
+        else:
+            if protocol == "file":
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                if isinstance(obj, str):
+                    with open(path, "w") as f:
+                        f.write(obj)
+                else:
+                    with open(path, "wb") as f:
+                        torch.save(obj, f)
+            elif protocol == "s3":
+                from petrel_client.client import Client
+                client = Client()
+                buffer = BytesIO()
+                if isinstance(obj, str):
+                    buffer.write(obj.encode())
+                else:
+                    torch.save(obj, buffer)
+                buffer.seek(0)
+                client.put(path, buffer)
+                buffer.close()
 
     with tqdm.tqdm(state_dict.items(), desc=f"Converting state dict", total=len(state_dict.items())) as pbar:
         for step, (key, value) in enumerate(pbar):
@@ -918,15 +988,15 @@ def save_state_dict(state_dict: Dict,
             if format == "raw":
                 if key.endswith("wq.weight") or key.endswith("wk.weight") or \
                     key.endswith("wv.weight"):
-                    raw_state_dict[key.replace("blocks", "model.layers")] = set_tensor_parallel(value, dim=1)
+                    raw_state_dict[key.replace("blocks", "layers")] = set_tensor_parallel(value, dim=0)
                 if key.endswith("wo.weight"):
-                    raw_state_dict[key.replace("blocks", "model.layers")] = set_tensor_parallel(value, dim=0)
+                    raw_state_dict[key.replace("blocks", "layers")] = set_tensor_parallel(value, dim=1)
                 if key.endswith("mlp.w1.weight") or key.endswith("mlp.w3.weight"):
                     raw_state_dict[key.replace("blocks", "layers").replace(
-                        "mlp", "feed_forward")] = set_tensor_parallel(value, dim=1)
+                        "mlp", "feed_forward")] = set_tensor_parallel(value, dim=0)
                 if key.endswith("mlp.w2.weight"):
                     raw_state_dict[key.replace("blocks", "layers").replace(
-                        "mlp", "feed_forward")] = set_tensor_parallel(value, dim=0)
+                        "mlp", "feed_forward")] = set_tensor_parallel(value, dim=1)
                 if key.endswith("attention.norm.weight"):
                     raw_state_dict[key.replace("blocks", "layers").replace(
                         "attention.norm.weight", "attention_norm.weight")] = value
@@ -934,56 +1004,68 @@ def save_state_dict(state_dict: Dict,
                     raw_state_dict[key.replace("blocks", "layers").replace(
                         "mlp.norm.weight", "ffn_norm.weight")] = value
                 if key.endswith("token_embedding.weight"):
-                    raw_state_dict["tok_embeddings.weight"] = set_tensor_parallel(value, dim=0)
+                    raw_state_dict["tok_embeddings.weight"] = set_tensor_parallel(value, dim=1)
                 if key.endswith("language_model_head.weight"):
                     raw_state_dict["output.weight"] = set_tensor_parallel(value, dim=0)
                 if key == "norm.weight":
                     raw_state_dict["norm.weight"] = value
             pbar.update(1)
     if format == "raw":
-        raw_state_dict['rope.freqs'] = inv_freq
+        for layer in range(model_args.num_hidden_layers):
+            raw_state_dict[f'layers.{layer}.attention.inner_attention.rope.freqs'] = inv_freq
         for i in range(raw_tp_size):
             save_obj({key: value[i] if isinstance(value, list) else value
                     for key, value in raw_state_dict.items()}, os.path.join(folder[protocol], "consolidated.{:0>2}.pth".format(i)), protocol)
+        params = {"dim": model_args.hidden_size, 
+                  "multiple_of": raw_multiple_of, 
+                  "n_heads": model_args.num_attention_heads, 
+                  "n_layers": model_args.num_hidden_layers, 
+                  "norm_eps": model_args.layer_norm_epsilon, 
+                  "vocab_size": -1}
+        save_obj(json.dumps(params, indent=4), os.path.join(folder[protocol], "params.json"), protocol)
     if format == "hf":
         model_index = OrderedDict({
             "weight_map": {},
             "metadata": {"total_size": 0}
         })
-        for layer in range(model_args.num_hidden_layers):
-            filename = f"pytorch_model-{layer + 1}-of-{model_args.num_hidden_layers + 1}.bin"
-            layer_state_dict = {key: value for key, value in hf_state_dict.items(
-            ) if key.startswith(f"model.layers.{layer}.")}
-            if layer == 0:
-                layer_state_dict["model.embed_tokens.weight"] = hf_state_dict["model.embed_tokens.weight"]
-            if layer == model_args.num_hidden_layers - 1:
-                layer_state_dict["lm_head.weight"] = hf_state_dict["lm_head.weight"]
-                layer_state_dict["model.norm.weight"] = hf_state_dict["model.norm.weight"]
-            
-            layer_state_dict[f"model.layers.{layer}.self_attn.rotary_emb.inv_freq"] = inv_freq
-            model_index["weight_map"].update({
-                key: filename for key in layer_state_dict.keys()
-            })
-            save_obj(layer_state_dict, os.path.join(folder[protocol], filename), protocol)
+        with tqdm.tqdm(range(model_args.num_hidden_layers), desc=f"Saving state dict", total=model_args.num_hidden_layers) as pbar:
+            for layer in pbar:
+                filename = f"pytorch_model-{layer + 1}-of-{model_args.num_hidden_layers}.bin"
+                layer_state_dict = {key: value for key, value in hf_state_dict.items(
+                ) if key.startswith(f"model.layers.{layer}.")}
+                if layer == 0:
+                    layer_state_dict["model.embed_tokens.weight"] = hf_state_dict["model.embed_tokens.weight"]
+                if layer == model_args.num_hidden_layers - 1:
+                    layer_state_dict["lm_head.weight"] = hf_state_dict["lm_head.weight"]
+                    layer_state_dict["model.norm.weight"] = hf_state_dict["model.norm.weight"]
+                
+                layer_state_dict[f"model.layers.{layer}.self_attn.rotary_emb.inv_freq"] = inv_freq
+                model_index["weight_map"].update({
+                    key: filename for key in layer_state_dict.keys()
+                })
+                save_obj(layer_state_dict, os.path.join(folder[protocol], filename), protocol)
+                pbar.update(1)
         save_obj(json.dumps(model_index, indent=4), os.path.join(folder[protocol], "pytorch_model.bin.index.json"), protocol)
         config = {"architectures": ["LLaMAForCausalLM"], 
-                  "bos_token_id": 0, 
-                  "eos_token_id": 1, 
-                  "hidden_act": "silu", 
-                  "hidden_size": 4096, 
-                  "intermediate_size": model_args.intermediate_size, 
-                  "initializer_range": 0.02, 
-                  "max_sequence_length": 2048, 
-                  "model_type": "llama", 
-                  "num_attention_heads": model_args.num_attention_heads, 
-                  "num_hidden_layers": model_args.num_hidden_layers, 
-                  "pad_token_id": -1, 
-                  "rms_norm_eps": model_args.layer_norm_epsilon, 
-                  "torch_dtype": "float16" if model_args.fp16 else "float32", 
-                  "transformers_version": "4.27.0.dev0", 
-                  "use_cache": True, 
-                  "vocab_size": model_args.vocab_size}
+                "bos_token_id": 0, 
+                "eos_token_id": 1, 
+                "hidden_act": "silu", 
+                "hidden_size": model_args.hidden_size, 
+                "intermediate_size": model_args.intermediate_size, 
+                "initializer_range": 0.02, 
+                "max_sequence_length": 2048, 
+                "model_type": "llama", 
+                "num_attention_heads": model_args.num_attention_heads, 
+                "num_hidden_layers": model_args.num_hidden_layers, 
+                "pad_token_id": -1, 
+                "rms_norm_eps": model_args.layer_norm_epsilon, 
+                "torch_dtype": "float16" if model_args.fp16 else "float32", 
+                "transformers_version": "4.27.0.dev0", 
+                "use_cache": True, 
+                "vocab_size": model_args.vocab_size}
         save_obj(json.dumps(config, indent=4), os.path.join(folder[protocol], "config.json"), protocol)
+    if save_to_buffer:
+        return buffers
 
 
 

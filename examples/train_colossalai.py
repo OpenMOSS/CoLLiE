@@ -1,7 +1,7 @@
 import sys
 sys.path.append("..")
 
-from collie.models.llama_colossalai import HFLikeTokenizer, Tokenizer, ModelArgs, get_7B_llama, load_state_dict
+from collie.models.llama_colossalai import HFLikeTokenizer, Tokenizer, ModelArgs, get_7B_llama, load_state_dict, build_pipe, get_7B_llama_config
 from collie.trainer.colossalai_trainer import ColossalaiTrainer, TrainerArgs
 
 import torch
@@ -27,7 +27,8 @@ def collate_fn(batch, tokenizer, max_length=1024, bos=True, eos=True):
 
 def main():
     tokenizer = HFLikeTokenizer(
-        tokenizer=Tokenizer(model_path='/mnt/petrelfs/zhangshuo/projects/OptiLLM/colossalai/llama/tokenizer.model'))
+        tokenizer=Tokenizer(model_path='/mnt/petrelfs/share_data/yanhang/tokenizes/llama.model'))
+    
     def compute_metrics(batch, epoch, step):
         print("\n")
         print("\n".join([tokenizer.decode(token.tolist()) for token in batch[0]["input_ids"]][:1]))
@@ -35,20 +36,29 @@ def main():
     model_args = ModelArgs()
     model_args.pp_size = 8
     model_args.tp_size = 1
-    model_args.micro_batch_num = 128
+    model_args.micro_batch_num = 1
     model_args.fp16 = True
     model_args.dense = "raw"
     model_args.attention = "flash"
     model_args.rotary_emb = "raw"
+    model_args.checkpoint = False
     
     trainer_args = TrainerArgs()
     trainer_args.eval_max_length = 50
     trainer_args.eval_per_steps = 2
     trainer_args.eval_per_epoches = 1
+    trainer_args.eval_use_cache = False
     
-    model = get_7B_llama(model_args)
+    model_args = get_7B_llama_config(model_args)
+    model = build_pipe(model_args)
     optimizer = torch.optim.SGD(model.parameters(), lr=2e-5)
-    state_dict = load_state_dict(model_args=model_args, s3_folder="hdd:s3://opennlplab_hdd/models/llama/llama-7b-hf")
+    state_dict = load_state_dict(
+        protocol="file", 
+        model_args=model_args, 
+        format="hf",
+        # s3_folder="hdd:s3://opennlplab_hdd/models/llama/llama-7b-hf", 
+        file_folder="/mnt/lustre/zhangshuo/model/further-train-7B-differ-test"
+        )
     model.load_state_dict(state_dict)
     train_dataloader = DataLoader(
         [{"text": "My name is MOSS, and my responsibility is to help people fine-tuning large language models more easily."} for _ in range(12800)],
