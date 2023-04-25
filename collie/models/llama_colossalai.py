@@ -17,6 +17,7 @@ import tqdm
 import json
 import shutil
 import warnings
+import subprocess
 from io import BytesIO
 from einops import rearrange
 from dataclasses import dataclass
@@ -569,7 +570,36 @@ def prepare_distribution(model_args: ModelArgs = ModelArgs()) -> dict:
         if model_args.dense != "raw":
             warnings.warn("Fused dense is not supported in tensor parallelism. ")
             model_args.dense = "raw"
-    colossalai.launch_from_torch(config=CONFIG, backend=model_args.backend)
+    if "SLURM_JOB_NODELIST" in os.environ.keys():
+        node_list_str = os.environ["SLURM_JOB_NODELIST"]
+        node_list = []
+        result = re.search(r"\[(.*?)\]", node_list_str)
+        if result is None:
+            node_list.append(node_list_str)
+        else:
+            node_list.extend([item for item in result.groups(1)[0].split(",")])
+            for i in node_list:
+                if "-" in i:
+                    node_list.extend(list(map(lambda x: f"{x}", range(int(i.split("-")[0]), int(i.split("-")[1]) + 1))))
+                    node_list.remove(i)
+            node_list = list(map(lambda x: re.sub(r"\[(.*?)\]", x, node_list_str), node_list))
+        node_list = sorted(node_list)
+        master_addr = node_list[0]
+        result = subprocess.run(["scontrol", "show", "node", master_addr], capture_output=True)
+        result = re.search(r"NodeAddr=(.*?)\s", result.stdout.decode())
+        if result:
+            master_addr = result.groups(1)[0]
+        master_port = 27008
+        colossalai.launch_from_slurm(
+            config=CONFIG,
+            host=master_addr,
+            port=master_port
+        )
+        os.environ["LOCAL_RANK"] = os.environ["SLURM_LOCALID"]
+        os.environ["RANK"] = os.environ["SLURM_PROCID"]
+        os.environ["WORLD_SIZE"] = os.environ["SLURM_NTASKS"]
+    elif "MASTER_ADDR" in os.environ.keys():
+        colossalai.launch_from_torch(config=CONFIG, backend=model_args.backend)
     if "pipeline" in CONFIG["parallel"] and CONFIG["parallel"]["pipeline"] == 1:
         gpc.is_pipeline_first_stage = lambda: True
         gpc.is_pipeline_last_stage = lambda: True
@@ -584,7 +614,7 @@ def build_pipe(model_args: ModelArgs = ModelArgs()):
     prepare_distribution(model_args=model_args)
     disable_existing_loggers()
     logger = get_dist_logger()
-    with ColoInitContext(device=torch.device(f"cuda:{os.environ.get('LOCAL_RANK')}"), dtype=torch.float16 if model_args.fp16 else torch.float32):
+    with ColoInitContext(device=torch.device(f"cuda:{os.environ['LOCAL_RANK']}"), dtype=torch.float16 if model_args.fp16 else torch.float32):
         if model_args.pp_size > 1:
             wrapper = PipelineSharedModuleWrapper(
                 [0, model_args.pp_size - 1])
