@@ -809,6 +809,7 @@ def save_parallel_model(model: nn.Module,
                         s3_folder: str = "hdd:s3://opennlplab_hdd/models/llama-collie/llama-7b/",
                         raw_tp_size: int = 1,
                         raw_tp_device_map: Optional[Dict] = None,
+                        raw_multiple_of: int = 256,
                         model_args: ModelArgs = ModelArgs()):
     assert protocol in ["s3", "file"], "protocol must be one of s3, file"
     assert format in ["hf", "raw"], "format must be hf or raw"
@@ -844,7 +845,7 @@ def save_parallel_model(model: nn.Module,
         tp_range = range(max([value[1] for value in pp_tp_map.values()]) + 1)
         for pp in pp_range:
             # max_layer = max([-1] + [int(match.groups()[0]) for match in [re.match(r'blocks\.(\d+)\..*', key) for key in state_dict.keys()] if match is not None])
-            lower_bound, upper_bound = parts[pp]
+            lower_bound, upper_bound = parts[pp][0]
             for tp in tp_range:
                 with open(os.path.join(tempdir[0], f'pipeline_{pp}_tensor_{tp}.pt'), "rb") as f:
                     part_state_dict = torch.load(f, map_location="cpu")
@@ -880,6 +881,7 @@ def save_parallel_model(model: nn.Module,
             s3_folder=s3_folder, 
             raw_tp_size=raw_tp_size, 
             raw_tp_device_map=raw_tp_device_map, 
+            raw_multiple_of=raw_multiple_of,
             model_args=model_args)
         shutil.rmtree(tempdir[0])
 
