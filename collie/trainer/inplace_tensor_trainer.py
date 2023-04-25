@@ -1,7 +1,12 @@
 import operator
+import os
+import json
+from shutil import copyfile
+from dataclasses import asdict
 
 import tqdm
 from itertools import chain
+import numpy as np
 import torch
 from torch.nn import CrossEntropyLoss
 from torch.utils.data import RandomSampler, SequentialSampler, DataLoader
@@ -22,6 +27,7 @@ class InplaceTensorTrainer:
             eval_dataset,
             tokenizer,
             compute_metrics,
+            cache_dir=None,
     ):
         self.model = model
         self.collie_args = collie_args
@@ -35,6 +41,7 @@ class InplaceTensorTrainer:
         self.eval_dataset = eval_dataset
         self.tokenizer = tokenizer
         self.compute_metrics = compute_metrics
+        self.cache_dir = cache_dir
         self.wandb = WandbLogger(collie_args)
         self.allow_print = self.collie_args.local_rank in [0, -1]
         self.metrics = {}
@@ -90,7 +97,7 @@ class InplaceTensorTrainer:
         for epoch in range(self.collie_args.num_train_epochs):
             print(f"***** Running Training *****")
             print(f"  Num examples: {len(self.train_dataset)}")
-            print(f"  Num Epochs: {self.collie_args.num_train_epochs}")
+            print(f"  Current Epochs: {epoch}")
             print(f"  Batch Size: {self.collie_args.per_device_train_batch_size}")
             if self.allow_print:
                 self.wandb.log({'train/epoch': epoch}, step=self.global_step)
@@ -154,6 +161,9 @@ class InplaceTensorTrainer:
                             step=self.global_step
                         )
 
+                    if self.collie_args.save_strategy == 'steps' and self.global_step % self.collie_args.save_steps == 0:
+                        self.save_model(self.global_step)
+
                     if self.collie_args.do_eval and self.collie_args.evaluation_strategy == 'steps' and \
                             self.global_step % self.collie_args.eval_steps == 0:
                         if isinstance(self.eval_dataset, dict):
@@ -163,6 +173,9 @@ class InplaceTensorTrainer:
                         else:
                             self.eval(self.global_step, epoch, self.eval_dataset, self.eval_dataloader, 'eval')
 
+            if self.collie_args.save_strategy == 'epoch':
+                self.save_model(epoch)
+
             if self.collie_args.do_eval and self.collie_args.evaluation_strategy == 'epoch':
                 if isinstance(self.eval_dataset, dict):
                     for prefix in self.eval_dataset.keys():
@@ -170,6 +183,21 @@ class InplaceTensorTrainer:
                         self.eval(self.global_step, epoch, self.eval_dataset[prefix], self.eval_dataloader[prefix], prefix)
                 else:
                     self.eval(self.global_step, epoch, self.eval_dataset, self.eval_dataloader, 'eval')
+
+    def save_model(self, index):
+        assert self.cache_dir is not None
+        save_dir = os.path.join(self.collie_args.output_dir, f"checkpoint-{index}")
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir, exist_ok=True)
+        save_path = os.path.join(save_dir, f"consolidated.{self.collie_args.local_rank:02d}.pth")
+        print('Saving model to', save_path)
+
+        states = {name: param.cpu().detach().clone() for name, param in self.model.state_dict().items()}
+        torch.save(states, save_path)
+
+        if self.collie_args.local_rank == 0:
+            copyfile(os.path.join(self.cache_dir, 'params.json'), os.path.join(save_dir, 'params.json'))
+        torch.distributed.barrier()
 
     def eval(self,
              step: int,
@@ -184,6 +212,7 @@ class InplaceTensorTrainer:
         """
         print(f"***** Running {eval_prefix} *****")
         print(f"  Num examples: {len(dataset)}")
+        print(f"  Current Epochs: {epoch}")
         print(f"  Batch size: {self.collie_args.per_device_eval_batch_size}")
 
         with tqdm.tqdm(dataloader, disable=not self.allow_print) as tqb:
