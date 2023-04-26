@@ -25,9 +25,6 @@ class TrainerArgs:
         metadata={"help": "Total number of training epochs to perform. "
                   "If it is set to -1, the training will run forever."
                   "If it is set to 0, the training will not run."})
-    learning_rate: int = field(
-        default=1e-3,
-        metadata={"help": "Learning rate of training."})
     eval_per_steps: int = field(
         default=10,
         metadata={"help": "The number of steps to perform evaluation. " 

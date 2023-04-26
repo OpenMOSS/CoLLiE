@@ -15,8 +15,11 @@ import time
 import math
 import tqdm
 import json
+import copy
+import fcntl
 import shutil
 import warnings
+import subprocess
 from io import BytesIO
 from einops import rearrange
 from dataclasses import dataclass
@@ -569,7 +572,36 @@ def prepare_distribution(model_args: ModelArgs = ModelArgs()) -> dict:
         if model_args.dense != "raw":
             warnings.warn("Fused dense is not supported in tensor parallelism. ")
             model_args.dense = "raw"
-    colossalai.launch_from_torch(config=CONFIG, backend=model_args.backend)
+    if "SLURM_JOB_NODELIST" in os.environ.keys():
+        node_list_str = os.environ["SLURM_JOB_NODELIST"]
+        node_list = []
+        result = re.search(r"\[(.*?)\]", node_list_str)
+        if result is None:
+            node_list.append(node_list_str)
+        else:
+            node_list.extend([item for item in result.groups(1)[0].split(",")])
+            for i in node_list:
+                if "-" in i:
+                    node_list.extend(list(map(lambda x: f"{x}", range(int(i.split("-")[0]), int(i.split("-")[1]) + 1))))
+                    node_list.remove(i)
+            node_list = list(map(lambda x: re.sub(r"\[(.*?)\]", x, node_list_str), node_list))
+        node_list = sorted(node_list)
+        master_addr = node_list[0]
+        result = subprocess.run(["scontrol", "show", "node", master_addr], capture_output=True)
+        result = re.search(r"NodeAddr=(.*?)\s", result.stdout.decode())
+        if result:
+            master_addr = result.groups(1)[0]
+        master_port = 27008
+        colossalai.launch_from_slurm(
+            config=CONFIG,
+            host=master_addr,
+            port=master_port
+        )
+        os.environ["LOCAL_RANK"] = os.environ["SLURM_LOCALID"]
+        os.environ["RANK"] = os.environ["SLURM_PROCID"]
+        os.environ["WORLD_SIZE"] = os.environ["SLURM_NTASKS"]
+    elif "MASTER_ADDR" in os.environ.keys():
+        colossalai.launch_from_torch(config=CONFIG, backend=model_args.backend)
     if "pipeline" in CONFIG["parallel"] and CONFIG["parallel"]["pipeline"] == 1:
         gpc.is_pipeline_first_stage = lambda: True
         gpc.is_pipeline_last_stage = lambda: True
@@ -584,7 +616,7 @@ def build_pipe(model_args: ModelArgs = ModelArgs()):
     prepare_distribution(model_args=model_args)
     disable_existing_loggers()
     logger = get_dist_logger()
-    with ColoInitContext(device=torch.device(f"cuda:{os.environ.get('LOCAL_RANK')}"), dtype=torch.float16 if model_args.fp16 else torch.float32):
+    with ColoInitContext(device=torch.device(f"cuda:{os.environ.get('LOCAL_RANK', 0)}"), dtype=torch.float16 if model_args.fp16 else torch.float32):
         if model_args.pp_size > 1:
             wrapper = PipelineSharedModuleWrapper(
                 [0, model_args.pp_size - 1])
@@ -593,7 +625,7 @@ def build_pipe(model_args: ModelArgs = ModelArgs()):
         chunk_list = []
         for start, end in parts:
             logger.info(
-                f'Rank{os.environ.get("LOCAL_RANK")} build layer {start}-{end}, {end - start}/{model_args.num_hidden_layers} layers')
+                f'Rank{os.environ.get("LOCAL_RANK", 0)} build layer {start}-{end}, {end - start}/{model_args.num_hidden_layers} layers')
             chunk = Transformer(is_start=gpc.is_pipeline_first_stage(),
                                 is_end=gpc.is_pipeline_last_stage(),
                                 num_blocks=end - start,
@@ -620,7 +652,12 @@ def load_state_dict(protocol: str = "s3",
     state_dict = OrderedDict()
     part_state_dict = OrderedDict()
     tempdir = [""]
-    if not torch.distributed.is_initialized() or gpc.get_local_rank(ParallelMode.GLOBAL) == 0:
+    if int(os.environ.get("RANK", "0")) == 0:
+        tempdir[0] = f"/dev/shm/Collie-{round(time.time() * 1000)}/"
+    if "RANK" in os.environ.keys():
+        torch.distributed.broadcast_object_list(tempdir, src=0)
+    os.makedirs(tempdir[0], exist_ok=True)
+    if int(os.environ.get("LOCAL_RANK", "0")) == 0:
         if protocol == "s3":
             from petrel_client.client import Client
             client = Client()
@@ -637,8 +674,8 @@ def load_state_dict(protocol: str = "s3",
                         "layer_norm_epsilon": params["norm_eps"]
                     }.items():
                         setattr(model_args, key, value)
-                weights = [weight for weight in client.list(
-                    s3_folder) if weight.endswith(".pth") or weight.endswith(".pt")]
+                weights = sorted([weight for weight in client.list(
+                    s3_folder) if weight.endswith(".pth") or weight.endswith(".pt")])
             elif format == "hf":
                 if client.contains(os.path.join(s3_folder, "config.json")):
                     config = json.loads(client.get(os.path.join(s3_folder, "config.json")).decode())
@@ -699,6 +736,7 @@ def load_state_dict(protocol: str = "s3",
                         setattr(model_args, key, value)
                 weights = [weight for weight in list(
                     os.listdir(file_folder)) if weight.endswith(".pth") or weight.endswith(".pt")]
+                weights = sorted(weights)
             elif format == "hf":
                 if os.path.exists(os.path.join(file_folder, "config.json")):
                     config = json.loads(open(os.path.join(file_folder, "config.json"), mode="r").read())
@@ -746,9 +784,7 @@ def load_state_dict(protocol: str = "s3",
                                 state_dict[key] = value
                     pbar.update(1)
         parts = partition_uniform(
-            model_args.num_hidden_layers, model_args.pp_size if torch.distributed.is_initialized() else 1, num_chunks=1)
-        tempdir[0] = f"/dev/shm/Collie-{round(time.time() * 1000)}/"
-        os.makedirs(tempdir[0], exist_ok=True)
+            model_args.num_hidden_layers, model_args.pp_size if "RANK" in os.environ.keys() else 1, num_chunks=1)
         for pp_rank, [(start, end)] in enumerate(parts):
             part_state_dict = OrderedDict()
             if format == "hf":
@@ -789,15 +825,15 @@ def load_state_dict(protocol: str = "s3",
             with open(os.path.join(tempdir[0], f"pipeline_{pp_rank}.pt"), "wb+") as f:
                 torch.save(part_state_dict, f)
     del state_dict, part_state_dict
-    if torch.distributed.is_initialized():
-        torch.distributed.broadcast_object_list(tempdir, src=0)
+    if "RANK" in os.environ.keys():
+        torch.distributed.barrier()
         with open(os.path.join(tempdir[0], f"pipeline_{gpc.get_local_rank(ParallelMode.PIPELINE)}.pt"), "rb") as f:
             state_dict = torch.load(f)
         torch.distributed.barrier()
     else:
         with open(os.path.join(tempdir[0], f"pipeline_0.pt"), "rb") as f:
             state_dict = torch.load(f)
-    if not torch.distributed.is_initialized() or gpc.get_local_rank(ParallelMode.GLOBAL) == 0:
+    if not "RANK" in os.environ.keys() or int(os.environ["LOCAL_RANK"]) == 0 == 0:
         shutil.rmtree(tempdir[0])
     return state_dict
 
@@ -809,14 +845,15 @@ def save_parallel_model(model: nn.Module,
                         s3_folder: str = "hdd:s3://opennlplab_hdd/models/llama-collie/llama-7b/",
                         raw_tp_size: int = 1,
                         raw_tp_device_map: Optional[Dict] = None,
+                        raw_multiple_of: int = 256,
                         model_args: ModelArgs = ModelArgs()):
     assert protocol in ["s3", "file"], "protocol must be one of s3, file"
     assert format in ["hf", "raw"], "format must be hf or raw"
     tempdir = [""]
-    if gpc.get_local_rank(ParallelMode.GLOBAL) == 0:
+    if int(os.environ.get("RANK")) == 0:
         tempdir[0] = f"/dev/shm/Collie-{round(time.time() * 1000)}/"
-        os.makedirs(tempdir[0], exist_ok=True)
     torch.distributed.broadcast_object_list(tempdir, src=0)
+    os.makedirs(tempdir[0], exist_ok=True)
     with ParallelLayer.use_local_state_dict():
         part_state_dict = model.state_dict()
     for key in list(part_state_dict.keys()):
@@ -835,16 +872,22 @@ def save_parallel_model(model: nn.Module,
     with open(os.path.join(tempdir[0], f"pipeline_{gpc.get_local_rank(ParallelMode.PIPELINE)}_tensor_{gpc.get_local_rank(ParallelMode.TENSOR)}.pt"), "wb") as f:
         torch.save(part_state_dict, f)
     torch.distributed.barrier()
-    if gpc.get_local_rank(ParallelMode.GLOBAL) == 0:
+    if int(os.environ.get("LOCAL_RANK")) == 0:
         state_dict = OrderedDict()
         parts = partition_uniform(model_args.num_hidden_layers, model_args.pp_size, num_chunks=1)
         files = [file for file in list(os.listdir(tempdir[0])) if file.endswith(".pt")]
         pp_tp_map = OrderedDict({file: list(map(int, re.match(r'pipeline_(\d+)_tensor_(\d+)\.pt', file).groups())) for file in files})
         pp_range = range(min([value[0] for value in pp_tp_map.values()]), max([value[0] for value in pp_tp_map.values()]) + 1)
         tp_range = range(max([value[1] for value in pp_tp_map.values()]) + 1)
+        pp_start_layer = model_args.num_hidden_layers
+        pp_end_layer = 0
         for pp in pp_range:
             # max_layer = max([-1] + [int(match.groups()[0]) for match in [re.match(r'blocks\.(\d+)\..*', key) for key in state_dict.keys()] if match is not None])
             lower_bound, upper_bound = parts[pp][0]
+            if lower_bound < pp_start_layer:
+                pp_start_layer = lower_bound
+            if upper_bound > pp_end_layer:
+                pp_end_layer = upper_bound
             for tp in tp_range:
                 with open(os.path.join(tempdir[0], f'pipeline_{pp}_tensor_{tp}.pt'), "rb") as f:
                     part_state_dict = torch.load(f, map_location="cpu")
@@ -880,6 +923,9 @@ def save_parallel_model(model: nn.Module,
             s3_folder=s3_folder, 
             raw_tp_size=raw_tp_size, 
             raw_tp_device_map=raw_tp_device_map, 
+            raw_multiple_of=raw_multiple_of,
+            pp_start_layer=pp_start_layer,
+            pp_end_layer=pp_end_layer,
             model_args=model_args)
         shutil.rmtree(tempdir[0])
 
@@ -891,9 +937,11 @@ def save_state_dict(state_dict: Dict,
                     raw_tp_size: int = 1,
                     raw_tp_device_map: Optional[Dict] = None,
                     raw_multiple_of: int = 256,
+                    pp_start_layer: int = 0,
+                    pp_end_layer: int = -1,
                     save_to_buffer: bool = False,
                     model_args: ModelArgs = ModelArgs()):
-    if torch.distributed.is_initialized() and torch.distributed.get_rank() != 0:
+    if int(os.environ.get("LOCAL_RANK", 0)) != 0:
         warnings.warn("Only rank 0 should save the state_dict.")
         return
     if save_to_buffer:
@@ -932,10 +980,10 @@ def save_state_dict(state_dict: Dict,
             if protocol == "file":
                 os.makedirs(os.path.dirname(path), exist_ok=True)
                 if isinstance(obj, str):
-                    with open(path, "w") as f:
+                    with open(path, "w+") as f:
                         f.write(obj)
                 else:
-                    with open(path, "wb") as f:
+                    with open(path, "wb+") as f:
                         torch.save(obj, f)
             elif protocol == "s3":
                 from petrel_client.client import Client
@@ -1011,24 +1059,29 @@ def save_state_dict(state_dict: Dict,
                     raw_state_dict["norm.weight"] = value
             pbar.update(1)
     if format == "raw":
-        for layer in range(model_args.num_hidden_layers):
+        if pp_end_layer < 0:
+            pp_end_layer = model_args.num_hidden_layers - 1
+        for layer in range(pp_start_layer, pp_end_layer + 1):
             raw_state_dict[f'layers.{layer}.attention.inner_attention.rope.freqs'] = inv_freq
         for i in range(raw_tp_size):
+            if pp_start_layer == 0:
+                filename = "consolidated.{:0>2}.pth".format(i)
+            else:
+                filename = "consolidated.{:0>2}_from_layer_{}.pth".format(i, pp_start_layer)
             save_obj({key: value[i] if isinstance(value, list) else value
-                    for key, value in raw_state_dict.items()}, os.path.join(folder[protocol], "consolidated.{:0>2}.pth".format(i)), protocol)
-        params = {"dim": model_args.hidden_size, 
-                  "multiple_of": raw_multiple_of, 
-                  "n_heads": model_args.num_attention_heads, 
-                  "n_layers": model_args.num_hidden_layers, 
-                  "norm_eps": model_args.layer_norm_epsilon, 
-                  "vocab_size": -1}
-        save_obj(json.dumps(params, indent=4), os.path.join(folder[protocol], "params.json"), protocol)
+                    for key, value in raw_state_dict.items()}, os.path.join(folder[protocol], filename), protocol)
+        if int(os.environ.get("RANK", "0")) == 0:
+            params = {"dim": model_args.hidden_size, 
+                    "multiple_of": raw_multiple_of, 
+                    "n_heads": model_args.num_attention_heads, 
+                    "n_layers": model_args.num_hidden_layers, 
+                    "norm_eps": model_args.layer_norm_epsilon, 
+                    "vocab_size": -1}
+            save_obj(json.dumps(params, indent=4), os.path.join(folder[protocol], "params.json"), protocol)
     if format == "hf":
-        model_index = OrderedDict({
-            "weight_map": {},
-            "metadata": {"total_size": 0}
-        })
-        with tqdm.tqdm(range(model_args.num_hidden_layers), desc=f"Saving state dict", total=model_args.num_hidden_layers) as pbar:
+        if pp_end_layer < 0:
+            pp_end_layer = model_args.num_hidden_layers - 1
+        with tqdm.tqdm(range(pp_start_layer, pp_end_layer + 1), desc=f"Saving state dict", total=model_args.num_hidden_layers) as pbar:
             for layer in pbar:
                 filename = f"pytorch_model-{layer + 1}-of-{model_args.num_hidden_layers}.bin"
                 layer_state_dict = {key: value for key, value in hf_state_dict.items(
@@ -1038,32 +1091,43 @@ def save_state_dict(state_dict: Dict,
                 if layer == model_args.num_hidden_layers - 1:
                     layer_state_dict["lm_head.weight"] = hf_state_dict["lm_head.weight"]
                     layer_state_dict["model.norm.weight"] = hf_state_dict["model.norm.weight"]
-                
                 layer_state_dict[f"model.layers.{layer}.self_attn.rotary_emb.inv_freq"] = inv_freq
-                model_index["weight_map"].update({
-                    key: filename for key in layer_state_dict.keys()
-                })
                 save_obj(layer_state_dict, os.path.join(folder[protocol], filename), protocol)
                 pbar.update(1)
-        save_obj(json.dumps(model_index, indent=4), os.path.join(folder[protocol], "pytorch_model.bin.index.json"), protocol)
-        config = {"architectures": ["LLaMAForCausalLM"], 
-                "bos_token_id": 0, 
-                "eos_token_id": 1, 
-                "hidden_act": "silu", 
-                "hidden_size": model_args.hidden_size, 
-                "intermediate_size": model_args.intermediate_size, 
-                "initializer_range": 0.02, 
-                "max_sequence_length": 2048, 
-                "model_type": "llama", 
-                "num_attention_heads": model_args.num_attention_heads, 
-                "num_hidden_layers": model_args.num_hidden_layers, 
-                "pad_token_id": -1, 
-                "rms_norm_eps": model_args.layer_norm_epsilon, 
-                "torch_dtype": "float16" if model_args.fp16 else "float32", 
-                "transformers_version": "4.27.0.dev0", 
-                "use_cache": True, 
-                "vocab_size": model_args.vocab_size}
-        save_obj(json.dumps(config, indent=4), os.path.join(folder[protocol], "config.json"), protocol)
+        if int(os.environ.get("RANK", "0")) == 0:
+            model_index = OrderedDict({
+                "weight_map": {},
+                "metadata": {"total_size": 0}
+            })
+            for key in list(hf_state_dict.keys()):
+                model_index["weight_map"]["lm_head.weight"] = f"pytorch_model-{model_args.num_hidden_layers}-of-{model_args.num_hidden_layers}.bin"
+                model_index["weight_map"]["model.norm.weight"] = f"pytorch_model-{model_args.num_hidden_layers}-of-{model_args.num_hidden_layers}.bin"
+                if key == "model.embed_tokens.weight":
+                    model_index["weight_map"][key] = f"pytorch_model-1-of-{model_args.num_hidden_layers}.bin"
+                elif key.startswith("model.layers"):
+                    layer_idx = int(key.split('.')[2])
+                    model_index["weight_map"][key] = f"pytorch_model-{layer_idx + 1}-of-{model_args.num_hidden_layers}.bin"
+                    if pp_end_layer < model_args.num_hidden_layers - 1:
+                        model_index["weight_map"][key.replace(f"{layer_idx}", f"{layer_idx + pp_end_layer}")] = f"pytorch_model-{layer_idx + 1 + pp_end_layer}-of-{model_args.num_hidden_layers}.bin"
+            save_obj(json.dumps(model_index, indent=4), os.path.join(folder[protocol], "pytorch_model.bin.index.json"), protocol)
+            config = {"architectures": ["LlamaForCausalLM"], 
+                    "bos_token_id": 0, 
+                    "eos_token_id": 1, 
+                    "hidden_act": "silu", 
+                    "hidden_size": model_args.hidden_size, 
+                    "intermediate_size": model_args.intermediate_size, 
+                    "initializer_range": 0.02, 
+                    "max_sequence_length": 2048, 
+                    "model_type": "llama", 
+                    "num_attention_heads": model_args.num_attention_heads, 
+                    "num_hidden_layers": model_args.num_hidden_layers, 
+                    "pad_token_id": -1, 
+                    "rms_norm_eps": model_args.layer_norm_epsilon, 
+                    "torch_dtype": "float16" if model_args.fp16 else "float32", 
+                    "transformers_version": "4.27.0.dev0", 
+                    "use_cache": True, 
+                    "vocab_size": model_args.vocab_size}
+            save_obj(json.dumps(config, indent=4), os.path.join(folder[protocol], "config.json"), protocol)
     if save_to_buffer:
         return buffers
 
