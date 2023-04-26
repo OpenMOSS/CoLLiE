@@ -572,7 +572,9 @@ def prepare_distribution(model_args: ModelArgs = ModelArgs()) -> dict:
         if model_args.dense != "raw":
             warnings.warn("Fused dense is not supported in tensor parallelism. ")
             model_args.dense = "raw"
-    if "SLURM_JOB_NODELIST" in os.environ.keys():
+    if "WORLD_SIZE" in os.environ.keys():
+        colossalai.launch_from_torch(config=CONFIG, backend=model_args.backend)
+    elif "SLURM_JOB_NODELIST" in os.environ.keys():
         node_list_str = os.environ["SLURM_JOB_NODELIST"]
         node_list = []
         result = re.search(r"\[(.*?)\]", node_list_str)
@@ -600,8 +602,6 @@ def prepare_distribution(model_args: ModelArgs = ModelArgs()) -> dict:
         os.environ["LOCAL_RANK"] = os.environ["SLURM_LOCALID"]
         os.environ["RANK"] = os.environ["SLURM_PROCID"]
         os.environ["WORLD_SIZE"] = os.environ["SLURM_NTASKS"]
-    elif "MASTER_ADDR" in os.environ.keys():
-        colossalai.launch_from_torch(config=CONFIG, backend=model_args.backend)
     if "pipeline" in CONFIG["parallel"] and CONFIG["parallel"]["pipeline"] == 1:
         gpc.is_pipeline_first_stage = lambda: True
         gpc.is_pipeline_last_stage = lambda: True
@@ -849,6 +849,7 @@ def save_parallel_model(model: nn.Module,
                         model_args: ModelArgs = ModelArgs()):
     assert protocol in ["s3", "file"], "protocol must be one of s3, file"
     assert format in ["hf", "raw"], "format must be hf or raw"
+    model_args = model.model_args
     tempdir = [""]
     if int(os.environ.get("RANK")) == 0:
         tempdir[0] = f"/dev/shm/Collie-{round(time.time() * 1000)}/"
