@@ -556,7 +556,6 @@ class Transformer(nn.Module):
         if self.is_end:
             hidden_states = self.norm(hidden_states)
             hidden_states = self.language_model_head(hidden_states)
-            print(hidden_states.shape)
         return hidden_states
 
 
