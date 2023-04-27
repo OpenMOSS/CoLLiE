@@ -646,6 +646,7 @@ def load_state_dict(protocol: str = "s3",
                     format: str = "hf",
                     file_folder: str = "/remote-home/share/llama/7B",
                     s3_folder: str = "hdd:s3://opennlplab_hdd/models/llama/llama-7b-hf",
+                    offload: Optional[str] = None,
                     model_args: ModelArgs = ModelArgs()) -> Dict[str, torch.tensor]:
     assert format in ["hf", "raw"], "format must be hf or raw"
     assert protocol in ["s3", "file"], "protocol must be one of s3, file"
@@ -653,7 +654,10 @@ def load_state_dict(protocol: str = "s3",
     part_state_dict = OrderedDict()
     tempdir = [""]
     if int(os.environ.get("RANK", "0")) == 0:
-        tempdir[0] = f"/dev/shm/Collie-{round(time.time() * 1000)}/"
+        if offload is not None:
+            tempdir[0] = offload
+        else:
+            tempdir[0] = f"/dev/shm/Collie-{round(time.time() * 1000)}/"
     if "RANK" in os.environ.keys():
         torch.distributed.broadcast_object_list(tempdir, src=0)
     os.makedirs(tempdir[0], exist_ok=True)
@@ -846,13 +850,17 @@ def save_parallel_model(model: nn.Module,
                         raw_tp_size: int = 1,
                         raw_tp_device_map: Optional[Dict] = None,
                         raw_multiple_of: int = 256,
+                        offload: Optional[str] = None,
                         model_args: ModelArgs = ModelArgs()):
     assert protocol in ["s3", "file"], "protocol must be one of s3, file"
     assert format in ["hf", "raw"], "format must be hf or raw"
     model_args = model.model_args
     tempdir = [""]
     if int(os.environ.get("RANK")) == 0:
-        tempdir[0] = f"/dev/shm/Collie-{round(time.time() * 1000)}/"
+        if offload is not None:
+            tempdir[0] = offload
+        else:
+            tempdir[0] = f"/dev/shm/Collie-{round(time.time() * 1000)}/"
     torch.distributed.broadcast_object_list(tempdir, src=0)
     os.makedirs(tempdir[0], exist_ok=True)
     with ParallelLayer.use_local_state_dict():
