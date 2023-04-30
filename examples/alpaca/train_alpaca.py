@@ -94,7 +94,6 @@ def main():
     trainer_args.eval_per_epoches = 1
     trainer_args.eval_stop_tokens = [2]
     trainer_args.eval_use_cache = False
-    trainer_args.inplace = False
 
     with open(alpaca_data_path, encoding='utf-8') as f:
         alpaca_data = json.load(f)
@@ -132,7 +131,6 @@ def main():
             print(sentence)
             print("-" * 20)
         print("\n")
-        save_state_dict()
     
     optimizer = torch.optim.SGD(model.parameters(), lr=2e-5)
     trainer = ColossalaiTrainer(
