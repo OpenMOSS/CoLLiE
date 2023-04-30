@@ -79,7 +79,10 @@ class InplaceZeroTrainer:
                                                   schedule=self.collie_args.lr_scheduler_type,
                                                   n_steps=self.n_steps)
         self.lr = 0
-
+        # for grad norm
+        self.gather_norm = False
+        self.grad_norms = []
+        self.clip_coef = None
         # register inplace grad hook
         self.grad_func = self.inplace_grad()
         for n, p in model.named_parameters():
@@ -94,28 +97,36 @@ class InplaceZeroTrainer:
             with torch.no_grad():
                 for n, p in self.model.named_parameters():
                     if p.grad is not None:
-                        one_dim_grad = p.grad.view(-1)
-                        partition_size = p.ds_tensor.numel()
-                        start = partition_size * self.collie_args.local_rank
-                        end = start + partition_size
-
-                        if end > p.grad.numel():
-                            partitioned_grad = one_dim_grad.narrow(0, start, p.grad.numel() - start)
-                            # partitioned_grad = torch.cat([partitioned_grad, torch.zeros(end - p.grad.numel()).cuda()])
-                            partitioned_p = p.ds_tensor.narrow(0, 0, p.grad.numel() - start)
-                            if self.collie_args.clip_grad_value is not None:
-                                # Gradients are modified in-place.
-                                partitioned_grad.clamp_(min=-self.collie_args.clip_grad_value,
-                                                        max=self.collie_args.clip_grad_value)
-                            partitioned_p -= (self.lr * partitioned_grad)
+                        if self.gather_norm:
+                            self.grad_norms.append(torch.norm(p.grad, 2.0))
+                            p.grad = None
                         else:
-                            partitioned_grad = one_dim_grad.narrow(0, start, partition_size)
-                            if self.collie_args.clip_grad_value is not None:
-                                # Gradients are modified in-place.
-                                partitioned_grad.clamp_(min=-self.collie_args.clip_grad_value,
-                                                        max=self.collie_args.clip_grad_value)
-                            p.ds_tensor -= (self.lr * partitioned_grad)
-                        p.grad = None
+                            one_dim_grad = p.grad.view(-1)
+                            partition_size = p.ds_tensor.numel()
+                            start = partition_size * self.collie_args.local_rank
+                            end = start + partition_size
+
+                            if end > p.grad.numel():
+                                partitioned_grad = one_dim_grad.narrow(0, start, p.grad.numel() - start)
+                                # partitioned_grad = torch.cat([partitioned_grad, torch.zeros(end - p.grad.numel()).cuda()])
+                                partitioned_p = p.ds_tensor.narrow(0, 0, p.grad.numel() - start)
+                                if self.collie_args.clip_grad_value is not None:
+                                    # Gradients are modified in-place.
+                                    partitioned_grad.clamp_(min=-self.collie_args.clip_grad_value,
+                                                            max=self.collie_args.clip_grad_value)
+                                if self.collie_args.clip_grad_norm is not None and self.collie_args.clip_grad_norm > 0 and self.clip_coef is not None:
+                                    partitioned_grad.mul_(self.clip_coef)
+                                partitioned_p -= (self.lr * partitioned_grad)
+                            else:
+                                partitioned_grad = one_dim_grad.narrow(0, start, partition_size)
+                                if self.collie_args.clip_grad_value is not None:
+                                    # Gradients are modified in-place.
+                                    partitioned_grad.clamp_(min=-self.collie_args.clip_grad_value,
+                                                            max=self.collie_args.clip_grad_value)
+                                if self.collie_args.clip_grad_norm is not None and self.collie_args.clip_grad_norm > 0 and self.clip_coef is not None:
+                                    partitioned_grad.mul_(self.clip_coef)
+                                p.ds_tensor -= (self.lr * partitioned_grad)
+                            p.grad = None
             return x
 
         return func
@@ -154,6 +165,27 @@ class InplaceZeroTrainer:
                     # update the learning rate
                     self.global_step = self.num_steps_per_epoch * epoch + step
                     self.lr = self.lr_scheduler.step(self.global_step)
+                    if self.collie_args.clip_grad_norm is not None and self.collie_args.clip_grad_norm > 0:
+                        self.gather_norm = True
+                        self.grad_norms = []
+
+                        loss.backward(retain_graph=True)
+                        # update the last one since the hook function will not be called for the last parameter
+                        self.grad_func(0)
+
+                        with torch.no_grad():
+                            # The norm is computed over all gradients together, as if they were
+                            # concatenated into a single vector. Gradients are modified in-place.
+                            self.grad_norms = torch.stack(self.grad_norms)
+                            device = torch.device(f"cuda:{self.collie_args.local_rank}")
+                            all_grad_norms = torch.zeros(self.collie_args.world_size * self.grad_norms.shape[0], dtype=self.grad_norms.dtype, device=device)
+                            torch.distributed.all_gather_into_tensor(all_grad_norms, self.grad_norms)
+
+                            total_norm = torch.norm(all_grad_norms, 2.0)
+                            self.clip_coef = float(self.collie_args.clip_grad_norm) / (total_norm + 1e-6)
+                            self.clip_coef = torch.clamp(self.clip_coef, max=1.0)
+                        self.gather_norm = False
+                    
                     loss.backward()
 
                     # update the last one since the hook function will not be called for the last parameter

@@ -13,7 +13,6 @@ python setup.py install
 ## Speed Benchmark
 
 ### Throughput when training LLaMA with CoLLiE
-<small>
 
 | Model Size | Parallel |  Optimizer  | RTX 3090 # | Seq. Len. | Batch Size | Sec. per Step |  TGS  |
 |:----------:|:--------:|:-----------:|:----------:|:---------:|:----------:|:-------------:|:-----:|
@@ -23,7 +22,6 @@ python setup.py install
 |    13B     | Pipeline |     SGD     |     8      |   1024    |    128     |     47.0      | 348.5 |
 |    30B     |  ZeRO-3  | Inplace SGD |     4      |    960    |     2      |     34.1      | 56.4  |
 |    65B     |  ZeRO-3  | Inplace SGD |     8      |    512    |     2      |     67.1      | 15.3  |
-</small>
 
 <font size=2>* TGS = **T**okens / **G**PU / **S**econd</font>
 
