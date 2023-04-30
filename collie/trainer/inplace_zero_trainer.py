@@ -185,7 +185,7 @@ class InplaceZeroTrainer:
                             self.clip_coef = float(self.collie_args.clip_grad_norm) / (total_norm + 1e-6)
                             self.clip_coef = torch.clamp(self.clip_coef, max=1.0)
                         self.gather_norm = False
-                    
+
                     loss.backward()
 
                     # update the last one since the hook function will not be called for the last parameter
