@@ -186,8 +186,29 @@ class InplaceZeroTrainer:
                             self.clip_coef = torch.clamp(self.clip_coef, max=1.0)
                         self.gather_norm = False
 
-                    loss.backward()
+                        self.model.optimizer.get_param_coordinator(training=True).reset_step()
+                        # 第二次forward
+                        outs = self.model(
+                            input_ids=batch['input_ids'].cuda(),
+                            attention_mask=batch['attention_mask'].cuda(),
+                        )
+                        # Shift so that tokens < n predict n
+                        shift_logits = outs.logits[..., :-1, :].contiguous()
+                        shift_labels = batch['labels'][:, 1:].contiguous()
+                        # Flatten the tokens
+                        if self.collie_args.clip_loss_value is not None:
+                            loss_fct = CrossEntropyLoss(reduction='none')
+                            loss = loss_fct(shift_logits.view(shift_labels.shape[0] * shift_labels.shape[1], -1),
+                                            shift_labels.view(-1).cuda())
+                            loss.data.clamp_(min=-self.collie_args.clip_loss_value,
+                                             max=self.collie_args.clip_loss_value)
+                            loss = loss.mean()
+                        else:
+                            loss_fct = CrossEntropyLoss()
+                            loss = loss_fct(shift_logits.view(shift_labels.shape[0] * shift_labels.shape[1], -1),
+                                            shift_labels.view(-1).cuda())
 
+                    loss.backward()
                     # update the last one since the hook function will not be called for the last parameter
                     self.grad_func(0)
                     self.model.optimizer.get_param_coordinator(training=True).reset_step()
