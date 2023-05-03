@@ -24,7 +24,7 @@ from mytrainer import MyInplaceZeroTrainer
 from utils import DataCollatorForCauselLM, EvalDataCollatorForCauselLM
 
 
-def compute_metrics(all_pred, eval_dataset):
+def compute_metrics(all_pred, eval_dataset, save_prefix='eval'):
     preds = all_pred
     golds = [ins['answer'] for ins in eval_dataset.data]
     assert len(preds) == len(golds), f"# of predictions {len(preds)} doesn't match # of references {len(golds)}."
