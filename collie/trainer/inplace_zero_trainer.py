@@ -383,7 +383,7 @@ class InplaceZeroTrainer:
                 head_dim = self.model.module.config.hidden_size // self.model.module.config.num_attention_heads
                 base = 10000.0
                 inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2).float() / head_dim))
-                for layer in num_layers:
+                for layer in range(num_layers):
                     state_dict[f'model.layers.{layer}.self_attn.rotary_emb.inv_freq'] = inv_freq
 
 
