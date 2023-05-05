@@ -426,13 +426,11 @@ class InplaceZeroTrainer:
                 with open(os.path.join(output_dir, f'pytorch_model-{rank}.bin'), 'rb') as f:
                     state_dict_rank = torch.load(f)
                     for n in state_dict_rank:
-                        # print(n, state_dict[n][0].shape)
                         state_dict[n] = (
                             torch.cat([state_dict[n][0], state_dict_rank[n][0]], dim=0),
                             state_dict[n][1],
                             state_dict[n][2]
                         )
-                        # print(n, state_dict[n][0].shape)
                 # remove shard files
                 os.remove(os.path.join(output_dir, f'pytorch_model-{rank}.bin'))
             # reshape to original shape
