@@ -305,7 +305,7 @@ class InplaceZeroTrainer:
             generation_config=generation_config
         )
         logits = logits.tolist()
-        pred_texts = self.tokenizer.batch_decode(logits)
+        pred_texts = self.tokenizer.batch_decode(logits, skip_special_tokens=True)
         return pred_texts
 
     def is_better(self, result_dict, key):
