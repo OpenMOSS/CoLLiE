@@ -98,7 +98,7 @@ class InplaceTensorTrainer:
             print(f"***** Running Training *****")
             print(f"  Num examples: {len(self.train_dataset)}")
             print(f"  Num Epochs: {self.collie_args.num_train_epochs}")
-            print(f"  Current Epoch: {epoch+1}")
+            print(f"  Current Epoch: {epoch}")
             print(f"  Batch Size: {self.collie_args.per_device_train_batch_size}")
             if self.allow_print:
                 self.wandb.log({'train/epoch': epoch}, step=self.global_step)
