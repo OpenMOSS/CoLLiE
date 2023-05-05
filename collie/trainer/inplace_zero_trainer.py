@@ -99,6 +99,7 @@ class InplaceZeroTrainer:
             with torch.no_grad():
                 for n, p in self.model.named_parameters():
                     if p.grad is not None:
+                        torch.distributed.all_reduce(p.grad, op=torch.distributed.ReduceOp.AVG, async_op=False)
                         if self.gather_norm:
                             self.grad_norms.append(torch.norm(p.grad, 2.0))
                             p.grad = None
