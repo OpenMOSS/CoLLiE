@@ -14,15 +14,14 @@ python setup.py install
 
 ### Throughput when training LLaMA with CoLLiE
 
-| Model Size | Parallel |  Optimizer  |   Hardware   | Seq. Length | Batch Size | Sec. per Step |  TGS  |
-|:----------:|:--------:|:-----------:|:------------:|:-----------:|:----------:|:-------------:|:-----:|
-|     7B     | Pipeline |     SGD     | 8 * RTX 3090 |    1024     |    128     |     31.0      | 528.5 |
-|     7B     |  ZeRO-3  | Inplace SGD | 1 * RTX 3090 |    1024     |     3      |      4.0      | 832.5 |
-|    13B     | Pipeline |     SGD     | 8 * RTX 3090 |    1024     |    128     |     47.0      | 348.5 |
-|    13B     |  ZeRO-3  | Inplace SGD | 2 * RTX 3090 |    1024     |     4      |     11.7      | 350.1 |
-|    30B     |  ZeRO-3  | Inplace SGD | 4 * RTX 3090 |     960     |     2      |     34.1      | 56.4  |
-|    65B     |  ZeRO-3  | Inplace SGD | 8 * RTX 3090 |     512     |     2      |     67.1      | 15.3  |
-
+| Model Size | Parallel |  Optimizer  | RTX 3090 # | Seq. Len. | Batch Size | Sec. per Step |  TGS  |
+|:----------:|:--------:|:-----------:|:----------:|:---------:|:----------:|:-------------:|:-----:|
+|     7B     |  ZeRO-3  | Inplace SGD |     1      |   1024    |     3      |      4.0      | 832.5 |
+|     7B     | Pipeline |     SGD     |     8      |   1024    |    128     |     31.0      | 528.5 |
+|    13B     |  ZeRO-3  | Inplace SGD |     2      |   1024    |     4      |     11.7      | 350.1 |
+|    13B     | Pipeline |     SGD     |     8      |   1024    |    128     |     47.0      | 348.5 |
+|    30B     |  ZeRO-3  | Inplace SGD |     4      |    960    |     2      |     34.1      | 56.4  |
+|    65B     |  ZeRO-3  | Inplace SGD |     8      |    512    |     2      |     67.1      | 15.3  |
 
 <font size=2>* TGS = **T**okens / **G**PU / **S**econd</font>
 
