@@ -1,3 +1,4 @@
+import os
 import sys
 sys.path.append("/mnt/lustre/zhangshuo/projects/collie-main/collie/Megatron-LM/")
 sys.path.append("/mnt/lustre/zhangshuo/projects/collie/")
@@ -22,6 +23,8 @@ except ModuleNotFoundError:
     FlashAttention = None
 
 from arguments import LlamaArguments
+from collie.module import ColumnParallelLinearWithoutBias, RowParallelLinearWithoutBias
+from collie.profile import find_tensors
 
 class RotaryPositionEmbedding(nn.Module):
     def __init__(self, head_dim: int) -> None:
@@ -53,51 +56,58 @@ class LlamaLayer(nn.Module):
     def __init__(self, args: LlamaArguments) -> None:
         super().__init__()
         self.args = args
-        self.q_proj = tensor_parallel.ColumnParallelLinear(
+        self.q_proj = ColumnParallelLinearWithoutBias(
             args.hidden_size,
             args.hidden_size,
             bias=False,
-            gather_output=False
+            gather_output=False,
+            init_method=lambda x: x
         )
-        self.k_proj = tensor_parallel.ColumnParallelLinear(
+        self.k_proj = ColumnParallelLinearWithoutBias(
             args.hidden_size,
             args.hidden_size,
             bias=False,
-            gather_output=False
+            gather_output=False,
+            init_method=lambda x: x
         )
-        self.v_proj = tensor_parallel.ColumnParallelLinear(
+        self.v_proj = ColumnParallelLinearWithoutBias(
             args.hidden_size,
             args.hidden_size,
             bias=False,
-            gather_output=False
+            gather_output=False,
+            init_method=lambda x: x
         )
-        self.o_proj = tensor_parallel.RowParallelLinear(
+        self.o_proj = RowParallelLinearWithoutBias(
             args.hidden_size,
             args.hidden_size,
             bias=False,
-            input_is_parallel=True
+            input_is_parallel=True,
+            init_method=lambda x: x
         )
         self.input_layernorm = FusedRMSNorm(
             normalized_shape=args.hidden_size,
             eps=args.layer_norm_epsilon
         )
-        self.gate_proj = tensor_parallel.ColumnParallelLinear(
+        self.gate_proj = ColumnParallelLinearWithoutBias(
             args.hidden_size,
             args.intermediate_size,
             bias=False,
-            gather_output=False
+            gather_output=False,
+            init_method=lambda x: x
         )
-        self.up_proj = tensor_parallel.ColumnParallelLinear(
+        self.up_proj = ColumnParallelLinearWithoutBias(
             args.hidden_size,
             args.intermediate_size,
             bias=False,
-            gather_output=False
+            gather_output=False,
+            init_method=lambda x: x
         )
-        self.down_proj = tensor_parallel.RowParallelLinear(
+        self.down_proj = RowParallelLinearWithoutBias(
             args.intermediate_size,
             args.hidden_size,
             bias=False,
-            input_is_parallel=True
+            input_is_parallel=True,
+            init_method=lambda x: x
         )
         self.post_attention_layernorm = FusedRMSNorm(
             normalized_shape=args.hidden_size,
@@ -139,13 +149,12 @@ class LlamaLayer(nn.Module):
             output = F.dropout(output, p=self.args.dropout, training=self.training)
         hidden_states = hidden_states + self.o_proj(output)
         _hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = hidden_states + self.mlp["dropout"](self.mlp["w2"](F.silu(self.mlp["w1"](_hidden_states)) * self.mlp["w3"](_hidden_states)))
         hidden_states = hidden_states + F.dropout(self.down_proj(F.silu(self.gate_proj(_hidden_states)) * self.up_proj(_hidden_states)), p=self.args.dropout, training=self.training)
         return hidden_states
     
     def forward(self, hidden_states: torch.Tensor):
         if self.args.checkpointing:
-            return checkpoint(self.forward, hidden_states)
+            return checkpoint(self._forward, hidden_states)
         else:
             return self._forward(hidden_states)
         
@@ -162,7 +171,7 @@ class LlamaModel(nn.Module):
             normalized_shape=args.hidden_size,
             eps=args.layer_norm_epsilon
         )
-        self.lm_head = tensor_parallel.ColumnParallelLinear(
+        self.lm_head = ColumnParallelLinearWithoutBias(
             args.hidden_size,
             args.vocab_size,
             bias=False
@@ -181,7 +190,7 @@ class LlamaModel(nn.Module):
                 *[LayerSpec(LlamaLayer, args) for _ in range(args.num_hidden_layers)],
                 TiedLayerSpec(
                     "embed_tokens",
-                    tensor_parallel.ColumnParallelLinear,
+                    ColumnParallelLinearWithoutBias,
                     args.hidden_size,
                     args.vocab_size,
                     bias=False)
@@ -197,27 +206,52 @@ class LlamaModel(nn.Module):
         return logits
     
 if __name__ == "__main__":
+    import os
     import deepspeed
+    import torch.distributed as dist
     from megatron.core import parallel_state
+    from megatron.core import mpu
     from deepspeed.pipe import PipelineModule
     from deepspeed.runtime.pipe.topology import PipeModelDataParallelTopology
+    from torch.utils.data import Dataset
     args = LlamaArguments()
-    args.pp_size = 1
-    args.tp_size = 2
+    args.pp_size = 4
+    args.tp_size = 1
+    args.dp_size = 2
+    args.use_flash = False
+    args.checkpointing = False
+    # prepare parallelism
     deepspeed.init_distributed(dist_backend='nccl', init_method="env://")
-    parallel_state.initialize_model_parallel(tensor_model_parallel_size=args.tp_size, pipeline_model_parallel_size=args.pp_size)
+    parallel_state.initialize_model_parallel(tensor_model_parallel_size=args.tp_size, pipeline_model_parallel_size=1)
     tensor_parallel.model_parallel_cuda_manual_seed(args.seed)
+    torch.cuda.set_device(torch.device('cuda:{}'.format(os.environ["LOCAL_RANK"])))
+    # construct model
     if args.pp_size > 1:
         model = PipelineModule(
             layers=LlamaModel(args),
             num_stages=args.pp_size,
-            topology=PipeModelDataParallelTopology(num_pp=args.pp_size, num_dp=args.dp_size, num_mp=args.tp_size)
-        )
+            topology=PipeModelDataParallelTopology(num_pp=args.pp_size, num_dp=args.dp_size, num_mp=args.tp_size),
+            loss_fn=lambda x, y: (print(x), x.sum())[1]
+        ).cpu()
     else:
-        model = LlamaModel(args)
-    engine, _, _, _ = deepspeed.initialize(
+        model = LlamaModel(args).cpu()
+        
+    
+    class DummyDataset(Dataset):
+        def __init__(self):
+            pass
+            
+        def __len__(self):
+            return 100
+        
+        def __getitem__(self, idx):
+            return torch.tensor([idx]), torch.tensor([idx])
+    dataset = DummyDataset()
+    engine, optimizer, training_dataloader, _ = deepspeed.initialize(
         model=model,
         model_parameters=[p for p in model.parameters() if p.requires_grad],
+        training_data=dataset,
+        mpu=mpu if args.pp_size == 1 else None,
         config={
             "train_micro_batch_size_per_gpu": 1,
             "train_batch_size": 2,
@@ -233,8 +267,32 @@ if __name__ == "__main__":
                 "eps": 1e-8,
                 "weight_decay": 3e-7
                 }
+            },
+            "fp16": {
+                "enabled": True
+            },
+            "zero_optimization": {
+                "stage": 1,
+                "offload_optimizer": {
+                    "device": "cpu"
+                },
+                # "offload_param": {
+                #     "device": "cpu",
+                #     "pin_memory": True
+                # },
+                "contiguous_gradients": True,
+                "overlap_comm": True,
+                "sub_group_size": 1e12,
+                "reduce_bucket_size": "auto",
+                # "stage3_prefetch_bucket_size": "auto",
+                # "stage3_param_persistence_threshold": "auto",
+                # "stage3_max_live_parameters": 1e9,
+                # "stage3_max_reuse_distance": 1e9,
+                # "stage3_gather_16bit_weights_on_model_save": True
             }
         }
     )
-    input_ids = torch.randint(0, args.vocab_size, (8, 1024), dtype=torch.long).cuda(0)
-    print(engine(input_ids))
+    if os.environ["LOCAL_RANK"] == "0":
+        find_tensors()
+        torch.cuda.empty_cache()
+    print(engine.train_batch())

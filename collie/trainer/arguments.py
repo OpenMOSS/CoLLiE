@@ -8,12 +8,6 @@ class TrainerArgs:
             "help": "Random seed that will be set at the beginning of training."
         }
     )
-    use_flash: bool = field(
-        default=True,
-        metadata={
-            "help": "Whether to use FlashAttention."
-        }
-    )
     checkpointing: bool = field(
         default=True,
         metadata={

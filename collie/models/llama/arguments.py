@@ -46,3 +46,9 @@ class LlamaArguments(TrainerArgs):
             "help": "Dropout probability."
         }
     )
+    use_flash: bool = field(
+        default=True,
+        metadata={
+            "help": "Whether to use FlashAttention."
+        }
+    )
