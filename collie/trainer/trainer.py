@@ -1,4 +1,4 @@
-from collie.trainer.arguments import TrainerArgs, load_config
+from collie.trainer.arguments import Arguments, load_config
 from collie.hack import hack_deepspeed, hack_megatron
 from collie.module import GPTLMLoss
 from collie.log.print import print
@@ -25,7 +25,7 @@ class Trainer:
                  loss_fn: Callable = GPTLMLoss(),
                  optimizer: Optional[torch.optim.Optimizer] = None,
                  train_dataset: Optional[torch.utils.data.Dataset] = None,
-                 args: Union[TrainerArgs, str] = TrainerArgs()) -> None:
+                 args: Union[Arguments, str] = Arguments()) -> None:
         self.model = model
         self.optimizer = optimizer
         self.train_dataset = train_dataset
@@ -104,19 +104,11 @@ class Trainer:
         """
         if dist.get_world_size() != self.args.tp_size * self.args.dp_size * self.args.pp_size:
             logger.rank_zero_warning("The world size is not equal to the product of the parallel sizes set."
-                                     "{dist.get_world_size()} != {self.args.tp_size} * {self.args.dp_size} * {self.args.dp_size}.".format())
+                                     f"{dist.get_world_size()} != {self.args.tp_size} * {self.args.dp_size} * {self.args.dp_size}.")
             self.args.dp_size = dist.get_world_size() // (self.args.tp_size * self.args.pp_size)
-            logger.rank_zero_warning("Set dp_size to {self.args.dp_size}.")
+            logger.rank_zero_warning(f"Set dp_size to {self.args.dp_size}.")
         if self.args.pp_size > 1:
-            self.model = PipelineModule(
-                layers=self.model,
-                num_stages=self.args.pp_size,
-                topology=PipeModelDataParallelTopology(
-                    num_pp=self.args.pp_size, 
-                    num_dp=self.args.dp_size, 
-                    num_mp=self.args.tp_size),
-                loss_fn=self.loss_fn
-            )
+            self.model.loss_fn = self.loss_fn
         self.engine, self.optimizer, self.training_dataloader, _ = deepspeed.initialize(
             model=self.model,
             model_parameters=[p for p in self.model.parameters() if p.requires_grad],

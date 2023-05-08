@@ -1,9 +1,9 @@
 from dataclasses import dataclass, field
 
-from collie.trainer.arguments import TrainerArgs
+from collie.trainer.arguments import Arguments
 
 @dataclass
-class LlamaArguments(TrainerArgs):
+class LlamaArguments(Arguments):
     vocab_size: int = field(
         default=32000,
         metadata={

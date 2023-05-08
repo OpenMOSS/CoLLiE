@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from typing import Union
 
 @dataclass
-class TrainerArgs:
+class Arguments:
     """Arguments for Trainer.
     """
     use_flash: bool = field(
@@ -40,6 +40,12 @@ class TrainerArgs:
         default=1,
         metadata={
             "help": "Data parallelism degree."
+        }
+    )
+    pp_partition_method: str = field(
+        default='parameters',
+        metadata={
+            "help": "Partition method for pipeline parallelism. Default is 'parameters'."
         }
     )
     train_epochs: int = field(

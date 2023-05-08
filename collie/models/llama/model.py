@@ -21,11 +21,12 @@ except ModuleNotFoundError:
     FlashAttention = None
 
 from collie.models.llama.arguments import LlamaArguments
-from collie.module import ColumnParallelLinearWithoutBias, RowParallelLinearWithoutBias
+from collie.module import ColumnParallelLinearWithoutBias, RowParallelLinearWithoutBias, PipelineModel, GPTLMLoss
 from collie.trainer.arguments import load_config
 from collie.profile import find_tensors
 
 from typing import Union
+
 
 class RotaryPositionEmbedding(nn.Module):
     def __init__(self, head_dim: int) -> None:
@@ -44,14 +45,17 @@ class RotaryPositionEmbedding(nn.Module):
             query.float().reshape(*query.shape[:-1], -1, 2))
         key = torch.view_as_complex(
             key.float().reshape(*key.shape[:-1], -1, 2))
-        freqs = torch.outer(torch.arange((2 ** 16) * 2, device=self.inv_freq.device), self.inv_freq).float()
-        freqs_cis = torch.polar(torch.ones_like(freqs), freqs)[start_pos: start_pos + seq_len]
+        freqs = torch.outer(torch.arange(
+            (2 ** 16) * 2, device=self.inv_freq.device), self.inv_freq).float()
+        freqs_cis = torch.polar(torch.ones_like(freqs), freqs)[
+            start_pos: start_pos + seq_len]
         shape = [d if i == 1 or i == query.ndim -
-                    1 else 1 for i, d in enumerate(query.shape)]
+                 1 else 1 for i, d in enumerate(query.shape)]
         freqs_cis = freqs_cis.view(*shape)
         query = torch.view_as_real(query * freqs_cis).flatten(3)
         key = torch.view_as_real(key * freqs_cis).flatten(3)
         return query.type(t), key.type(t)
+
 
 class LlamaLayer(nn.Module):
     def __init__(self, args: LlamaArguments) -> None:
@@ -114,17 +118,19 @@ class LlamaLayer(nn.Module):
             normalized_shape=args.hidden_size,
             eps=args.layer_norm_epsilon
         )
-        self.rotary_emb = RotaryPositionEmbedding(self.args.hidden_size // self.args.num_attention_heads)
-    
+        self.rotary_emb = RotaryPositionEmbedding(
+            self.args.hidden_size // self.args.num_attention_heads)
+
     def _forward(self, hidden_states: torch.Tensor):
         assert hidden_states.ndim == 3, f"hidden_states.shape must be (B, N, H), but got {hidden_states.shape}"
         batch_size, seq_len, _ = hidden_states.shape
         head_dim = self.args.hidden_size // self.args.num_attention_heads
         _hidden_states = self.input_layernorm(hidden_states)
-        query, key, value = self.q_proj(hidden_states), self.k_proj(hidden_states), self.v_proj(hidden_states)
+        query, key, value = self.q_proj(hidden_states), self.k_proj(
+            hidden_states), self.v_proj(hidden_states)
         query, key, value = rearrange(query, "b n (h d) -> b n h d", d=head_dim), \
             rearrange(key, "b n (h d) -> b n h d", d=head_dim), \
-                rearrange(value, "b n (h d) -> b n h d", d=head_dim)
+            rearrange(value, "b n (h d) -> b n h d", d=head_dim)
         query, key = self.rotary_emb(query, key, seq_len)
         if self.args.use_flash:
             assert FlashAttention is not None, \
@@ -132,7 +138,8 @@ class LlamaLayer(nn.Module):
             qkv = torch.stack([query, key, value], dim=2)
             output, _ = FlashAttention()(qkv, causal=True)
             output = rearrange(output, "b n h d -> b n (h d)", n=seq_len)
-            output = F.dropout(output, p=self.args.dropout, training=self.training)
+            output = F.dropout(output, p=self.args.dropout,
+                               training=self.training)
         else:
             query, key, value = query.permute(0, 2, 1, 3), key.permute(
                 0, 2, 1, 3), value.permute(0, 2, 1, 3)
@@ -146,19 +153,23 @@ class LlamaLayer(nn.Module):
             attention_score = F.softmax(
                 attention_score, dim=-1).type_as(value)
             output = torch.matmul(attention_score, value)
-            output = output.transpose(1, 2).contiguous().view(batch_size, seq_len, -1)
-            output = F.dropout(output, p=self.args.dropout, training=self.training)
+            output = output.transpose(1, 2).contiguous().view(
+                batch_size, seq_len, -1)
+            output = F.dropout(output, p=self.args.dropout,
+                               training=self.training)
         hidden_states = hidden_states + self.o_proj(output)
         _hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = hidden_states + F.dropout(self.down_proj(F.silu(self.gate_proj(_hidden_states)) * self.up_proj(_hidden_states)), p=self.args.dropout, training=self.training)
+        hidden_states = hidden_states + F.dropout(self.down_proj(F.silu(self.gate_proj(
+            _hidden_states)) * self.up_proj(_hidden_states)), p=self.args.dropout, training=self.training)
         return hidden_states
-    
+
     def forward(self, hidden_states: torch.Tensor):
         if self.args.checkpointing:
             return checkpoint(self._forward, hidden_states)
         else:
             return self._forward(hidden_states)
-        
+
+
 class LlamaModel(nn.Module):
     def __init__(self, args: Union[LlamaArguments, str]) -> None:
         super().__init__()
@@ -167,7 +178,8 @@ class LlamaModel(nn.Module):
             self.args.vocab_size,
             self.args.hidden_size
         )
-        self.layers = nn.Sequential(*[LlamaLayer(self.args) for _ in range(self.args.num_hidden_layers)])
+        self.layers = nn.Sequential(
+            *[LlamaLayer(self.args) for _ in range(self.args.num_hidden_layers)])
         self.norm = FusedRMSNorm(
             normalized_shape=self.args.hidden_size,
             eps=self.args.layer_norm_epsilon
@@ -177,28 +189,38 @@ class LlamaModel(nn.Module):
             self.args.vocab_size,
             bias=False
         )
-        
+
     def __new__(cls, args: Union[LlamaArguments, str]) -> object:
         if isinstance(args, str):
             args = load_config(args)
         if args.pp_size == 1:
             return super().__new__(LlamaModel)
         else:
-            return [
-                TiedLayerSpec(
-                    "embed_tokens",
-                    tensor_parallel.VocabParallelEmbedding,
-                    args.vocab_size,
-                    args.hidden_size),
-                *[LayerSpec(LlamaLayer, args) for _ in range(args.num_hidden_layers)],
-                TiedLayerSpec(
-                    "embed_tokens",
-                    ColumnParallelLinearWithoutBias,
-                    args.hidden_size,
-                    args.vocab_size,
-                    bias=False)
-            ]
-    
+            return PipelineModel(
+                layers=[
+                    TiedLayerSpec(
+                        "embed_tokens",
+                        tensor_parallel.VocabParallelEmbedding,
+                        args.vocab_size,
+                        args.hidden_size),
+                    *[LayerSpec(LlamaLayer, args)
+                      for _ in range(args.num_hidden_layers)],
+                    TiedLayerSpec(
+                        "embed_tokens",
+                        ColumnParallelLinearWithoutBias,
+                        args.hidden_size,
+                        args.vocab_size,
+                        bias=False)
+                ],
+                num_stages=args.pp_size,
+                partition_method=args.pp_partition_method,
+                topology=PipeModelDataParallelTopology(
+                    num_pp=args.pp_size,
+                    num_dp=args.dp_size,
+                    num_mp=args.tp_size),
+                loss_fn=GPTLMLoss()
+            )
+
     def forward(self, input_ids: torch.Tensor):
         assert input_ids.ndim == 2, f"input_ids.shape must be (B, N), but got {input_ids.shape}"
         hidden_states = self.embed_tokens(input_ids)
@@ -207,7 +229,8 @@ class LlamaModel(nn.Module):
         hidden_states = self.norm(hidden_states)
         logits = self.lm_head(hidden_states)
         return logits
-    
+
+
 if __name__ == "__main__":
     import os
     import deepspeed
@@ -225,28 +248,30 @@ if __name__ == "__main__":
     args.checkpointing = False
     # prepare parallelism
     deepspeed.init_distributed(dist_backend='nccl', init_method="env://")
-    parallel_state.initialize_model_parallel(tensor_model_parallel_size=args.tp_size, pipeline_model_parallel_size=1)
+    parallel_state.initialize_model_parallel(
+        tensor_model_parallel_size=args.tp_size, pipeline_model_parallel_size=1)
     tensor_parallel.model_parallel_cuda_manual_seed(args.seed)
-    torch.cuda.set_device(torch.device('cuda:{}'.format(os.environ["LOCAL_RANK"])))
+    torch.cuda.set_device(torch.device(
+        'cuda:{}'.format(os.environ["LOCAL_RANK"])))
     # construct model
     if args.pp_size > 1:
         model = PipelineModule(
             layers=LlamaModel(args),
             num_stages=args.pp_size,
-            topology=PipeModelDataParallelTopology(num_pp=args.pp_size, num_dp=args.dp_size, num_mp=args.tp_size),
+            topology=PipeModelDataParallelTopology(
+                num_pp=args.pp_size, num_dp=args.dp_size, num_mp=args.tp_size),
             loss_fn=lambda x, y: (print(x), x.sum())[1]
         ).cpu()
     else:
         model = LlamaModel(args).cpu()
-        
-    
+
     class DummyDataset(Dataset):
         def __init__(self):
             pass
-            
+
         def __len__(self):
             return 100
-        
+
         def __getitem__(self, idx):
             return torch.tensor([idx]), torch.tensor([idx])
     dataset = DummyDataset()
@@ -262,13 +287,13 @@ if __name__ == "__main__":
             "optimizer": {
                 "type": "Adam",
                 "params": {
-                "lr": 0.001,
-                "betas": [
-                    0.8,
-                    0.999
-                ],
-                "eps": 1e-8,
-                "weight_decay": 3e-7
+                    "lr": 0.001,
+                    "betas": [
+                        0.8,
+                        0.999
+                    ],
+                    "eps": 1e-8,
+                    "weight_decay": 3e-7
                 }
             },
             "fp16": {

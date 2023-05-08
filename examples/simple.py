@@ -29,7 +29,7 @@ class DummyDataset(Dataset):
     
     def __getitem__(self, idx):
         # batch 格式: 数据和 label 的 tuple
-        return torch.tensor([1000, 1000, 1000, 1000]), torch.tensor([1000, 1000, 1000, 1000])
+        return torch.tensor([idx, idx, idx, idx]), torch.tensor([idx, idx, idx, idx])
 dataset = DummyDataset()
 model = LlamaModel(args)
 trainer = Trainer(model, train_dataset=dataset, args=args)
