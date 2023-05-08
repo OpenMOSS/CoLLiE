@@ -9,29 +9,14 @@ from collie.models.llama.arguments import LlamaArguments
 from torch.utils.data import Dataset
 import torch
 args = LlamaArguments(
-    use_flash=False,
-    checkpointing=True,
-    seed=42,
-    pp_size=2,
-    tp_size=2,
-    dp_size=2,
+    use_flash=True,checkpointing=True,seed=42,pp_size=2,tp_size=2,dp_size=2,
     ds_config={
         "train_micro_batch_size_per_gpu": 1,
         "train_batch_size": 2,
         "gradient_accumulation_steps": 1,
-        # "fp16": {"enabled": True},
+        "fp16": {"enabled": True},
         "zero_optimization": {"stage": 1,"offload_optimizer": {"device": "cpu"}},
-        "optimizer": {
-            "type": "Adam",
-            "params": {
-            "lr": 2e-6,
-            "betas": [
-                0.8,
-                0.999
-            ],
-            "eps": 1e-8,
-            "weight_decay": 3e-7
-            }
+        "optimizer": {"type": "Adam","params": {"lr": 2e-6,"betas": [0.8,0.999],"eps": 1e-8,"weight_decay": 3e-7}
         },
     }
 )
@@ -43,6 +28,7 @@ class DummyDataset(Dataset):
         return 100
     
     def __getitem__(self, idx):
+        # batch 格式: 数据和 label 的 tuple
         return torch.tensor([1000, 1000, 1000, 1000]), torch.tensor([1000, 1000, 1000, 1000])
 dataset = DummyDataset()
 model = LlamaModel(args)
