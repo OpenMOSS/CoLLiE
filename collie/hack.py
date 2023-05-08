@@ -4,19 +4,19 @@ import copy
 
 def hack_deepspeed():
     raw_init = copy.deepcopy(DeepSpeedZeroOptimizer.__init__)
-    def safe_init(self):
+    def safe_init(self, *args, **kwargs):
         while True:
             try:
-                raw_init(self)
+                raw_init(self, *args, **kwargs)
                 break
             except RuntimeError as e:
                 continue
     DeepSpeedZeroOptimizer.__init__ = safe_init
     raw_initialize_optimizer_states = copy.deepcopy(DeepSpeedZeroOptimizer.initialize_optimizer_states)
-    def safe_initialize_optimizer_states(self):
+    def safe_initialize_optimizer_states(self, *args, **kwargs):
             while True:
                 try:
-                    raw_initialize_optimizer_states(self)
+                    raw_initialize_optimizer_states(self, *args, **kwargs)
                     break
                 except RuntimeError as e:
                     continue

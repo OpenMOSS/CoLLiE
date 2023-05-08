@@ -1,7 +1,5 @@
 import os
 import sys
-sys.path.append("/mnt/lustre/zhangshuo/projects/collie-main/collie/Megatron-LM/")
-sys.path.append("/mnt/lustre/zhangshuo/projects/collie/")
 
 import torch
 from torch import nn
@@ -22,9 +20,12 @@ try:
 except ModuleNotFoundError:
     FlashAttention = None
 
-from arguments import LlamaArguments
+from collie.models.llama.arguments import LlamaArguments
 from collie.module import ColumnParallelLinearWithoutBias, RowParallelLinearWithoutBias
+from collie.trainer.arguments import load_config
 from collie.profile import find_tensors
+
+from typing import Union
 
 class RotaryPositionEmbedding(nn.Module):
     def __init__(self, head_dim: int) -> None:
@@ -159,25 +160,27 @@ class LlamaLayer(nn.Module):
             return self._forward(hidden_states)
         
 class LlamaModel(nn.Module):
-    def __init__(self, args: LlamaArguments) -> None:
+    def __init__(self, args: Union[LlamaArguments, str]) -> None:
         super().__init__()
         self.args = args
         self.embed_tokens = tensor_parallel.VocabParallelEmbedding(
-            args.vocab_size,
-            args.hidden_size
+            self.args.vocab_size,
+            self.args.hidden_size
         )
-        self.layers = nn.Sequential(*[LlamaLayer(args) for _ in range(args.num_hidden_layers)])
+        self.layers = nn.Sequential(*[LlamaLayer(self.args) for _ in range(self.args.num_hidden_layers)])
         self.norm = FusedRMSNorm(
-            normalized_shape=args.hidden_size,
-            eps=args.layer_norm_epsilon
+            normalized_shape=self.args.hidden_size,
+            eps=self.args.layer_norm_epsilon
         )
         self.lm_head = ColumnParallelLinearWithoutBias(
-            args.hidden_size,
-            args.vocab_size,
+            self.args.hidden_size,
+            self.args.vocab_size,
             bias=False
         )
         
-    def __new__(cls, args: LlamaArguments) -> object:
+    def __new__(cls, args: Union[LlamaArguments, str]) -> object:
+        if isinstance(args, str):
+            args = load_config(args)
         if args.pp_size == 1:
             return super().__new__(LlamaModel)
         else:

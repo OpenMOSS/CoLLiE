@@ -22,17 +22,19 @@ class PetrelIODriver(IODriver):
             
     @staticmethod
     def save(obj, path: str, append: bool = False):
-        folder = os.path.dirname(path)
-        os.makedirs(folder, exist_ok=True)
+        from petrel_client.client import Client
+        client = Client()
+        buffer = BytesIO()
         if isinstance(obj, str):
             if append:
-                with open(path, 'a+') as f:
-                    f.write(obj)
-            else:
-                with open(path, 'w+') as f:
-                    f.write(obj)
+                pre_obj = PetrelIODriver.load(path, 'r')
+                obj = pre_obj + obj
+            buffer.write(obj.encode())
         else:
-            torch.save(obj, path)
+            torch.save(obj, buffer)
+        buffer.seek(0)
+        client.put(path, buffer)
+        buffer.close()
             
     @staticmethod
     def exists(path: str) -> bool:

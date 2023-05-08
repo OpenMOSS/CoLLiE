@@ -8,7 +8,7 @@ class IODriver(ABC):
     
     @staticmethod
     @abstractmethod
-    def save(obj, path: str):
+    def save(obj, path: str, append: bool = False):
         raise NotImplementedError
     
     @staticmethod
