@@ -1,4 +1,6 @@
-from megatron.core import tensor_parallel
+from megatron.core.tensor_parallel import (ColumnParallelLinear,
+                                            RowParallelLinear,
+                                            VocabParallelEmbedding)
 from deepspeed.runtime.pipe.module import PipelineModule
 from deepspeed.runtime.pipe.topology import ProcessTopology, PipeModelDataParallelTopology
 
@@ -7,11 +9,11 @@ import torch.distributed as dist
 
 from collie.log import logger
 
-class ColumnParallelLinearWithoutBias(tensor_parallel.ColumnParallelLinear):
+class ColumnParallelLinearWithoutBias(ColumnParallelLinear):
     def forward(self, input_):
         return super().forward(input_)[0]
     
-class RowParallelLinearWithoutBias(tensor_parallel.RowParallelLinear):
+class RowParallelLinearWithoutBias(RowParallelLinear):
     def forward(self, input_):
         return super().forward(input_)[0]
     
