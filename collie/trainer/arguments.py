@@ -1,6 +1,8 @@
+import os
 from dataclasses import dataclass, field
-
 from typing import Union
+
+from collie.log import logger
 
 @dataclass
 class Arguments:
@@ -60,6 +62,47 @@ class Arguments:
             "help": "DeepSpeed configuration file."
         }
     )
+
+    @classmethod
+    def from_pretrained(cls, path: str, **kwargs):
+        json_config = load_config(os.path.join(path, "config.json"))
+        unexpected = set()
+        init_dict = {}
+        for key, value in json_config.items():
+            if key in dir(cls):
+                init_dict[key] = value
+            else:
+                unexpected.add(key)
+        for key, value in kwargs.items():
+            if key in dir(cls):
+                init_dict[key] = value
+            else:
+                unexpected.add(key)
+
+        if len(unexpected) != 0:
+            logger.warning(
+                f"The following arguments from `from_pretrained` are not "
+                f"defined in {cls.__class__.__name__} and will be ignored:\n"
+                f"{list(unexpected)}"
+            )
+
+        return cls(**init_dict)
+    
+    def __post_init__(self):
+        if isinstance(self.ds_config, str):
+            self.ds_config = load_config(self.ds_config)
+        assert isinstance(self.ds_config, dict), self.ds_config
+
+    def __str__(self) -> str:        
+
+        width = os.get_terminal_size().columns // 2 * 2
+        single_side = (width - 11) // 2
+        r = f"\n{'-' * single_side} Arguments {'-' * single_side}\n"
+        r += _repr_dict(self.__dict__, 0)
+        r += f"\n{'-' * width}\n"
+
+        return r
+
     
 def load_config(path: str):
     content = {}
@@ -70,4 +113,12 @@ def load_config(path: str):
         import json
         content = json.load(open(path, "r"))
     return content
-        
+
+def _repr_dict(d, depth):
+    if not isinstance(d, dict):
+        return f" {d}"
+    space = "    "
+    r = ""
+    for k, v in d.items():
+        r += f"\n{space * depth}{k}:" + _repr_dict(v, depth+1)
+    return r
