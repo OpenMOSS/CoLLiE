@@ -61,6 +61,8 @@ def setup_distributation(args) -> None:
     2. launch from slurm
         eg. srun --partition=xxx --gres=gpu:8 --ntasks=8 --ntasks-per-node=8 --job-name=xxx --kill-on-bad-exit=1 train.py
     """
+    if torch.distributed.is_initialized():
+        return
     patch_deepspeed();patch_megatron()
     if "WORLD_SIZE" in os.environ.keys():
         # launch from pytorch

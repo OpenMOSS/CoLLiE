@@ -46,3 +46,4 @@ class LlamaArguments(Arguments):
             "help": "Dropout probability."
         }
     )
+    model_type: str = "llama"
