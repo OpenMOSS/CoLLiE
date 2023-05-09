@@ -10,13 +10,13 @@ from collie.models.llama.utils import load_parallel_state_dict
 from torch.utils.data import Dataset
 import torch
 args = LlamaArguments(
-    use_flash=True,checkpointing=True,seed=42,pp_size=2,tp_size=2,dp_size=2,
+    use_flash=False,checkpointing=True,seed=42,pp_size=2,tp_size=1,dp_size=2,dropout=0,
     ds_config={
         "train_micro_batch_size_per_gpu": 1,
         "train_batch_size": 2,
         "gradient_accumulation_steps": 1,
         "fp16": {"enabled": True},
-        "zero_optimization": {"stage": 1,"offload_optimizer": {"device": "cpu"}},
+        "zero_optimization": {"stage": 1,"offload_optimizer": {"device": "cpu", "pin_memory": False}},
         "optimizer": {"type": "Adam","params": {"lr": 2e-6,"betas": [0.8,0.999],"eps": 1e-8,"weight_decay": 3e-7}
         },
     }
@@ -30,8 +30,8 @@ class DummyDataset(Dataset):
     
     def __getitem__(self, idx):
         # batch 格式: 数据和 label 的 tuple
-        return torch.tensor([1, 1619, 1024, 338, 16999, 1799, 29892, 322, 590, 23134, 338, 304]), \
-    torch.tensor([1, 1619, 1024, 338, 16999, 1799, 29892, 322, 590, 23134, 338, 304])
+        return torch.tensor([1619, 1024, 338, 29871]), \
+    torch.tensor([1619, 1024, 338, 29871])
 dataset = DummyDataset()
 model = LlamaModel(args)
 state_dict = load_parallel_state_dict(
@@ -39,9 +39,5 @@ state_dict = load_parallel_state_dict(
     protocol="petrel",
     args=args)
 model.load_state_dict(state_dict)
-import os
-if os.environ["RANK"] == "0":
-    import pdb
-    pdb.set_trace()
 trainer = Trainer(model, train_dataset=dataset, args=args)
 trainer.train()

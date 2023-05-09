@@ -25,7 +25,7 @@ class GPTLMLoss(torch.nn.Module):
         self.loss = torch.nn.CrossEntropyLoss(ignore_index=ignore_index)  # ignore <pad> when compute loss
 
     def forward(self, logits, labels):
-        if os.environ.get("RANK") == "7":
+        if os.environ["LOCAL_RANK"] == "3":
             import pdb
             pdb.set_trace()
         shift_logits = logits[..., :-1, :].contiguous()
@@ -64,7 +64,4 @@ class PipelineModel(PipelineModule):
         super().__init__(*args, **kwargs)
         os.environ["COLLIE_PP_PARTS"] = json.dumps(self.parts)
         os.environ["COLLIE_PP_RANK"] = str(self.stage_id)
-        
-        
-            
-    
+        os.environ["COLLIE_DP_RANK"] = str(self._grid.data_parallel_id)

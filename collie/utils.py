@@ -1,6 +1,7 @@
 from deepspeed.runtime.zero.stage_1_and_2 import DeepSpeedZeroOptimizer
 from megatron.core import parallel_state, tensor_parallel
 from deepspeed.runtime.utils import set_random_seed
+from deepspeed.accelerator import get_accelerator
 from megatron.core import parallel_state
 import deepspeed
 import torch
@@ -10,7 +11,19 @@ import os
 import copy
 import subprocess
 
-def patch_deepspeed():
+def patch_deepspeed(args):
+    if hasattr(args, "ds_config") \
+        and "zero_optimization" in args.ds_config.keys() \
+            and "offload_optimizer" in args.ds_config["zero_optimization"].keys() \
+                and "pin_memory" in args.ds_config["zero_optimization"]["offload_optimizer"].keys() \
+                    and not args.ds_config["zero_optimization"]["offload_optimizer"]["pin_memory"]:
+        get_accelerator().pin_memory = lambda x: x
+    if hasattr(args, "ds_config") \
+        and "zero_optimization" in args.ds_config.keys() \
+            and "offload_param" in args.ds_config["zero_optimization"].keys() \
+                and "pin_memory" in args.ds_config["zero_optimization"]["offload_param"].keys() \
+                    and not args.ds_config["zero_optimization"]["offload_param"]["pin_memory"]:
+        get_accelerator().pin_memory = lambda x: x
     raw_init = copy.deepcopy(DeepSpeedZeroOptimizer.__init__)
     def safe_init(self, *args, **kwargs):
         while True:
@@ -63,7 +76,7 @@ def setup_distributation(args) -> None:
     """
     if torch.distributed.is_initialized():
         return
-    patch_deepspeed();patch_megatron()
+    patch_deepspeed(args);patch_megatron()
     if "WORLD_SIZE" in os.environ.keys():
         # launch from pytorch
         master_addr = os.environ.get("MASTER_ADDR", "localhost")
@@ -105,3 +118,9 @@ def setup_distributation(args) -> None:
     # random seed has to be set after deepspeed.init_distributed
     set_seed(args)
     torch.cuda.set_device(torch.device('cuda:{}'.format(os.environ["LOCAL_RANK"])))
+    
+def rank_dbg(rank: int=0):
+    import os
+    if os.environ["RANK"] == f"{rank}":
+        import pdb
+        pdb.set_trace()
