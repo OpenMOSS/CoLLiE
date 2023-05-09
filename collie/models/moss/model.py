@@ -8,16 +8,12 @@ import torch.utils.checkpoint
 from torch import nn
 from transformers.activations import NewGELUActivation
 from deepspeed.pipe import LayerSpec
-from deepspeed.runtime.pipe.topology import PipeModelDataParallelTopology
 
 from collie.log import logger
 from collie.module import (ColumnParallelLinearWithoutBias,
                            RowParallelLinearWithoutBias,
-                           VocabParallelEmbedding,
-                           PipelineModel,
-                           GPTLMLoss)
+                           VocabParallelEmbedding)
 from .utils import apply_rotary_pos_emb, create_sinusoidal_positions
-from .arguments import MossArguments
 from ..base import BaseModel
 
 class MossAttention(nn.Module):
