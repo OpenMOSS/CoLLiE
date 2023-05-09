@@ -20,7 +20,7 @@ def patch_deepspeed(args):
         get_accelerator().pin_memory = lambda x: x
     if hasattr(args, "ds_config") \
         and "zero_optimization" in args.ds_config.keys() \
-            and "offload_optimizer" in args.ds_config["zero_optimization"].keys() \
+            and "offload_param" in args.ds_config["zero_optimization"].keys() \
                 and "pin_memory" in args.ds_config["zero_optimization"]["offload_param"].keys() \
                     and not args.ds_config["zero_optimization"]["offload_param"]["pin_memory"]:
         get_accelerator().pin_memory = lambda x: x
