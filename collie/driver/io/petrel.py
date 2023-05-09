@@ -43,7 +43,7 @@ class PetrelIODriver(IODriver):
         return client.contains(path)
     
     @staticmethod
-    def list_dir(path: str):
+    def list(path: str):
         from petrel_client.client import Client
         client = Client()
         return list(client.list(path))

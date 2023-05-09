@@ -33,7 +33,7 @@ class FileIODriver(IODriver):
         return os.path.exists(path)
     
     @staticmethod
-    def list_dir(path: str):
+    def list(path: str):
         return os.listdir(path)
     
     @staticmethod

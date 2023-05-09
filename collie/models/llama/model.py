@@ -6,6 +6,7 @@ from torch import nn
 import torch.nn.functional as F
 
 from deepspeed.runtime.activation_checkpointing.checkpointing import checkpoint
+from deepspeed.runtime.pipe.topology import PipeModelDataParallelTopology
 from deepspeed.pipe import LayerSpec, TiedLayerSpec
 
 from megatron.core import tensor_parallel
@@ -23,7 +24,7 @@ except ModuleNotFoundError:
 from collie.models.llama.arguments import LlamaArguments
 from collie.module import ColumnParallelLinearWithoutBias, RowParallelLinearWithoutBias, PipelineModel, GPTLMLoss
 from collie.trainer.arguments import load_config
-from collie.profile import find_tensors
+from collie.utils import setup_distributation
 
 from typing import Union
 
@@ -61,77 +62,87 @@ class LlamaLayer(nn.Module):
     def __init__(self, args: LlamaArguments) -> None:
         super().__init__()
         self.args = args
-        self.q_proj = ColumnParallelLinearWithoutBias(
-            args.hidden_size,
-            args.hidden_size,
-            bias=False,
-            gather_output=False,
-            init_method=lambda x: x
-        )
-        self.k_proj = ColumnParallelLinearWithoutBias(
-            args.hidden_size,
-            args.hidden_size,
-            bias=False,
-            gather_output=False,
-            init_method=lambda x: x
-        )
-        self.v_proj = ColumnParallelLinearWithoutBias(
-            args.hidden_size,
-            args.hidden_size,
-            bias=False,
-            gather_output=False,
-            init_method=lambda x: x
-        )
-        self.o_proj = RowParallelLinearWithoutBias(
-            args.hidden_size,
-            args.hidden_size,
-            bias=False,
-            input_is_parallel=True,
-            init_method=lambda x: x
+        self.self_attn = nn.ModuleDict(
+            {
+                "q_proj": ColumnParallelLinearWithoutBias(
+                    args.hidden_size,
+                    args.hidden_size,
+                    bias=False,
+                    gather_output=False,
+                    init_method=lambda x: x
+                ),
+                "k_proj": ColumnParallelLinearWithoutBias(
+                    args.hidden_size,
+                    args.hidden_size,
+                    bias=False,
+                    gather_output=False,
+                    init_method=lambda x: x
+                ),
+                "v_proj": ColumnParallelLinearWithoutBias(
+                    args.hidden_size,
+                    args.hidden_size,
+                    bias=False,
+                    gather_output=False,
+                    init_method=lambda x: x
+                ),
+                "o_proj": RowParallelLinearWithoutBias(
+                    args.hidden_size,
+                    args.hidden_size,
+                    bias=False,
+                    input_is_parallel=True,
+                    init_method=lambda x: x
+                ),
+                "rotary_emb": RotaryPositionEmbedding(
+                    self.args.hidden_size // self.args.num_attention_heads)
+            }
         )
         self.input_layernorm = FusedRMSNorm(
             normalized_shape=args.hidden_size,
             eps=args.layer_norm_epsilon
         )
-        self.gate_proj = ColumnParallelLinearWithoutBias(
-            args.hidden_size,
-            args.intermediate_size,
-            bias=False,
-            gather_output=False,
-            init_method=lambda x: x
-        )
-        self.up_proj = ColumnParallelLinearWithoutBias(
-            args.hidden_size,
-            args.intermediate_size,
-            bias=False,
-            gather_output=False,
-            init_method=lambda x: x
-        )
-        self.down_proj = RowParallelLinearWithoutBias(
-            args.intermediate_size,
-            args.hidden_size,
-            bias=False,
-            input_is_parallel=True,
-            init_method=lambda x: x
-        )
+        self.mlp = nn.ModuleDict({
+            "gate_proj": ColumnParallelLinearWithoutBias(
+                args.hidden_size,
+                args.intermediate_size,
+                bias=False,
+                gather_output=False,
+                init_method=lambda x: x
+            ),
+            "up_proj": ColumnParallelLinearWithoutBias(
+                args.hidden_size,
+                args.intermediate_size,
+                bias=False,
+                gather_output=False,
+                init_method=lambda x: x
+            ),
+            "down_proj": RowParallelLinearWithoutBias(
+                args.intermediate_size,
+                args.hidden_size,
+                bias=False,
+                input_is_parallel=True,
+                init_method=lambda x: x
+            )
+        })
         self.post_attention_layernorm = FusedRMSNorm(
             normalized_shape=args.hidden_size,
             eps=args.layer_norm_epsilon
         )
-        self.rotary_emb = RotaryPositionEmbedding(
-            self.args.hidden_size // self.args.num_attention_heads)
 
     def _forward(self, hidden_states: torch.Tensor):
         assert hidden_states.ndim == 3, f"hidden_states.shape must be (B, N, H), but got {hidden_states.shape}"
+        if os.environ["RANK"] == "0":
+            import pdb
+            pdb.set_trace()
         batch_size, seq_len, _ = hidden_states.shape
         head_dim = self.args.hidden_size // self.args.num_attention_heads
         _hidden_states = self.input_layernorm(hidden_states)
-        query, key, value = self.q_proj(hidden_states), self.k_proj(
-            hidden_states), self.v_proj(hidden_states)
+        query, key, value = self.self_attn["q_proj"](hidden_states), self.self_attn["k_proj"](
+            hidden_states), self.self_attn["v_proj"](hidden_states)
         query, key, value = rearrange(query, "b n (h d) -> b n h d", d=head_dim), \
             rearrange(key, "b n (h d) -> b n h d", d=head_dim), \
             rearrange(value, "b n (h d) -> b n h d", d=head_dim)
-        query, key = self.rotary_emb(query, key, seq_len)
+        query, key = self.self_attn["rotary_emb"](query, key, seq_len)
+        
         if self.args.use_flash:
             assert FlashAttention is not None, \
                 "Detected flash_attn is not installed. See https://github.com/HazyResearch/flash-attention"
@@ -157,10 +168,10 @@ class LlamaLayer(nn.Module):
                 batch_size, seq_len, -1)
             output = F.dropout(output, p=self.args.dropout,
                                training=self.training)
-        hidden_states = hidden_states + self.o_proj(output)
+        hidden_states = hidden_states + self.self_attn["o_proj"](output)
         _hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = hidden_states + F.dropout(self.down_proj(F.silu(self.gate_proj(
-            _hidden_states)) * self.up_proj(_hidden_states)), p=self.args.dropout, training=self.training)
+        hidden_states = hidden_states + F.dropout(self.mlp["down_proj"](F.silu(self.mlp["gate_proj"](
+            _hidden_states)) * self.mlp["up_proj"](_hidden_states)), p=self.args.dropout, training=self.training)
         return hidden_states
 
     def forward(self, hidden_states: torch.Tensor):
@@ -173,6 +184,8 @@ class LlamaLayer(nn.Module):
 class LlamaModel(nn.Module):
     def __init__(self, args: Union[LlamaArguments, str]) -> None:
         super().__init__()
+        if isinstance(args, str):
+            args = load_config(args)
         self.args = args
         self.embed_tokens = tensor_parallel.VocabParallelEmbedding(
             self.args.vocab_size,
@@ -193,6 +206,7 @@ class LlamaModel(nn.Module):
     def __new__(cls, args: Union[LlamaArguments, str]) -> object:
         if isinstance(args, str):
             args = load_config(args)
+        setup_distributation(args)
         if args.pp_size == 1:
             return super().__new__(LlamaModel)
         else:
@@ -205,6 +219,9 @@ class LlamaModel(nn.Module):
                         args.hidden_size),
                     *[LayerSpec(LlamaLayer, args)
                       for _ in range(args.num_hidden_layers)],
+                    LayerSpec(FusedRMSNorm,
+                              normalized_shape=args.hidden_size,
+                              eps=args.layer_norm_epsilon),
                     TiedLayerSpec(
                         "embed_tokens",
                         ColumnParallelLinearWithoutBias,
@@ -212,6 +229,7 @@ class LlamaModel(nn.Module):
                         args.vocab_size,
                         bias=False)
                 ],
+                base_seed=args.seed,
                 num_stages=args.pp_size,
                 partition_method=args.pp_partition_method,
                 topology=PipeModelDataParallelTopology(

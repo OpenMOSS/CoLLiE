@@ -2,6 +2,8 @@ from megatron.core import tensor_parallel
 from deepspeed.runtime.pipe.module import PipelineModule
 from deepspeed.runtime.pipe.topology import ProcessTopology, PipeModelDataParallelTopology
 
+import os
+import json
 import torch
 import torch.distributed as dist
 
@@ -21,6 +23,9 @@ class GPTLMLoss(torch.nn.Module):
         self.loss = torch.nn.CrossEntropyLoss(ignore_index=ignore_index)  # ignore <pad> when compute loss
 
     def forward(self, logits, labels):
+        if os.environ.get("RANK") == "7":
+            import pdb
+            pdb.set_trace()
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()
         # Flatten the tokens
@@ -31,10 +36,10 @@ class PipelineModel(PipelineModule):
         for idx, param in enumerate(args):
             if isinstance(param, ProcessTopology):
                 pp_size, dp_size, tp_size = param.dims
-                if dist.get_world_size() != pp_size * dp_size * tp_size:
+                if int(os.environ.get('WORLD_SIZE')) != pp_size * dp_size * tp_size:
                     logger.rank_zero_warning("The world size is not equal to the product of the parallel sizes set."
-                                     f"{dist.get_world_size()} != {pp_size} * {dp_size} * {tp_size}.")
-                    dp_size = dist.get_world_size() // (tp_size * pp_size)
+                                     f"{int(os.environ.get('WORLD_SIZE'))} != {pp_size} * {dp_size} * {tp_size}.")
+                    dp_size = int(os.environ.get('WORLD_SIZE')) // (tp_size * pp_size)
                     logger.rank_zero_warning("Set dp_size to {dp_size}.")
                 args[idx] = PipeModelDataParallelTopology(
                     num_pp=pp_size, 
@@ -44,10 +49,10 @@ class PipelineModel(PipelineModule):
         for key in kwargs.keys():
             if isinstance(kwargs[key], ProcessTopology):
                 pp_size, dp_size, tp_size = kwargs[key].dims
-                if dist.get_world_size() != pp_size * dp_size * tp_size:
+                if int(os.environ.get('WORLD_SIZE')) != pp_size * dp_size * tp_size:
                     logger.rank_zero_warning("The world size is not equal to the product of the parallel sizes set."
-                                     f"{dist.get_world_size()} != {pp_size} * {dp_size} * {tp_size}.")
-                    dp_size = dist.get_world_size() // (tp_size * pp_size)
+                                     f"{int(os.environ.get('WORLD_SIZE'))} != {pp_size} * {dp_size} * {tp_size}.")
+                    dp_size = int(os.environ.get('WORLD_SIZE')) // (tp_size * pp_size)
                     logger.rank_zero_warning("Set dp_size to {dp_size}.")
                 kwargs[key] = PipeModelDataParallelTopology(
                     num_pp=pp_size, 
@@ -55,6 +60,9 @@ class PipelineModel(PipelineModule):
                     num_mp=tp_size)
                 break
         super().__init__(*args, **kwargs)
+        os.environ["COLLIE_PP_PARTS"] = json.dumps(self.parts)
+        os.environ["COLLIE_PP_RANK"] = str(self.stage_id)
+        
         
             
     

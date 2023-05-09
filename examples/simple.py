@@ -6,6 +6,7 @@ sys.path.append("/mnt/lustre/zhangshuo/projects/collie/")
 from collie.trainer.trainer import Trainer
 from collie.models.llama.model import LlamaModel
 from collie.models.llama.arguments import LlamaArguments
+from collie.models.llama.utils import load_parallel_state_dict
 from torch.utils.data import Dataset
 import torch
 args = LlamaArguments(
@@ -29,8 +30,18 @@ class DummyDataset(Dataset):
     
     def __getitem__(self, idx):
         # batch 格式: 数据和 label 的 tuple
-        return torch.tensor([idx, idx, idx, idx]), torch.tensor([idx, idx, idx, idx])
+        return torch.tensor([1, 1619, 1024, 338, 16999, 1799, 29892, 322, 590, 23134, 338, 304]), \
+    torch.tensor([1, 1619, 1024, 338, 16999, 1799, 29892, 322, 590, 23134, 338, 304])
 dataset = DummyDataset()
 model = LlamaModel(args)
+state_dict = load_parallel_state_dict(
+    folder="hdd:s3://opennlplab_hdd/models/llama/llama-7b-hf/",
+    protocol="petrel",
+    args=args)
+model.load_state_dict(state_dict)
+import os
+if os.environ["RANK"] == "0":
+    import pdb
+    pdb.set_trace()
 trainer = Trainer(model, train_dataset=dataset, args=args)
 trainer.train()
