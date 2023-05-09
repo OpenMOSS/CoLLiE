@@ -1,9 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Union
 
-from deepspeed.runtime.config import DeepSpeedConfig
-import sys
-sys.path.append("../../")
 from collie.log import logger
 
 @dataclass
