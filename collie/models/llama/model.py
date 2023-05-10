@@ -492,7 +492,16 @@ class LlamaModel(BaseModel):
                 
     
     @staticmethod
-    def save_parallel_state_dict(args, path):
+    def save_parallel_state_dict(state_dict: dict, path: str,
+                                 args: LlamaArguments,
+                                 process_exclusion: bool = False):...
+    @staticmethod
+    def save_parallel_state_dict(state_dict: dict,
+                                 path: str, 
+                                 args: LlamaArguments,
+                                 process_exclusion: bool = False,
+                                 protocol: str = 'file', 
+                                 format: str = 'hf'):
         """
         Save state_dict to ``path``.
 

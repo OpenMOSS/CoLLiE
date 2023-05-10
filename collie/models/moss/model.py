@@ -12,6 +12,7 @@ from torch import nn
 from torch import distributed as dist
 from transformers.activations import NewGELUActivation
 from deepspeed.pipe import LayerSpec
+from megatron.core import parallel_state
 
 from collie.log import logger
 from collie.module import (ColumnParallelLinearWithoutBias,
@@ -24,7 +25,8 @@ from collie.models.base import BaseModel
 from collie.utils import get_pp_rank, get_tp_rank, get_dp_rank, is_pipeline
 from .arguments import MossArguments
 from .utils import (apply_rotary_pos_emb, create_sinusoidal_positions,
-                    _weight_name_in_current_rank, _rearrange_state_dict)
+                    set_index_dict, _state_dict_to_save, _state_dict_to_load,
+                    _weight_name_in_current_rank)
 
 class MossAttention(nn.Module):
     def __init__(self, args):
@@ -411,12 +413,13 @@ class MossModel(BaseModel):
                 "disable": hide_progress,
             }
             with tqdm(weights, **tqdm_params) as pbar:
-                pbar.set_postfix({
-                    "pp": pp_rank, "tp": tp_rank, "dp": dp_rank,
-                })
+                if process_exclusion:
+                    pbar.set_postfix({
+                        "pp": pp_rank, "tp": tp_rank, "dp": dp_rank,
+                    })
                 for weight in pbar:
                     part_state_dict = IODriver.load(os.path.join(path, weight), mode="rb")
-                    state_dict.update(_rearrange_state_dict(
+                    state_dict.update(_state_dict_to_load(
                         part_state_dict, tp_rank, args.tp_size,
                         process_exclusion
                     ))
@@ -424,11 +427,65 @@ class MossModel(BaseModel):
         return state_dict
 
     @staticmethod
-    def save_parallel_state_dict(args, path):
+    def save_parallel_state_dict(state_dict: dict, path: str,
+                                 args: MossArguments,
+                                 process_exclusion: bool = False):...
+    @staticmethod
+    def save_parallel_state_dict(state_dict: dict,
+                                 path: str, 
+                                 args: MossArguments,
+                                 process_exclusion: bool = False,
+                                 protocol: str = 'file', 
+                                 format: str = 'hf'):
         """
         Save state_dict to ``path``.
         """
-        raise NotImplementedError(
-            "Every model should implement `save_parallel_state_dict` "
-            "to properly save a state dict for the cuurent rank."
-        )
+        if get_dp_rank() != 0:
+            # only gather on dp rank 0
+            # TODO 妥当地处理通信组
+            dist.barrier()
+            dist.barrier()
+            return
+        tp_group = parallel_state.get_tensor_model_parallel_group()
+        tp_rank = get_tp_rank()
+        pp_rank = get_pp_rank()
+        assert format in ["hf", "meta"], f"Only support hf and meta , not `{format}`."
+        assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
+        IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
+        # gather to tp rank 0
+
+        state_dict = _state_dict_to_save(state_dict, tp_rank, args.tp_size,
+                                         tp_group, process_exclusion)
+        # save at tp_rank 0
+        # Now dp_rank is 0
+        if tp_rank == 0:
+            # Save gathered weights
+            ckpt_name = f"pytorch_model-{pp_rank+1:05d}-of-{args.pp_size:05d}.bin"
+            index_dict = set_index_dict(state_dict, ckpt_name)
+            ckpt_path = os.path.join(path, ckpt_name)
+            IODriver.save(state_dict, ckpt_path)
+            tmp_index_file = os.path.join(path, "_tmp_index_{}.json")
+            IODriver.save(
+                json.dumps(index_dict), tmp_index_file.format(get_pp_rank())
+            )
+        dist.barrier()
+        # Only save and merge on rank0
+        if dist.get_rank() == 0:
+            # merge
+            tmp_index_files = [tmp_index_file.format(i) for i in range(args.pp_size)]
+            total_size = 0
+            weight_map = {}
+            for _file in tmp_index_files:
+                _index_dict = json.loads(IODriver.load(_file, mode="r"))
+                total_size += _index_dict["total_size"]
+                weight_map.update(_index_dict["weight_map"])
+                os.remove(_file)
+            merged_dict = {
+                "metadata": {"total_size": total_size},
+                "weight_map": weight_map
+            }
+            IODriver.save(
+                json.dumps(merged_dict, indent=2, sort_keys=True) + "\n",
+                os.path.join(path, "pytorch_model.bin.index.json")
+            )
+        dist.barrier()

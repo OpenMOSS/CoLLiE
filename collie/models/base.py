@@ -113,9 +113,11 @@ class BaseModel(nn.Module):
     
     @staticmethod
     @abstractmethod
-    def save_parallel_state_dict(path: str, args: Union[Arguments, str]):
+    def save_parallel_state_dict(state_dict: dict, path: str,
+                                 args: Arguments,
+                                 process_exclusion: bool = False):
         """
-        Save state_dict to ``path``.
+        Save ``state_dict`` to ``path``.
 
         The format of saved state dict should be the same as that of
         `huggingface`.
