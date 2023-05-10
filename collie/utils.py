@@ -115,9 +115,7 @@ def setup_distributation(args) -> None:
                                     master_port),
                                 world_size=int(os.environ["WORLD_SIZE"]),
                                 rank=int(os.environ["RANK"]))
-    parallel_state.initialize_model_parallel(
-        tensor_model_parallel_size=args.tp_size, pipeline_model_parallel_size=args.pp_size,
-    )
+    parallel_state.initialize_model_parallel(tensor_model_parallel_size=args.tp_size)
     # random seed has to be set after deepspeed.init_distributed
     set_seed(args)
     torch.cuda.set_device(torch.device('cuda:{}'.format(os.environ["LOCAL_RANK"])))
