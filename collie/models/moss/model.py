@@ -354,11 +354,11 @@ class MossModel(BaseModel):
     def load_parallel_state_dict(path: str, args: Union[MossArguments, str],
                                  process_exclusion: bool = False):...
     @staticmethod
-    def load_parallel_state_dict(path: str, 
-                                 args: Union[MossArguments, str], 
-                                 protocol: str = 'file', 
-                                 format: str = 'hf',
-                                 process_exclusion: bool = False):
+    def load_parallel_state_dict(path: str,
+                                 args: Union[MossArguments, str],
+                                 process_exclusion: bool = False,
+                                 protocol: str = 'file',
+                                 format: str = 'hf'):
         """
         Load state_dict from ``path``.
 
