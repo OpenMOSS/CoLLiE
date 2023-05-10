@@ -1,11 +1,15 @@
 # TODO delete
 import sys
 sys.path.append("../../../")
+import os
+import json
+from tqdm import tqdm
 from typing import Optional, Tuple, Union
+from collections import OrderedDict
 
 import torch
-import torch.utils.checkpoint
 from torch import nn
+from torch import distributed as dist
 from transformers.activations import NewGELUActivation
 from deepspeed.pipe import LayerSpec
 
@@ -13,8 +17,14 @@ from collie.log import logger
 from collie.module import (ColumnParallelLinearWithoutBias,
                            RowParallelLinearWithoutBias,
                            VocabParallelEmbedding)
-from .utils import apply_rotary_pos_emb, create_sinusoidal_positions
+from collie.trainer.arguments import load_config
+from collie.driver.io.file import FileIODriver
+from collie.driver.io.petrel import PetrelIODriver
 from collie.models.base import BaseModel
+from collie.utils import get_pp_rank, get_tp_rank, get_dp_rank, is_pipeline
+from .arguments import MossArguments
+from .utils import (apply_rotary_pos_emb, create_sinusoidal_positions,
+                    _weight_name_in_current_rank, _rearrange_state_dict)
 
 class MossAttention(nn.Module):
     def __init__(self, args):
@@ -341,18 +351,78 @@ class MossModel(BaseModel):
         return layers
     
     @staticmethod
-    def load_parallel_state_dict(args, path):
+    def load_parallel_state_dict(path: str, args: Union[MossArguments, str],
+                                 process_exclusion: bool = False):...
+    @staticmethod
+    def load_parallel_state_dict(path: str, 
+                                 args: Union[MossArguments, str], 
+                                 protocol: str = 'file', 
+                                 format: str = 'hf',
+                                 process_exclusion: bool = False):
         """
         Load state_dict from ``path``.
 
         :return: state_dict. Note that the state_dict should be processed
             properly to match the current rank.
         """
-        raise NotImplementedError(
-            "Every model should implement `load_parallel_state_dict` "
-            "to properly load a state dict for the cuurent rank."
-        )
-    
+        assert format in ["hf", "meta"], f"Only support hf and meta , not `{format}`."
+        assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
+        # Actually Moss only supports `hf` format
+        if isinstance(args, str) and os.path.exists(args):
+            args = MossArguments.from_pretrained(args)
+        IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
+        if not IODriver.exists(path):
+            raise FileNotFoundError(f"folder {path} not found.")
+        global_rank = dist.get_rank()
+        pp_rank, tp_rank, dp_rank = get_pp_rank(), get_tp_rank(), get_dp_rank()
+        # 如果开启了进程互斥，那么每个进程都会显示进度条，否则只显示 RANK0 的
+        hide_progress = not process_exclusion and global_rank != 0
+        for cur_rank in range(dist.get_world_size()):
+            if process_exclusion:
+                dist.barrier()
+            if cur_rank != global_rank:
+                continue
+            if IODriver.exists(os.path.join(path, "config.json")):
+                # update args from config.json
+                hf_config = load_config(os.path.join(path, "config.json"))
+                update_keys = [list(args.__dict__.keys())]
+                update_keys = ["vocab_size", "n_embd", "n_ctx", "n_head",
+                               "n_layer", "n_positions", "layer_norm_epsilon",
+                               "rotary_dim", "n_inner", "attn_pdrop",
+                               "embd_pdrop", "resid_pdrop"]
+                args.update(**{k: hf_config[k] for k in update_keys})
+            # 如果存在 pytorch_model.bin.index.json 文件的话，此时不同的 pp 进程可以按需加载自己需要的权重
+            index_file = os.path.join(path, "pytorch_model.bin.index.json")
+            # start load
+            state_dict = OrderedDict()
+            if IODriver.exists(index_file) and is_pipeline():
+                # 有 index 且是流水线
+                weight_map = json.loads(IODriver.load(index_file, mode="r"))["weight_map"]
+                # layers 表示当前 rank 自己需要的层
+                cur_names = _weight_name_in_current_rank(weight_map.keys())
+                weights = set(weight_map[name] for name in cur_names)
+            else:
+                # 如果没有 pytorch_model.bin.index.json 文件的话，那么就加载所有的权重
+                weights = [weight for weight in IODriver.list(path) if weight.endswith(".bin")]
+
+            tqdm_params = {
+                "desc": "Loading state_dict",
+                "total": len(weights),
+                "disable": hide_progress,
+            }
+            with tqdm(weights, **tqdm_params) as pbar:
+                pbar.set_postfix({
+                    "pp": pp_rank, "tp": tp_rank, "dp": dp_rank,
+                })
+                for weight in pbar:
+                    part_state_dict = IODriver.load(os.path.join(path, weight), mode="rb")
+                    state_dict.update(_rearrange_state_dict(
+                        part_state_dict, tp_rank, args.tp_size,
+                        process_exclusion
+                    ))
+
+        return state_dict
+
     @staticmethod
     def save_parallel_state_dict(args, path):
         """

@@ -281,13 +281,14 @@ class LlamaModel(BaseModel):
         ]
 
     @staticmethod
-    def load_parallel_state_dict(path: str, args: Union[LlamaArguments, str]):...
+    def load_parallel_state_dict(path: str, args: Union[LlamaArguments, str],
+                                 process_exclusion: bool = False):...
     @staticmethod
     def load_parallel_state_dict(path: str, 
-                                 args: Union[LlamaArguments, str], 
+                                 args: Union[LlamaArguments, str],
+                                 process_exclusion: bool = False,
                                  protocol: str = 'file', 
-                                 format: str = 'hf',
-                                 process_exclusion: bool = False):
+                                 format: str = 'hf'):
         """
         Load state_dict from ``path``.
 

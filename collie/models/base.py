@@ -66,12 +66,15 @@ class BaseModel(nn.Module):
             model_path_or_name = snapshot_download(model_path_or_name)
         if args is None:
             args = model_path_or_name
+        if isinstance(args, str):
+            # prevent duplicate `from_pretrained`` in load_parallel
+            args = Arguments.from_pretrained(args)
         model = cls.from_config(args, **kwargs)
         state_dict = cls.load_parallel_state_dict(
             path=model_path_or_name, args=args,
             process_exclusion=process_exclusion,
         )
-        # model.load_state_dict(state_dict)
+        model.load_state_dict(state_dict)
         return model
 
     @classmethod
@@ -143,7 +146,7 @@ class BaseModel(nn.Module):
                 )
         else:
             if not cls.__name__.lower().startswith(args.model_type):
-                logger.warning(
+                logger.rank_zero_warning(
                     f"The pretrained model's type {args.model_type} does not "
                     f"match the current model {cls.__name__}."
                 )
