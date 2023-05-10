@@ -395,13 +395,14 @@ class LlamaModel(BaseModel):
                     with tqdm.tqdm(weights, desc="Loading state dict", total=len(weights), disable=hide_progress) as pbar:
                         for weight in pbar:
                             part_state_dict = IODriver.load(os.path.join(path, weight), mode="rb")
-                            for key in part_state_dict.keys():
-                                if key.startswith("layers"):
-                                    layer = int(key.split(".")[1])
-                                    # meta 权重的格式，需要补充 inv_freq 的权重
-                                    part_state_dict[f"layers.{layer}.self_attn.rotary_emb.inv_freq"] = inv_freq
+                            for key in list(part_state_dict.keys()):
+                                # if key.startswith("layers"):
+                                #     layer = int(key.split(".")[1])
+                                #     # meta 权重的格式，需要补充 inv_freq 的权重
+                                #     part_state_dict[f"layers.{layer}.self_attn.rotary_emb.inv_freq"] = inv_freq
                                 raw_key = key
                                 key = key.replace("attention", "self_attn")
+                                key = key.replace("inner_self_attn.rope.freqs", "rotary_emb.inv_freq")
                                 key = key.replace("wo", "o_proj")
                                 key = key.replace("wq", "q_proj")
                                 key = key.replace("wk", "k_proj")
@@ -410,15 +411,15 @@ class LlamaModel(BaseModel):
                                 key = key.replace("w1", "gate_proj")
                                 key = key.replace("w2", "down_proj")
                                 key = key.replace("w3", "up_proj")
-                                key = key.replace("attention_norm", "input_layernorm")
-                                key = key.replace("attention_norm", "post_attention_layernorm")
+                                key = key.replace("self_attn_norm", "input_layernorm")
+                                key = key.replace("ffn_norm", "post_attention_layernorm")
                                 key = key.replace("tok_embeddings", "embed_tokens")
                                 key = key.replace("output", "lm_head")
                                 # 按照 hf 的格式更新字典
-                                part_state_dict[raw_key] = part_state_dict.pop(key)
-                            for key, value in part_state_dict.items():
+                                part_state_dict[key] = part_state_dict.pop(raw_key)
+                            for key in list(part_state_dict.keys()):
                                 if not key in state_dict.keys():
-                                    state_dict[key] = value
+                                    state_dict[key] = part_state_dict[key]
                                 else:
                                     # 组装一下
                                     if key.endswith("q_proj.weight") \
@@ -426,11 +427,12 @@ class LlamaModel(BaseModel):
                                             or key.endswith("v_proj.weight") \
                                                 or key.endswith("gate_proj.weight") \
                                                     or key.endswith("up_proj.weight") \
-                                                        or key.endswith("embed_tokens.weight"):
-                                                            state_dict[key] = torch.cat((state_dict[key], value), dim=0)
+                                                        or key.endswith("lm_head.weight"):
+                                                            state_dict[key] = torch.cat((state_dict[key], part_state_dict[key]), dim=0)
                                     if key.endswith("o_proj.weight") \
-                                        or key.endswith("down_proj.weight"):
-                                            state_dict[key] = torch.cat((state_dict[key], value), dim=1)
+                                        or key.endswith("down_proj.weight") \
+                                            or key.endswith("embed_tokens.weight"):
+                                                state_dict[key] = torch.cat((state_dict[key], part_state_dict[key]), dim=1)
                             del part_state_dict
                 if parts is not None:
                     # 这一步是 pp 的复筛
@@ -465,13 +467,14 @@ class LlamaModel(BaseModel):
                             or key.endswith("v_proj.weight") \
                                 or key.endswith("gate_proj.weight") \
                                     or key.endswith("up_proj.weight") \
-                                        or key.endswith("embed_tokens.weight"):
-                                            tensor = list(torch.chunk(state_dict[key], args.tp_size, dim=0))[int(os.environ.get("COLLIE_TP_RANK", "0"))].detach().clone()
-                                            del state_dict[key]
-                                            if process_exclusion:
-                                                # CPU 内存回收（速度很慢）
-                                                gc.collect()
-                                            state_dict[key] = tensor
+                                        or key.endswith("embed_tokens.weight") \
+                                            or key.endswith("lm_head.weight"):
+                                                tensor = list(torch.chunk(state_dict[key], args.tp_size, dim=0))[int(os.environ.get("COLLIE_TP_RANK", "0"))].detach().clone()
+                                                del state_dict[key]
+                                                if process_exclusion:
+                                                    # CPU 内存回收（速度很慢）
+                                                    gc.collect()
+                                                state_dict[key] = tensor
                     elif key.endswith("o_proj.weight") \
                         or key.endswith("down_proj.weight"):
                             tensor = list(torch.chunk(state_dict[key], args.tp_size, dim=1))[int(os.environ.get("COLLIE_TP_RANK", "0"))].detach().clone()

@@ -30,8 +30,7 @@ class BaseModel(nn.Module):
         setup_distributation(args)
         model_cls = cls._get_model_cls(args)
         if args.pp_size == 1:
-            # TODO recurve
-            return model_cls(args)
+            return super().__new__(model_cls)
         else:
             return PipelineModel(
                 layers=model_cls.pipeline_layers(args), base_seed=args.seed,
@@ -43,8 +42,8 @@ class BaseModel(nn.Module):
                 ), loss_fn=GPTLMLoss()
             )
             
-    # def __new__(cls, args: Arguments, **kwargs):
-    #     return cls.from_config(args, **kwargs)
+    def __new__(cls, args: Arguments, **kwargs):
+        return cls.from_config(args, **kwargs)
 
     @classmethod
     def from_pretrained(cls, model_path_or_name: str, args:Optional[Union[Arguments, str]] = None, **kwargs):

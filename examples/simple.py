@@ -10,7 +10,7 @@ from collie.models.llama.utils import load_parallel_state_dict
 from torch.utils.data import Dataset
 import torch
 args = LlamaArguments(
-    use_flash=False,checkpointing=True,seed=42,pp_size=2,tp_size=2,dp_size=1,dropout=0,
+    use_flash=False,checkpointing=True,seed=42,pp_size=1,tp_size=4,dp_size=1,dropout=0,
     ds_config={
         "train_micro_batch_size_per_gpu": 1,
         "train_batch_size": 1,
@@ -35,9 +35,9 @@ class DummyDataset(Dataset):
 dataset = DummyDataset()
 model = LlamaModel(args)
 state_dict = LlamaModel.load_parallel_state_dict(
-    path="hdd:s3://opennlplab_hdd/models/llama/llama-7b-raw/",
-    # path="/mnt/lustre/zhangshuo/model/llama-7b-hf",
-    protocol="petrel",
+    # path="hdd:s3://opennlplab_hdd/models/llama/llama-7b-raw/",
+    path="/mnt/lustre/zhangshuo/model/epoch-1-step-2000-raw",
+    protocol="file",
     format="meta",
     process_exclusion=False,
     args=args)
