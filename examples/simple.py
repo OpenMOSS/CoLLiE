@@ -35,11 +35,11 @@ class DummyDataset(Dataset):
 dataset = DummyDataset()
 model = LlamaModel(args)
 state_dict = LlamaModel.load_parallel_state_dict(
-    path="hdd:s3://opennlplab_hdd/models/llama/llama-7b-raw/",
-    # path="/mnt/lustre/zhangshuo/model/llama-7b-hf",
-    protocol="petrel",
+    # path="hdd:s3://opennlplab_hdd/models/llama/llama-7b-raw/",
+    path="/mnt/lustre/zhangshuo/model/epoch-1-step-2000-raw",
+    protocol="file",
     format="meta",
-    process_exclusion=False,
+    process_exclusion=True,
     args=args)
 model.load_state_dict(state_dict)
 
