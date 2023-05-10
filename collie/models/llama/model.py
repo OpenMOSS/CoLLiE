@@ -467,13 +467,14 @@ class LlamaModel(BaseModel):
                             or key.endswith("v_proj.weight") \
                                 or key.endswith("gate_proj.weight") \
                                     or key.endswith("up_proj.weight") \
-                                        or key.endswith("embed_tokens.weight"):
-                                            tensor = list(torch.chunk(state_dict[key], args.tp_size, dim=0))[int(os.environ.get("COLLIE_TP_RANK", "0"))].detach().clone()
-                                            del state_dict[key]
-                                            if process_exclusion:
-                                                # CPU 内存回收（速度很慢）
-                                                gc.collect()
-                                            state_dict[key] = tensor
+                                        or key.endswith("embed_tokens.weight") \
+                                            or key.endswith("lm_head.weight"):
+                                                tensor = list(torch.chunk(state_dict[key], args.tp_size, dim=0))[int(os.environ.get("COLLIE_TP_RANK", "0"))].detach().clone()
+                                                del state_dict[key]
+                                                if process_exclusion:
+                                                    # CPU 内存回收（速度很慢）
+                                                    gc.collect()
+                                                state_dict[key] = tensor
                     elif key.endswith("o_proj.weight") \
                         or key.endswith("down_proj.weight"):
                             tensor = list(torch.chunk(state_dict[key], args.tp_size, dim=1))[int(os.environ.get("COLLIE_TP_RANK", "0"))].detach().clone()

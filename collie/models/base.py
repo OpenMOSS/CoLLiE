@@ -29,7 +29,7 @@ class BaseModel(nn.Module):
         setup_distributation(args)
         model_cls = cls._get_model_cls(args)
         if args.pp_size == 1:
-            return model_cls(args)
+            return super().__new__(model_cls)
         else:
             return PipelineModel(
                 layers=model_cls.pipeline_layers(args), base_seed=args.seed,
