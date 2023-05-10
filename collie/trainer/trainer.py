@@ -62,7 +62,7 @@ class Trainer:
                             loss = self.engine.train_batch(data_iter=iter([batch]))
                         else:
                             input_ids, label = batch
-                            logits = self.engine(input_ids)
+                            logits = self.engine(input_ids.cuda())
                             loss = self.loss_fn(logits, label)
                             self.engine.backward(loss)
                             self.engine.step()

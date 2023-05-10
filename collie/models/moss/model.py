@@ -14,7 +14,7 @@ from collie.module import (ColumnParallelLinearWithoutBias,
                            RowParallelLinearWithoutBias,
                            VocabParallelEmbedding)
 from .utils import apply_rotary_pos_emb, create_sinusoidal_positions
-from ..base import BaseModel
+from collie.models.base import BaseModel
 
 class MossAttention(nn.Module):
     def __init__(self, args):

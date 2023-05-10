@@ -118,9 +118,6 @@ def setup_distributation(args) -> None:
     # random seed has to be set after deepspeed.init_distributed
     set_seed(args)
     torch.cuda.set_device(torch.device('cuda:{}'.format(os.environ["LOCAL_RANK"])))
-    
-def rank_dbg(rank: int=0):
-    import os
-    if os.environ["RANK"] == f"{rank}":
-        import pdb
-        pdb.set_trace()
+    os.environ["COLLIE_PP_RANK"] = "0"
+    os.environ["COLLIE_TP_RANK"] = str(parallel_state.get_tensor_model_parallel_rank())
+    os.environ["COLLIE_DP_RANK"] = str(parallel_state.get_data_parallel_rank())

@@ -40,7 +40,7 @@ class PetrelIODriver(IODriver):
     def exists(path: str) -> bool:
         from petrel_client.client import Client
         client = Client()
-        return client.contains(path)
+        return client.contains(path) or client.isdir(path)
     
     @staticmethod
     def list(path: str):

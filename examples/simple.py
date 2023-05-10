@@ -10,10 +10,10 @@ from collie.models.llama.utils import load_parallel_state_dict
 from torch.utils.data import Dataset
 import torch
 args = LlamaArguments(
-    use_flash=False,checkpointing=True,seed=42,pp_size=2,tp_size=1,dp_size=2,dropout=0,
+    use_flash=False,checkpointing=True,seed=42,pp_size=2,tp_size=2,dp_size=1,dropout=0,
     ds_config={
         "train_micro_batch_size_per_gpu": 1,
-        "train_batch_size": 2,
+        "train_batch_size": 1,
         "gradient_accumulation_steps": 1,
         "fp16": {"enabled": True},
         "zero_optimization": {"stage": 1,"offload_optimizer": {"device": "cpu", "pin_memory": False}},
@@ -34,10 +34,14 @@ class DummyDataset(Dataset):
     torch.tensor([1619, 1024, 338, 29871])
 dataset = DummyDataset()
 model = LlamaModel(args)
-state_dict = load_parallel_state_dict(
-    folder="hdd:s3://opennlplab_hdd/models/llama/llama-7b-hf/",
+state_dict = LlamaModel.load_parallel_state_dict(
+    path="hdd:s3://opennlplab_hdd/models/llama/llama-7b-raw/",
+    # path="/mnt/lustre/zhangshuo/model/llama-7b-hf",
     protocol="petrel",
+    format="meta",
+    process_exclusion=False,
     args=args)
 model.load_state_dict(state_dict)
-trainer = Trainer(model, train_dataset=dataset, args=args)
-trainer.train()
+
+# trainer = Trainer(model, train_dataset=dataset, args=args)
+# trainer.train()

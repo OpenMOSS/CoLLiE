@@ -25,7 +25,7 @@ class GPTLMLoss(torch.nn.Module):
         self.loss = torch.nn.CrossEntropyLoss(ignore_index=ignore_index)  # ignore <pad> when compute loss
 
     def forward(self, logits, labels):
-        if os.environ["LOCAL_RANK"] == "3":
+        if os.environ["LOCAL_RANK"] == "0":
             import pdb
             pdb.set_trace()
         shift_logits = logits[..., :-1, :].contiguous()

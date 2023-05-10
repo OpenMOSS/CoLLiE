@@ -1,12 +1,15 @@
 import os
+import gc
 import sys
+import tqdm
+import json
 
 import torch
 from torch import nn
 import torch.nn.functional as F
+import torch.distributed as dist
 
 from deepspeed.runtime.activation_checkpointing.checkpointing import checkpoint
-from deepspeed.runtime.pipe.topology import PipeModelDataParallelTopology
 from deepspeed.pipe import LayerSpec, TiedLayerSpec
 
 from megatron.core import tensor_parallel
@@ -21,13 +24,16 @@ try:
 except ModuleNotFoundError:
     FlashAttention = None
 
-from collie.models.llama.arguments import LlamaArguments
-from collie.module import ColumnParallelLinearWithoutBias, RowParallelLinearWithoutBias, PipelineModel, GPTLMLoss
+from collie.log.logger import logger
+from collie.models.base import BaseModel
+from collie.driver.io.file import FileIODriver
 from collie.trainer.arguments import load_config
-from collie.utils import setup_distributation
+from collie.driver.io.petrel import PetrelIODriver
+from collie.models.llama.arguments import LlamaArguments
+from collie.module import ColumnParallelLinearWithoutBias, RowParallelLinearWithoutBias
 
 from typing import Union
-
+from collections import OrderedDict
 
 class RotaryPositionEmbedding(nn.Module):
     def __init__(self, head_dim: int) -> None:
@@ -139,7 +145,7 @@ class LlamaLayer(nn.Module):
             rearrange(key, "b n (h d) -> b n h d", d=head_dim), \
             rearrange(value, "b n (h d) -> b n h d", d=head_dim)
         query, key = self.self_attn["rotary_emb"](query, key, seq_len)
-        
+
         if self.args.use_flash:
             assert FlashAttention is not None, \
                 "Detected flash_attn is not installed. See https://github.com/HazyResearch/flash-attention"
@@ -178,7 +184,7 @@ class LlamaLayer(nn.Module):
             return self._forward(hidden_states)
 
 
-class LlamaModel(nn.Module):
+class LlamaModel(BaseModel):
     def __init__(self, args: Union[LlamaArguments, str]) -> None:
         super().__init__()
         if isinstance(args, str):
@@ -200,139 +206,296 @@ class LlamaModel(nn.Module):
             bias=False
         )
 
-    def __new__(cls, args: Union[LlamaArguments, str]) -> object:
-        if isinstance(args, str):
-            args = load_config(args)
-        setup_distributation(args)
-        if args.pp_size == 1:
-            return super().__new__(LlamaModel)
-        else:
-            return PipelineModel(
-                layers=[
-                    TiedLayerSpec(
-                        "embed_tokens",
-                        tensor_parallel.VocabParallelEmbedding,
-                        args.vocab_size,
-                        args.hidden_size),
-                    *[LayerSpec(LlamaLayer, args)
-                      for _ in range(args.num_hidden_layers)],
-                    LayerSpec(FusedRMSNorm,
-                              normalized_shape=args.hidden_size,
-                              eps=args.layer_norm_epsilon),
-                    TiedLayerSpec(
-                        "embed_tokens",
-                        ColumnParallelLinearWithoutBias,
-                        args.hidden_size,
-                        args.vocab_size,
-                        bias=False)
-                ],
-                base_seed=args.seed,
-                num_stages=args.pp_size,
-                partition_method=args.pp_partition_method,
-                topology=PipeModelDataParallelTopology(
-                    num_pp=args.pp_size,
-                    num_dp=args.dp_size,
-                    num_mp=args.tp_size),
-                loss_fn=GPTLMLoss()
-            )
+    # def __new__(cls, args: Union[LlamaArguments, str]) -> object:
+    #     if isinstance(args, str):
+    #         args = load_config(args)
+    #     setup_distributation(args)
+    #     if args.pp_size == 1:
+    #         return super().__new__(LlamaModel)
+    #     else:
+    #         return PipelineModel(
+    #             layers=[
+    #                 TiedLayerSpec(
+    #                     "embed_tokens",
+    #                     tensor_parallel.VocabParallelEmbedding,
+    #                     args.vocab_size,
+    #                     args.hidden_size),
+    #                 *[LayerSpec(LlamaLayer, args)
+    #                   for _ in range(args.num_hidden_layers)],
+    #                 LayerSpec(FusedRMSNorm,
+    #                           normalized_shape=args.hidden_size,
+    #                           eps=args.layer_norm_epsilon),
+    #                 TiedLayerSpec(
+    #                     "embed_tokens",
+    #                     ColumnParallelLinearWithoutBias,
+    #                     args.hidden_size,
+    #                     args.vocab_size,
+    #                     bias=False)
+    #             ],
+    #             base_seed=args.seed,
+    #             num_stages=args.pp_size,
+    #             partition_method=args.pp_partition_method,
+    #             topology=PipeModelDataParallelTopology(
+    #                 num_pp=args.pp_size,
+    #                 num_dp=args.dp_size,
+    #                 num_mp=args.tp_size),
+    #             loss_fn=GPTLMLoss()
+    #         )
 
     def forward(self, input_ids: torch.Tensor):
         assert input_ids.ndim == 2, f"input_ids.shape must be (B, N), but got {input_ids.shape}"
         hidden_states = self.embed_tokens(input_ids)
         for layer in self.layers:
             hidden_states = layer(hidden_states)
+        import pdb
+        pdb.set_trace()
         hidden_states = self.norm(hidden_states)
         logits = self.lm_head(hidden_states)
         return logits
 
+    @classmethod
+    def pipeline_layers(cls, args: Union[LlamaArguments, str]):
+        """
+        Get layers of pipeline.
 
-if __name__ == "__main__":
-    import os
-    import deepspeed
-    import torch.distributed as dist
-    from megatron.core import parallel_state
-    from megatron.core import mpu
-    from deepspeed.pipe import PipelineModule
-    from deepspeed.runtime.pipe.topology import PipeModelDataParallelTopology
-    from torch.utils.data import Dataset
-    args = LlamaArguments()
-    args.pp_size = 4
-    args.tp_size = 1
-    args.dp_size = 2
-    args.use_flash = False
-    args.checkpointing = False
-    # prepare parallelism
-    deepspeed.init_distributed(dist_backend='nccl', init_method="env://")
-    parallel_state.initialize_model_parallel(
-        tensor_model_parallel_size=args.tp_size, pipeline_model_parallel_size=1)
-    tensor_parallel.model_parallel_cuda_manual_seed(args.seed)
-    torch.cuda.set_device(torch.device(
-        'cuda:{}'.format(os.environ["LOCAL_RANK"])))
-    # construct model
-    if args.pp_size > 1:
-        model = PipelineModule(
-            layers=LlamaModel(args),
-            num_stages=args.pp_size,
-            topology=PipeModelDataParallelTopology(
-                num_pp=args.pp_size, num_dp=args.dp_size, num_mp=args.tp_size),
-            loss_fn=lambda x, y: (print(x), x.sum())[1]
-        ).cpu()
-    else:
-        model = LlamaModel(args).cpu()
+        :return: list
+        """
+        if isinstance(args, str) and os.path.exists(args):
+            args = load_config(args)
+        return [TiedLayerSpec(
+            "embed_tokens",
+            tensor_parallel.VocabParallelEmbedding,
+            args.vocab_size,
+            args.hidden_size),
+            *[LayerSpec(LlamaLayer, args)
+              for _ in range(args.num_hidden_layers)],
+            LayerSpec(FusedRMSNorm,
+                      normalized_shape=args.hidden_size,
+                      eps=args.layer_norm_epsilon),
+            TiedLayerSpec(
+            "embed_tokens",
+            ColumnParallelLinearWithoutBias,
+            args.hidden_size,
+            args.vocab_size,
+            bias=False)
+        ]
 
-    class DummyDataset(Dataset):
-        def __init__(self):
-            pass
+    @staticmethod
+    def load_parallel_state_dict(path: str, args: Union[LlamaArguments, str]):...
+    @staticmethod
+    def load_parallel_state_dict(path: str, 
+                                 args: Union[LlamaArguments, str], 
+                                 protocol: str = 'file', 
+                                 format: str = 'hf',
+                                 process_exclusion: bool = False):
+        """
+        Load state_dict from ``path``.
 
-        def __len__(self):
-            return 100
+        The format of pretrained model should be the same as that of
+        `huggingface`.
 
-        def __getitem__(self, idx):
-            return torch.tensor([idx]), torch.tensor([idx])
-    dataset = DummyDataset()
-    engine, optimizer, training_dataloader, _ = deepspeed.initialize(
-        model=model,
-        model_parameters=[p for p in model.parameters() if p.requires_grad],
-        training_data=dataset,
-        mpu=mpu if args.pp_size == 1 else None,
-        config={
-            "train_micro_batch_size_per_gpu": 1,
-            "train_batch_size": 2,
-            "gradient_accumulation_steps": 1,
-            "optimizer": {
-                "type": "Adam",
-                "params": {
-                    "lr": 0.001,
-                    "betas": [
-                        0.8,
-                        0.999
-                    ],
-                    "eps": 1e-8,
-                    "weight_decay": 3e-7
-                }
-            },
-            "fp16": {
-                "enabled": True
-            },
-            "zero_optimization": {
-                "stage": 1,
-                "offload_optimizer": {
-                    "device": "cpu"
-                },
-                # "offload_param": {
-                #     "device": "cpu",
-                #     "pin_memory": True
-                # },
-                "contiguous_gradients": True,
-                "overlap_comm": True,
-                "sub_group_size": 1e12,
-                "reduce_bucket_size": "auto",
-                # "stage3_prefetch_bucket_size": "auto",
-                # "stage3_param_persistence_threshold": "auto",
-                # "stage3_max_live_parameters": 1e9,
-                # "stage3_max_reuse_distance": 1e9,
-                # "stage3_gather_16bit_weights_on_model_save": True
-            }
-        }
-    )
-    print(engine.train_batch())
+        :return: state_dict. Note that the state_dict should be processed
+            properly to match the current rank.
+        """
+        assert format in ["hf", "meta"], "Only support hf and meta format"
+        assert protocol in ["file", "petrel"], "Only support file and petrel protocol"
+        if isinstance(args, str) and os.path.exists(args):
+            args = load_config(args)
+        IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
+        if not IODriver.exists(path):
+            raise FileNotFoundError(f"folder {path} not found.")
+        state_dict = OrderedDict()
+        weights = []
+        parts = None
+        # 如果开启了进程互斥，那么每个进程都会显示进度条，否则只显示 RANK0 的
+        hide_progress = not process_exclusion and int(os.environ.get("RANK", "0")) != 0
+        if dist.is_initialized() and process_exclusion:
+            # 如果启动了进程互斥，则要进行 dist.get_world_size() 次循环
+            rank_order = range(dist.get_world_size())
+        else:
+            # 不开启只进行一次循环
+            rank_order = range(1)
+        for rank in rank_order:
+            # 如果开启了进程互斥，那么只有对应 RANK 的能进入循环；不开启进程互斥的话就都可以进
+            if int(os.environ.get("RANK", "0")) == rank or not process_exclusion:
+                # PP 分层的方法保存在了 os.environ["COLLIE_PP_PARTS"], 格式类似于 [0, 17, 35], 左闭右开
+                if "COLLIE_PP_PARTS" in os.environ.keys():
+                    # 保存的是 json 格式
+                    parts = json.loads(os.environ["COLLIE_PP_PARTS"])
+                if format == "hf":
+                    # 根据 huggingface 中的 config.json 更新一下用户配置
+                    if IODriver.exists(os.path.join(path, "config.json")):
+                        config = json.loads(IODriver.load(os.path.join(path, "config.json"), mode="r"))
+                        for key, value in {
+                            "vocab_size": config["vocab_size"],
+                            "hidden_size": config["hidden_size"],
+                            "intermediate_size": config["intermediate_size"],
+                            "num_hidden_layers": config["num_hidden_layers"],
+                            "num_attention_heads": config["num_attention_heads"],
+                            "layer_norm_epsilon": config["rms_norm_eps"]
+                        }.items():
+                            setattr(args, key, value)
+                    # 如果存在 pytorch_model.bin.index.json 文件的话，此时不同的 pp 进程可以按需加载自己需要的权重
+                    if IODriver.exists(os.path.join(path, "pytorch_model.bin.index.json")) and "COLLIE_PP_PARTS" in os.environ.keys():
+                        weight_map = json.loads(IODriver.load(os.path.join(path, "pytorch_model.bin.index.json"), mode="r"))["weight_map"]
+                        # layers 表示自己需要的层
+                        layers = list(range(parts[int(os.environ["COLLIE_PP_RANK"])], parts[int(os.environ["COLLIE_PP_RANK"]) + 1]))
+                        # 筛选出形似 model.layers.0 这样的层。包含两个条件：1. 有数字的层；2. 数字加一要在 layers 里面（因为最开始还有个 embedding 占一层）
+                        weights.extend([value for key, value in weight_map.items() \
+                            if len(key.split(".")) > 2 \
+                                and key.split(".")[2].isdigit() \
+                                    and (int(key.split(".")[2]) + 1) in layers])
+                        # 去重
+                        weights = list(set(weights))
+                        # 继续筛选，如果有 0 层，那么就要加载 embedding；如果有最后一层，那么就要加载 lm_head；如果有倒数第二层，那么就要加载 norm
+                        if 0 in layers:
+                            weights.append(weight_map["model.embed_tokens.weight"])
+                        if max(parts) - 1 in layers:
+                            weights.append(weight_map["lm_head.weight"])
+                        if max(parts) - 2 in layers:
+                            weights.append(weight_map["model.norm.weight"])
+                    else:
+                        # 如果没有 pytorch_model.bin.index.json 文件的话，那么就加载所有的权重
+                        weights = [weight for weight in IODriver.list(path) if weight.endswith(".bin")]
+                    with tqdm.tqdm(weights, desc="Loading state dict", total=len(weights), disable=hide_progress) as pbar:
+                        for weight in pbar:
+                            part_state_dict = IODriver.load(os.path.join(path, weight), mode="rb")
+                            for key in list(part_state_dict.keys()):
+                                # 对 q_proj.weight 和 k_proj.weight 进行 reshape
+                                if key.endswith("q_proj.weight") or key.endswith("k_proj.weight"):
+                                    part_state_dict[key] = rearrange(
+                                        part_state_dict[key],
+                                        "(h two t) d -> h two t d",
+                                        h=args.num_attention_heads,
+                                        two=2).transpose(1, 2).reshape(
+                                            args.hidden_size,
+                                            args.hidden_size)
+                                part_state_dict[key.replace("model.", "")] = part_state_dict.pop(key)
+                            state_dict.update(part_state_dict)
+                            del part_state_dict
+                elif format == "meta":
+                    # meta 权重的格式，需要补充 inv_freq 的权重
+                    inv_freq = 1.0 / (10000.0 ** (torch.arange(0, (args.hidden_size // args.num_attention_heads),
+                                2).float() / (args.hidden_size // args.num_attention_heads)))
+                    # 根据 meta 中的 params.json 更新一下用户配置
+                    if IODriver.exists(os.path.join(path, "params.json")):
+                        params = json.loads(IODriver.load(os.path.join(path, "params.json"), mode="r"))
+                        for key, value in {
+                            "hidden_size": params["dim"],
+                            "intermediate_size": params["multiple_of"] * ((int(2 * 4 * args.hidden_size / 3) + params["multiple_of"] - 1) // params["multiple_of"]),
+                            "num_hidden_layers": params["n_layers"],
+                            "num_attention_heads": params["n_heads"],
+                            "layer_norm_epsilon": params["norm_eps"]
+                        }.items():
+                            setattr(args, key, value)
+                    # 权重全部加载
+                    weights = [weight for weight in IODriver.list(path) if weight.endswith(".pt") or weight.endswith(".pth")]
+                    # 因为 meta 的权重默认 按照张量并行分割，cat 的时候存在顺序问题，所以先排序一下
+                    weights = sorted(weights, key=lambda x: int(x.split(".")[1]))
+                    with tqdm.tqdm(weights, desc="Loading state dict", total=len(weights), disable=hide_progress) as pbar:
+                        for weight in pbar:
+                            part_state_dict = IODriver.load(os.path.join(path, weight), mode="rb")
+                            for key in part_state_dict.keys():
+                                if key.startswith("layers"):
+                                    layer = int(key.split(".")[1])
+                                    # meta 权重的格式，需要补充 inv_freq 的权重
+                                    part_state_dict[f"layers.{layer}.self_attn.rotary_emb.inv_freq"] = inv_freq
+                                raw_key = key
+                                key = key.replace("attention", "self_attn")
+                                key = key.replace("wo", "o_proj")
+                                key = key.replace("wq", "q_proj")
+                                key = key.replace("wk", "k_proj")
+                                key = key.replace("wv", "v_proj")
+                                key = key.replace("feed_forward", "mlp")
+                                key = key.replace("w1", "gate_proj")
+                                key = key.replace("w2", "down_proj")
+                                key = key.replace("w3", "up_proj")
+                                key = key.replace("attention_norm", "input_layernorm")
+                                key = key.replace("attention_norm", "post_attention_layernorm")
+                                key = key.replace("tok_embeddings", "embed_tokens")
+                                key = key.replace("output", "lm_head")
+                                # 按照 hf 的格式更新字典
+                                part_state_dict[raw_key] = part_state_dict.pop(key)
+                            for key, value in part_state_dict.items():
+                                if not key in state_dict.keys():
+                                    state_dict[key] = value
+                                else:
+                                    # 组装一下
+                                    if key.endswith("q_proj.weight") \
+                                        or key.endswith("k_proj.weight") \
+                                            or key.endswith("v_proj.weight") \
+                                                or key.endswith("gate_proj.weight") \
+                                                    or key.endswith("up_proj.weight") \
+                                                        or key.endswith("embed_tokens.weight"):
+                                                            state_dict[key] = torch.cat((state_dict[key], value), dim=0)
+                                    if key.endswith("o_proj.weight") \
+                                        or key.endswith("down_proj.weight"):
+                                            state_dict[key] = torch.cat((state_dict[key], value), dim=1)
+                            del part_state_dict
+                if parts is not None:
+                    # 这一步是 pp 的复筛
+                    layers = list(range(parts[int(os.environ["COLLIE_PP_RANK"])], parts[int(os.environ["COLLIE_PP_RANK"]) + 1]))
+                    for key in list(state_dict.keys()):
+                        if key.startswith("layers"):
+                            layer = int(key.split(".")[1])
+                            if layer + 1 in layers:
+                                state_dict[key.replace(f"layers.{layer}", f"{layer + 1}")] = state_dict.pop(key)
+                            else:
+                                # 形似 model.layers.0 这样的层，筛选掉数字加一不在 layers 里面得
+                                state_dict.pop(key)
+                        if key.endswith("embed_tokens.weight"):
+                            if 0 in layers:
+                                state_dict["tied_modules.embed_tokens.weight"] = state_dict.pop(key)
+                            else:
+                                state_dict.pop(key)
+                        if key == "norm.weight":
+                            if max(parts) - 2 in layers:
+                                state_dict[f"{max(parts) - 2}.weight"] = state_dict.pop(key)
+                            else:
+                                state_dict.pop(key)
+                        if key.endswith("lm_head.weight"):
+                            if max(parts) - 1 in layers:
+                                state_dict["tied_modules.embed_tokens.weight"] = state_dict.pop(key)
+                            else:
+                                state_dict.pop(key)
+                # 根据用户配置的新的 tp size 进行分割
+                for key in list(state_dict.keys()):
+                    if key.endswith("q_proj.weight") \
+                        or key.endswith("k_proj.weight") \
+                            or key.endswith("v_proj.weight") \
+                                or key.endswith("gate_proj.weight") \
+                                    or key.endswith("up_proj.weight") \
+                                        or key.endswith("embed_tokens.weight"):
+                                            tensor = list(torch.chunk(state_dict[key], args.tp_size, dim=0))[int(os.environ.get("COLLIE_TP_RANK", "0"))].detach().clone()
+                                            del state_dict[key]
+                                            if process_exclusion:
+                                                # CPU 内存回收（速度很慢）
+                                                gc.collect()
+                                            state_dict[key] = tensor
+                    elif key.endswith("o_proj.weight") \
+                        or key.endswith("down_proj.weight"):
+                            tensor = list(torch.chunk(state_dict[key], args.tp_size, dim=1))[int(os.environ.get("COLLIE_TP_RANK", "0"))].detach().clone()
+                            del state_dict[key]
+                            if process_exclusion:
+                                # CPU 内存回收（速度很慢）
+                                gc.collect()
+                            state_dict[key] = tensor
+            if dist.is_initialized() and process_exclusion:
+                # 如果选择了进程互斥，那么本次循环中不需要加载权重的进程需等待
+                dist.barrier()
+        return state_dict
+            
+                
+    
+    @staticmethod
+    def save_parallel_state_dict(args, path):
+        """
+        Save state_dict to ``path``.
+
+        The format of saved state dict should be the same as that of
+        `huggingface`.
+        """
+        raise NotImplementedError(
+            "Every model should implement `save_parallel_state_dict` "
+            "to properly save a state dict for the cuurent rank."
+        )

@@ -35,12 +35,12 @@ def load_parallel_state_dict(folder: str,
         state_dict = load_state_dict(folder, protocol, format, args)
         if "COLLIE_PP_PARTS" in os.environ.keys():
             for key in list(state_dict.keys()):
-                if key.startswith("model.layers"):
+                if key.startswith("layers"):
                     layer = int(key.split(".")[2])
-                    state_dict[key.replace(f"model.layers.{layer}", f"{layer + 1}")] = state_dict.pop(key)
+                    state_dict[key.replace(f"layers.{layer}", f"{layer + 1}")] = state_dict.pop(key)
                 if key.endswith("embed_tokens.weight"):
                     state_dict["tied_modules.embed_tokens.weight"] = state_dict.pop(key)
-                if key.endswith("model.norm.weight"):
+                if key.endswith("norm.weight"):
                     state_dict[f"{args.num_hidden_layers + 1}.weight"] = state_dict.pop(key)
                 if key.endswith("lm_head.weight"):
                     state_dict.pop(key)
@@ -137,7 +137,7 @@ def load_state_dict(folder: str,
         with tqdm.tqdm(weights, desc="Loading state dict", total=len(weights)) as pbar:
             for idx, weight in enumerate(pbar):
                 raw_state_dict = IODriver.load(os.path.join(folder, weight), mode="rb")
-                for key in raw_state_dict.keys():
+                for key in list(raw_state_dict.keys()):
                     if key.endswith("q_proj.weight") or key.endswith("k_proj.weight"):
                         raw_state_dict[key] = rearrange(
                             raw_state_dict[key],
@@ -146,6 +146,7 @@ def load_state_dict(folder: str,
                             two=2).transpose(1, 2).reshape(
                                 args.hidden_size,
                                 args.hidden_size)
+                    raw_state_dict[key.replace("model.", "")] = raw_state_dict.pop(key)
                 state_dict.update(raw_state_dict)
                 pbar.set_postfix_str(f"Loaded {idx + 1}/{len(weights)} weights")
     elif format == "meta":
@@ -178,7 +179,6 @@ def load_state_dict(folder: str,
                     key = key.replace("attention_norm", "post_attention_layernorm")
                     key = key.replace("tok_embeddings", "embed_tokens")
                     key = key.replace("output", "lm_head")
-                    key = "model." + key
                     raw_state_dict[raw_key] = raw_state_dict.pop(key)
                 state_dict.update(raw_state_dict)
                 pbar.set_postfix_str(f"Loaded {idx + 1}/{len(weights)} weights")
