@@ -30,7 +30,10 @@ class BaseModel(nn.Module):
         setup_distributation(args)
         model_cls = cls._get_model_cls(args)
         if args.pp_size == 1:
-            return super().__new__(model_cls)
+            model = super().__new__(model_cls)
+            model.__init__(args)
+            dist.barrier()
+            return model
         else:
             return PipelineModel(
                 layers=model_cls.pipeline_layers(args), base_seed=args.seed,
@@ -41,7 +44,7 @@ class BaseModel(nn.Module):
                     num_mp=args.tp_size
                 ), loss_fn=GPTLMLoss()
             )
-            
+
     def __new__(cls, args: Arguments, **kwargs):
         return cls.from_config(args, **kwargs)
 
