@@ -3,7 +3,6 @@ import sys
 sys.path.append("../../../")
 import os
 import json
-from tqdm import tqdm
 from typing import Optional, Tuple, Union
 from collections import OrderedDict
 
@@ -22,7 +21,8 @@ from collie.trainer.arguments import load_config
 from collie.driver.io.file import FileIODriver
 from collie.driver.io.petrel import PetrelIODriver
 from collie.models.base import BaseModel
-from collie.utils import get_pp_rank, get_tp_rank, get_dp_rank, is_pipeline
+from collie.utils import (get_pp_rank, get_tp_rank, get_dp_rank, is_pipeline,
+                          progress)
 from .arguments import MossArguments
 from .utils import (apply_rotary_pos_emb, create_sinusoidal_positions,
                     set_index_dict, _state_dict_to_save, _state_dict_to_load,
@@ -313,7 +313,7 @@ class MossModel(BaseModel):
     # MossForCausalLM
     def __init__(self, args):
         super().__init__()
-
+        self.args = args
         self.embed_dim = args.n_embd
         self.vocab_size = args.vocab_size
         self.wte = VocabParallelEmbedding(args.vocab_size, self.embed_dim)
@@ -407,22 +407,14 @@ class MossModel(BaseModel):
                 # 如果没有 pytorch_model.bin.index.json 文件的话，那么就加载所有的权重
                 weights = [weight for weight in IODriver.list(path) if weight.endswith(".bin")]
 
-            tqdm_params = {
-                "desc": "Loading state_dict",
-                "total": len(weights),
-                "disable": hide_progress,
-            }
-            with tqdm(weights, **tqdm_params) as pbar:
-                if process_exclusion:
-                    pbar.set_postfix({
-                        "pp": pp_rank, "tp": tp_rank, "dp": dp_rank,
-                    })
-                for weight in pbar:
-                    part_state_dict = IODriver.load(os.path.join(path, weight), mode="rb")
-                    state_dict.update(_state_dict_to_load(
-                        part_state_dict, tp_rank, args.tp_size,
-                        process_exclusion
-                    ))
+            desc = "Loading state dict"
+            if process_exclusion:
+                desc += f" on pp={pp_rank} tp={tp_rank} dp={dp_rank}"
+            for weight in progress(weights, desc, disable=hide_progress):
+                part_state_dict = IODriver.load(os.path.join(path, weight), mode="rb")
+                state_dict.update(_state_dict_to_load(
+                    part_state_dict, tp_rank, args.tp_size, process_exclusion
+                ))
 
         return state_dict
 
@@ -460,17 +452,20 @@ class MossModel(BaseModel):
         # Now dp_rank is 0
         if tp_rank == 0:
             # Save gathered weights
-            ckpt_name = f"pytorch_model-{pp_rank+1:05d}-of-{args.pp_size:05d}.bin"
-            index_dict = set_index_dict(state_dict, ckpt_name)
+            if is_pipeline():
+                ckpt_name = f"pytorch_model-{pp_rank+1:05d}-of-{args.pp_size:05d}.bin"
+                index_dict = set_index_dict(state_dict, ckpt_name)
+                tmp_index_file = os.path.join(path, "_tmp_index_{}.json")
+                IODriver.save(
+                    json.dumps(index_dict), tmp_index_file.format(get_pp_rank())
+                )
+            else:
+                ckpt_name = f"pytorch_model.bin"
             ckpt_path = os.path.join(path, ckpt_name)
             IODriver.save(state_dict, ckpt_path)
-            tmp_index_file = os.path.join(path, "_tmp_index_{}.json")
-            IODriver.save(
-                json.dumps(index_dict), tmp_index_file.format(get_pp_rank())
-            )
         dist.barrier()
         # Only save and merge on rank0
-        if dist.get_rank() == 0:
+        if dist.get_rank() == 0 and is_pipeline():
             # merge
             tmp_index_files = [tmp_index_file.format(i) for i in range(args.pp_size)]
             total_size = 0

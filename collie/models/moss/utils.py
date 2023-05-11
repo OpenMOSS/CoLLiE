@@ -197,6 +197,12 @@ def _state_dict_to_save(state_dict, tp_rank, tp_size, tp_group,
         for name in list(state_dict.keys()):
             hf_name = _name_to_hf(name)
             state_dict[hf_name] = state_dict.pop(name)
+    else:
+        for name in list(state_dict.keys()):
+            if name.startswith("lm_head."):
+                continue
+            hf_name = "transformer." + name
+            state_dict[hf_name] = state_dict.pop(name)
 
     if tp_size > 1:
         state_dict = _gather_weights(state_dict, tp_rank, tp_size, tp_group,
