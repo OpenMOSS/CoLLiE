@@ -99,8 +99,8 @@ class CollieCasualLM(PreTrainedModel):
             _, logits = self.engine.eval_batch(
                 data_iter=iter([batch]),
                 return_logits=True,
-                compute_loss=True,
-                reduce_output="avg"
+                compute_loss=False,
+                reduce_output=None
             )
             src_rank = self.engine.grid.stage_to_global(self.engine.num_stages - 1)
             if logits is not None:

@@ -44,13 +44,9 @@ class BaseModel(nn.Module):
                     num_mp=args.tp_size
                 ), loss_fn=GPTLMLoss()
             )
-<<<<<<< HEAD
             setattr(pipeline_model, "args", args)
             return pipeline_model
             
-=======
-
->>>>>>> 2c3a549827e9fb8c0653aaca2f5537f8246b1e9a
     def __new__(cls, args: Arguments, **kwargs):
         return cls.from_config(args, **kwargs)
 
@@ -73,14 +69,6 @@ class BaseModel(nn.Module):
             )
         if not os.path.exists(model_path_or_name):
             model_path_or_name = snapshot_download(model_path_or_name)
-<<<<<<< HEAD
-        if isinstance(args, str) and os.path.exists(args):
-            args = load_config(args)
-        if args is None or isinstance(args, str):
-            args = Arguments.from_pretrained(model_path_or_name, **kwargs)
-        model = cls.from_config(args)
-        model.load_state_dict(cls.load_parallel_state_dict(model_path_or_name, args))
-=======
         if args is None:
             args = model_path_or_name
         if isinstance(args, str):
@@ -92,7 +80,6 @@ class BaseModel(nn.Module):
             process_exclusion=process_exclusion,
         )
         model.load_state_dict(state_dict)
->>>>>>> 2c3a549827e9fb8c0653aaca2f5537f8246b1e9a
         return model
 
     @classmethod
