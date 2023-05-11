@@ -1,3 +1,5 @@
 rich
+tqdm
 torch
 deepspeed
+transformers

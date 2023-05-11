@@ -6,6 +6,7 @@ from typing import Union, Optional
 from huggingface_hub import snapshot_download
 
 from torch import nn
+from torch import distributed as dist
 from deepspeed.runtime.pipe.topology import PipeModelDataParallelTopology
 from collie.module import PipelineModel, GPTLMLoss
 from collie.trainer.arguments import Arguments, load_config
@@ -24,12 +25,15 @@ class BaseModel(nn.Module):
         Load arguments from config.
         """
         if isinstance(args, str) and os.path.exists(args):
-            args = load_config(args)
+            args = Arguments.from_pretrained(args)
         args.update(**kwargs)
         setup_distributation(args)
         model_cls = cls._get_model_cls(args)
         if args.pp_size == 1:
-            return super().__new__(model_cls)
+            model = super().__new__(model_cls)
+            model.__init__(args)
+            dist.barrier()
+            return model
         else:
             pipeline_model =  PipelineModel(
                 layers=model_cls.pipeline_layers(args), base_seed=args.seed,
@@ -40,27 +44,55 @@ class BaseModel(nn.Module):
                     num_mp=args.tp_size
                 ), loss_fn=GPTLMLoss()
             )
+<<<<<<< HEAD
             setattr(pipeline_model, "args", args)
             return pipeline_model
             
+=======
+
+>>>>>>> 2c3a549827e9fb8c0653aaca2f5537f8246b1e9a
     def __new__(cls, args: Arguments, **kwargs):
         return cls.from_config(args, **kwargs)
 
     @classmethod
     def from_pretrained(cls, model_path_or_name: str, args:Optional[Union[Arguments, str]] = None, **kwargs):
         """
-        :param path: str
-        :param args: str, Arguments or None.
-        :param kwargs: parameters to be set at Arguments.
+        :param model_path_or_name: str
+        :param args: str, Arguments or None. If None, we will load arguments
+            from `model_path_or_name`.
+        :param kwargs:
+            - process_exclusion: Whether to load checkpoints one by one to 
+              save memory.
+            parameters to be set at Arguments.
         """
+        process_exclusion = kwargs.pop("process_exclusion", False)
+        if dist.is_initialized() and process_exclusion:
+            logger.warning(
+                "Distributed group is not initialized and `process_exclusion` "
+                "will not take effect."
+            )
         if not os.path.exists(model_path_or_name):
             model_path_or_name = snapshot_download(model_path_or_name)
+<<<<<<< HEAD
         if isinstance(args, str) and os.path.exists(args):
             args = load_config(args)
         if args is None or isinstance(args, str):
             args = Arguments.from_pretrained(model_path_or_name, **kwargs)
         model = cls.from_config(args)
         model.load_state_dict(cls.load_parallel_state_dict(model_path_or_name, args))
+=======
+        if args is None:
+            args = model_path_or_name
+        if isinstance(args, str):
+            # prevent duplicate `from_pretrained`` in load_parallel
+            args = Arguments.from_pretrained(args)
+        model = cls.from_config(args, **kwargs)
+        state_dict = cls.load_parallel_state_dict(
+            path=model_path_or_name, args=args,
+            process_exclusion=process_exclusion,
+        )
+        model.load_state_dict(state_dict)
+>>>>>>> 2c3a549827e9fb8c0653aaca2f5537f8246b1e9a
         return model
 
     @classmethod
@@ -77,13 +109,18 @@ class BaseModel(nn.Module):
 
     @staticmethod
     @abstractmethod
-    def load_parallel_state_dict(path: str, args: Union[Arguments, str]):
+    def load_parallel_state_dict(path: str, args: Union[Arguments, str],
+                                 process_exclusion: bool = False):
         """
         Load state_dict from ``path``.
 
         The format of pretrained model should be the same as that of
         `huggingface`.
 
+        :param path:
+        :param args:
+        :param process_exclusion: Whether to load checkpoints one by one to 
+            save memory.
         :return: state_dict. Note that the state_dict should be processed
             properly to match the current rank.
         """
@@ -94,9 +131,11 @@ class BaseModel(nn.Module):
     
     @staticmethod
     @abstractmethod
-    def save_parallel_state_dict(path: str, args: Union[Arguments, str]):
+    def save_parallel_state_dict(state_dict: dict, path: str,
+                                 args: Arguments,
+                                 process_exclusion: bool = False):
         """
-        Save state_dict to ``path``.
+        Save ``state_dict`` to ``path``.
 
         The format of saved state dict should be the same as that of
         `huggingface`.
@@ -127,7 +166,7 @@ class BaseModel(nn.Module):
                 )
         else:
             if not cls.__name__.lower().startswith(args.model_type):
-                logger.warning(
+                logger.rank_zero_warning(
                     f"The pretrained model's type {args.model_type} does not "
                     f"match the current model {cls.__name__}."
                 )

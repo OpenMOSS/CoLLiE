@@ -10,6 +10,7 @@ import re
 import os
 import copy
 import subprocess
+import json
 
 def patch_deepspeed(args):
     if hasattr(args, "ds_config") \
@@ -121,3 +122,34 @@ def setup_distributation(args) -> None:
     os.environ["COLLIE_PP_RANK"] = "0"
     os.environ["COLLIE_TP_RANK"] = str(parallel_state.get_tensor_model_parallel_rank())
     os.environ["COLLIE_DP_RANK"] = str(parallel_state.get_data_parallel_rank())
+
+def is_pipeline():
+    return "COLLIE_PP_PARTS" in os.environ.keys()
+
+def pipline_parts():
+    if "COLLIE_PP_PARTS" in os.environ.keys():
+        parts = json.loads(os.environ["COLLIE_PP_PARTS"])
+    else:
+        parts = None
+
+    return parts
+
+def pipline_layers_idx():
+    """
+    :return: list or None
+    """
+    parts = pipline_parts()
+    if parts is None:
+        return None
+    else:
+        stage = get_pp_rank()
+        return list(range(parts[stage], parts[stage + 1]))
+
+def get_dp_rank():
+    return int(os.getenv("COLLIE_DP_RANK", "0"))
+
+def get_tp_rank():
+    return int(os.getenv("COLLIE_TP_RANK", "0"))
+
+def get_pp_rank():
+    return int(os.getenv("COLLIE_PP_RANK", "0"))
