@@ -46,4 +46,16 @@ class LlamaArguments(Arguments):
             "help": "Dropout probability."
         }
     )
+    use_flash: bool = field(
+        default=True,
+        metadata={
+            "help": "Whether to use FlashAttention."
+        }
+    )
+    checkpointing: bool = field(
+        default=True,
+        metadata={
+            "help": "Whether to use activation checkpointing."
+        }
+    )
     model_type: str = "llama"

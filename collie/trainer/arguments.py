@@ -10,18 +10,6 @@ from collie.log import logger
 class Arguments:
     """Arguments for Trainer.
     """
-    use_flash: bool = field(
-        default=True,
-        metadata={
-            "help": "Whether to use FlashAttention."
-        }
-    )
-    checkpointing: bool = field(
-        default=True,
-        metadata={
-            "help": "Whether to use activation checkpointing."
-        }
-    )
     seed: int = field(
         default=42,
         metadata={
@@ -58,6 +46,24 @@ class Arguments:
             "help": "Number of training epochs."
         }
     )
+    train_micro_batch_size: int = field(
+        default=1,
+        metadata={
+            "help": "Batch size (one step) for training."
+        }
+    )
+    gradient_accumulation_steps: int = field(
+        default=1,
+        metadata={
+            "help": "Number of gradient accumulation steps."
+        }
+    )
+    eval_batch_size: int = field(
+        default=1,
+        metadata={
+            "help": "Batch size for evaluation."
+        }
+    )
     ds_config: Union[str, dict] = field(
         default="",
         metadata={
@@ -70,7 +76,6 @@ class Arguments:
             "help": "Type of model. Such as 'moss', 'llama'."
         }
     )
-
     @classmethod
     def from_pretrained(cls, path: str, **kwargs):
         """

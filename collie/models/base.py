@@ -31,7 +31,7 @@ class BaseModel(nn.Module):
         if args.pp_size == 1:
             return super().__new__(model_cls)
         else:
-            return PipelineModel(
+            pipeline_model =  PipelineModel(
                 layers=model_cls.pipeline_layers(args), base_seed=args.seed,
                 partition_method=args.pp_partition_method,
                 topology=PipeModelDataParallelTopology(
@@ -40,6 +40,8 @@ class BaseModel(nn.Module):
                     num_mp=args.tp_size
                 ), loss_fn=GPTLMLoss()
             )
+            setattr(pipeline_model, "args", args)
+            return pipeline_model
             
     def __new__(cls, args: Arguments, **kwargs):
         return cls.from_config(args, **kwargs)
@@ -58,7 +60,7 @@ class BaseModel(nn.Module):
         if args is None or isinstance(args, str):
             args = Arguments.from_pretrained(model_path_or_name, **kwargs)
         model = cls.from_config(args)
-        model.load_state_dict(cls.load_parallel_state_dict(args, model_path_or_name))
+        model.load_state_dict(cls.load_parallel_state_dict(model_path_or_name, args))
         return model
 
     @classmethod

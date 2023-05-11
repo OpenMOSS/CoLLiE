@@ -133,6 +133,8 @@ class LlamaLayer(nn.Module):
             normalized_shape=args.hidden_size,
             eps=args.layer_norm_epsilon
         )
+        # 务必保持变量名一致
+        self.past_key_values = None
 
     def _forward(self, hidden_states: torch.Tensor):
         assert hidden_states.ndim == 3, f"hidden_states.shape must be (B, N, H), but got {hidden_states.shape}"
@@ -144,7 +146,17 @@ class LlamaLayer(nn.Module):
         query, key, value = rearrange(query, "b n (h d) -> b n h d", d=head_dim), \
             rearrange(key, "b n (h d) -> b n h d", d=head_dim), \
             rearrange(value, "b n (h d) -> b n h d", d=head_dim)
-        query, key = self.self_attn["rotary_emb"](query, key, seq_len)
+        if not self.training and self.past_key_values is not None:
+            start_pos = self.past_key_values[0].shape[1]
+        else:
+            start_pos = 0
+        query, key = self.self_attn["rotary_emb"](query, key, seq_len, start_pos)
+        if not self.training:
+            if self.past_key_values is not None:
+                query = torch.cat([self.past_key_values[0], query], dim=1)
+                key = torch.cat([self.past_key_values[0], key], dim=1)
+                value = torch.cat([self.past_key_values[1], value], dim=1)
+            self.past_key_values = [key, value]
 
         if self.args.use_flash:
             assert FlashAttention is not None, \
@@ -159,8 +171,8 @@ class LlamaLayer(nn.Module):
                 0, 2, 1, 3), value.permute(0, 2, 1, 3)
             attention_score = torch.matmul(query, key.transpose(
                 2, 3)) / math.sqrt(head_dim)
-            if seq_len > 1:
-                mask = torch.full((1, 1, seq_len, seq_len), float("-inf"))
+            if seq_len + start_pos > 1:
+                mask = torch.full((1, 1, seq_len + start_pos, seq_len + start_pos), float("-inf"))
                 mask = torch.triu(mask, diagonal=1).to(
                     attention_score.device)
                 attention_score = attention_score + mask
@@ -168,9 +180,10 @@ class LlamaLayer(nn.Module):
                 attention_score, dim=-1).type_as(value)
             output = torch.matmul(attention_score, value)
             output = output.transpose(1, 2).contiguous().view(
-                batch_size, seq_len, -1)
+                batch_size, seq_len + start_pos, -1)
             output = F.dropout(output, p=self.args.dropout,
                                training=self.training)
+        output = output[:, start_pos:, :]
         hidden_states = hidden_states + self.self_attn["o_proj"](output)
         _hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = hidden_states + F.dropout(self.mlp["down_proj"](F.silu(self.mlp["gate_proj"](
@@ -206,49 +219,11 @@ class LlamaModel(BaseModel):
             bias=False
         )
 
-    # def __new__(cls, args: Union[LlamaArguments, str]) -> object:
-    #     if isinstance(args, str):
-    #         args = load_config(args)
-    #     setup_distributation(args)
-    #     if args.pp_size == 1:
-    #         return super().__new__(LlamaModel)
-    #     else:
-    #         return PipelineModel(
-    #             layers=[
-    #                 TiedLayerSpec(
-    #                     "embed_tokens",
-    #                     tensor_parallel.VocabParallelEmbedding,
-    #                     args.vocab_size,
-    #                     args.hidden_size),
-    #                 *[LayerSpec(LlamaLayer, args)
-    #                   for _ in range(args.num_hidden_layers)],
-    #                 LayerSpec(FusedRMSNorm,
-    #                           normalized_shape=args.hidden_size,
-    #                           eps=args.layer_norm_epsilon),
-    #                 TiedLayerSpec(
-    #                     "embed_tokens",
-    #                     ColumnParallelLinearWithoutBias,
-    #                     args.hidden_size,
-    #                     args.vocab_size,
-    #                     bias=False)
-    #             ],
-    #             base_seed=args.seed,
-    #             num_stages=args.pp_size,
-    #             partition_method=args.pp_partition_method,
-    #             topology=PipeModelDataParallelTopology(
-    #                 num_pp=args.pp_size,
-    #                 num_dp=args.dp_size,
-    #                 num_mp=args.tp_size),
-    #             loss_fn=GPTLMLoss()
-    #         )
-
     def forward(self, input_ids: torch.Tensor):
         assert input_ids.ndim == 2, f"input_ids.shape must be (B, N), but got {input_ids.shape}"
         hidden_states = self.embed_tokens(input_ids)
         for layer in self.layers:
             hidden_states = layer(hidden_states)
-        import pdb
-        pdb.set_trace()
         hidden_states = self.norm(hidden_states)
         logits = self.lm_head(hidden_states)
         return logits
