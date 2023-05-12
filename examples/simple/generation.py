@@ -16,10 +16,27 @@ tokenizer.bos_token_id = 1
 tokenizer.eos_token_id = 2
 
 args = LlamaArguments.from_pretrained("/mnt/lustre/zhangshuo/model/llama-7b-hf")
-args.dp_size = 8
-args.eval_batch_size = 2
+args.dp_size = 2
+args.pp_size = 1
+args.tp_size = 1
+args.eval_batch_size = 4
+args.train_micro_batch_size = 2
+args.gradient_accumulation_steps = 1
 args.ds_config = {
-    "fp16": {"enabled": True}
+    "fp16": {"enabled": True},
+    # "optimizer": {
+    #     "type": "Adam",
+    #     "params": {
+    #         "lr": 1e-5
+    #     }
+    # },
+    # "zero_optimization": {
+    #     "stage": 1,
+    #     "offload_optimizer": {
+    #         "device": "cpu",
+    #         "pin_memory": False
+    #     },
+    # }
 }
 
 class GenerationDataset(Dataset):
@@ -28,9 +45,10 @@ class GenerationDataset(Dataset):
         self.sentences = sentences
         
     def __len__(self):
-        return 1
+        return len(self.sentences)
     
     def __getitem__(self, index):
+        print(index)
         return self.sentences[index]
     
 def collate_fn(batch):
@@ -48,11 +66,14 @@ dataset = GenerationDataset([
     "So",
     "We have to"
 ])
+torch.set_default_tensor_type(torch.HalfTensor)
 model = LlamaModel.from_pretrained("/mnt/lustre/zhangshuo/model/llama-7b-hf", args=args)
 trainer = Trainer(model=model,
+                  train_dataset=dataset,
                   eval_dataset=dataset,
                   eval_config=GenerationConfig(),
                   metrics=[DecodeMetric(tokenizer=tokenizer)],
                   eval_dataset_collate_fn=collate_fn,
+                  train_dataset_collate_fn=collate_fn,
                   args=args)
 trainer.eval()

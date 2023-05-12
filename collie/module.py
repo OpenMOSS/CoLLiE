@@ -4,7 +4,7 @@ from deepspeed.runtime.pipe.module import PipelineModule
 from deepspeed.runtime.pipe.topology import ProcessTopology, PipeModelDataParallelTopology
 from deepspeed.runtime.engine import DeepSpeedEngine
 from deepspeed.runtime.pipe.engine import PipelineEngine
-from transformers.generation.utils import GenerationConfig, GenerateOutput
+from transformers.generation.utils import GenerationConfig, GenerateOutput, GenerationMixin
 from transformers.modeling_utils import PretrainedConfig, PreTrainedModel
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
@@ -34,7 +34,7 @@ class GPTLMLoss(torch.nn.Module):
 
     def forward(self, logits, labels):
         shift_logits = logits[..., :-1, :].contiguous()
-        shift_labels = labels[..., 1:].contiguous()
+        shift_labels = labels[..., 1:].contiguous().to(logits.device)
         # Flatten the tokens
         return self.loss(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
     
@@ -71,9 +71,12 @@ class PipelineModel(PipelineModule):
         os.environ["COLLIE_PP_RANK"] = str(self.stage_id)
         os.environ["COLLIE_DP_RANK"] = str(self._grid.data_parallel_id)
         
-class CollieCasualLM(PreTrainedModel):
+class CollieCasualLM(nn.Module, GenerationMixin):
     def __init__(self, engine: DeepSpeedEngine, config: GenerationConfig = GenerationConfig()) -> None:
-        super().__init__(PretrainedConfig(is_decoder=True))
+        super().__init__()
+        self.config = PretrainedConfig(is_decoder=True)
+        self.main_input_name = "input_ids"
+        self.device = torch.device("cuda")
         self.engine = engine
         self.args: Arguments = self.engine.module.args
         self.layers = None
@@ -102,6 +105,7 @@ class CollieCasualLM(PreTrainedModel):
                 compute_loss=False,
                 reduce_output=None
             )
+            logits = logits.detach().clone()
             src_rank = self.engine.grid.stage_to_global(self.engine.num_stages - 1)
             if logits is not None:
                 ndim = torch.tensor([logits.ndim]).int().cuda()
@@ -129,6 +133,7 @@ class CollieCasualLM(PreTrainedModel):
             dist.broadcast(tensor=logits, src=src_rank, group=self.engine.mpu.get_pipe_parallel_group())
         else:
             logits = self.engine(input_ids[:, start_pos:])
+            logits = logits.detach().clone()
         past_key_values = self._get_past_key_values()
         return CausalLMOutputWithPast(
             logits=logits,

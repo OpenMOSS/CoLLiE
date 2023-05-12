@@ -76,6 +76,7 @@ class Trainer:
             model_parameters=[p for p in self.model.parameters() if p.requires_grad],
             optimizer=self.optimizer,
             training_data=self.train_dataset,
+            collate_fn=self.train_dataset_collate_fn,
             mpu=parallel_state if self.args.pp_size == 1 else None,
             config=self.args.ds_config
         )
@@ -144,7 +145,7 @@ class Trainer:
             loss = trainer.engine.train_batch(data_iter=iter([batch]))
         else:
             input_ids, labels = batch
-            logits = trainer.engine(input_ids)
+            logits = trainer.engine(input_ids.cuda())
             loss = trainer.loss_fn(logits, labels)
             trainer.engine.backward(loss)
             trainer.engine.step()
