@@ -1,72 +1,16 @@
-from deepspeed.runtime.zero.stage_1_and_2 import DeepSpeedZeroOptimizer
-from megatron.core import parallel_state, tensor_parallel
-from deepspeed.runtime.utils import set_random_seed
-from deepspeed.accelerator import get_accelerator
-from megatron.core import parallel_state
-import deepspeed
-import torch
-
-import re
 import os
 import copy
-import subprocess
 import json
+import re
+import subprocess
 
-def patch_deepspeed(args):
-    if hasattr(args, "ds_config") \
-        and "zero_optimization" in args.ds_config.keys() \
-            and "offload_optimizer" in args.ds_config["zero_optimization"].keys() \
-                and "pin_memory" in args.ds_config["zero_optimization"]["offload_optimizer"].keys() \
-                    and not args.ds_config["zero_optimization"]["offload_optimizer"]["pin_memory"]:
-        get_accelerator().pin_memory = lambda x: x
-    if hasattr(args, "ds_config") \
-        and "zero_optimization" in args.ds_config.keys() \
-            and "offload_param" in args.ds_config["zero_optimization"].keys() \
-                and "pin_memory" in args.ds_config["zero_optimization"]["offload_param"].keys() \
-                    and not args.ds_config["zero_optimization"]["offload_param"]["pin_memory"]:
-        get_accelerator().pin_memory = lambda x: x
-    raw_init = copy.deepcopy(DeepSpeedZeroOptimizer.__init__)
-    def safe_init(self, *args, **kwargs):
-        while True:
-            try:
-                raw_init(self, *args, **kwargs)
-                break
-            except RuntimeError as e:
-                continue
-    DeepSpeedZeroOptimizer.__init__ = safe_init
-    raw_initialize_optimizer_states = copy.deepcopy(DeepSpeedZeroOptimizer.initialize_optimizer_states)
-    def safe_initialize_optimizer_states(self, *args, **kwargs):
-            while True:
-                try:
-                    raw_initialize_optimizer_states(self, *args, **kwargs)
-                    break
-                except RuntimeError as e:
-                    continue
-    DeepSpeedZeroOptimizer.initialize_optimizer_states = safe_initialize_optimizer_states
-    
-def patch_megatron():
-    parallel_state.get_model_parallel_world_size = lambda: parallel_state.get_tensor_model_parallel_world_size()
-    parallel_state.get_model_parallel_rank = lambda: parallel_state.get_tensor_model_parallel_rank()
-    
-def find_tensors():
-    """
-    Adopted from https://discuss.pytorch.org/t/how-to-debug-causes-of-gpu-memory-leaks/6741/3
-    """
-    import torch
-    import gc
-    for obj in gc.get_objects():
-        try:
-            if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
-                print(type(obj), obj.size(), obj.dtype, obj.device)
-        except:
-            pass
-        
-def set_seed(args):
-    """Set random seed for reproducibility.
-    """
-    tensor_parallel.model_parallel_cuda_manual_seed(args.seed)
-    set_random_seed(args.seed)
-    
+import torch
+import deepspeed
+from deepspeed.runtime.utils import set_random_seed
+from deepspeed.runtime.zero.stage_1_and_2 import DeepSpeedZeroOptimizer
+from deepspeed.accelerator import get_accelerator
+from megatron.core import parallel_state, tensor_parallel
+
 def setup_distributation(args) -> None:
     """Setup the distributed training environment.
     Support two kinds of distributed training:
@@ -122,6 +66,48 @@ def setup_distributation(args) -> None:
     os.environ["COLLIE_PP_RANK"] = "0"
     os.environ["COLLIE_TP_RANK"] = str(parallel_state.get_tensor_model_parallel_rank())
     os.environ["COLLIE_DP_RANK"] = str(parallel_state.get_data_parallel_rank())
+
+def set_seed(args):
+    """Set random seed for reproducibility.
+    """
+    tensor_parallel.model_parallel_cuda_manual_seed(args.seed)
+    set_random_seed(args.seed)
+
+def patch_deepspeed(args):
+    if hasattr(args, "ds_config") \
+        and "zero_optimization" in args.ds_config.keys() \
+            and "offload_optimizer" in args.ds_config["zero_optimization"].keys() \
+                and "pin_memory" in args.ds_config["zero_optimization"]["offload_optimizer"].keys() \
+                    and not args.ds_config["zero_optimization"]["offload_optimizer"]["pin_memory"]:
+        get_accelerator().pin_memory = lambda x: x
+    if hasattr(args, "ds_config") \
+        and "zero_optimization" in args.ds_config.keys() \
+            and "offload_param" in args.ds_config["zero_optimization"].keys() \
+                and "pin_memory" in args.ds_config["zero_optimization"]["offload_param"].keys() \
+                    and not args.ds_config["zero_optimization"]["offload_param"]["pin_memory"]:
+        get_accelerator().pin_memory = lambda x: x
+    raw_init = copy.deepcopy(DeepSpeedZeroOptimizer.__init__)
+    def safe_init(self, *args, **kwargs):
+        while True:
+            try:
+                raw_init(self, *args, **kwargs)
+                break
+            except RuntimeError as e:
+                continue
+    DeepSpeedZeroOptimizer.__init__ = safe_init
+    raw_initialize_optimizer_states = copy.deepcopy(DeepSpeedZeroOptimizer.initialize_optimizer_states)
+    def safe_initialize_optimizer_states(self, *args, **kwargs):
+            while True:
+                try:
+                    raw_initialize_optimizer_states(self, *args, **kwargs)
+                    break
+                except RuntimeError as e:
+                    continue
+    DeepSpeedZeroOptimizer.initialize_optimizer_states = safe_initialize_optimizer_states
+    
+def patch_megatron():
+    parallel_state.get_model_parallel_world_size = lambda: parallel_state.get_tensor_model_parallel_world_size()
+    parallel_state.get_model_parallel_rank = lambda: parallel_state.get_tensor_model_parallel_rank()
 
 def is_pipeline():
     return "COLLIE_PP_PARTS" in os.environ.keys()
