@@ -1,6 +1,7 @@
 from typing import Optional
 
 from rich.progress import Progress, TimeRemainingColumn, BarColumn, TimeElapsedColumn, TextColumn, ProgressColumn, Text
+from .rich_progress import f_rich_progress
 
 def find_tensors():
     """
@@ -33,36 +34,33 @@ class progress:
 
     def __init__(self, sequence, desc="Workin on...", total=None,
                  upgrade_period=0.1, disable=False, post_desc: str = ""):
-        columns = [TextColumn("[progress.description]{task.description}")] if desc else []
-        columns.extend(["[progress.percentage]{task.percentage:>3.0f}%"])
-        columns.extend([
-            BarColumn(),
-            SpeedColumn(),
-            TimeElapsedColumn(),
-            "/",
-            TimeRemainingColumn(),
-            TextColumn("{task.fields[post_desc]}",justify="right")
-        ])
-        self.bar = Progress(*columns, disable=disable)
+        self.bar = f_rich_progress
+        self.bar.set_disable(disable)
         self.task_id = self.bar.add_task(
-            desc, total=total, upgrade_period=upgrade_period,
-            post_desc=post_desc
+            desc, upgrade_period=upgrade_period, post_desc=post_desc
         )
         self.sequence = sequence
+        self.total = total
 
     def __iter__(self):
-        with self.bar:
-            yield from self.bar.track(self.sequence, task_id=self.task_id)
+        yield from self.bar.track(
+            self.sequence, task_id=self.task_id, total=self.total)
 
     def __enter__(self):
-        self.bar.start()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        self.bar.stop()
+        ...
+
+    def __del__(self):
+        self.bar.destroy_task(self.task_id)
 
     def set_post_desc(self, post_desc: str):
         self.bar.update(self.task_id, post_desc=post_desc, advance=0)
+
+    def set_postfix(self, **kwargs):
+        post_desc = ", ".join([f"{k}: {v}" for k, v in kwargs.items()])
+        self.set_post_desc(post_desc)
 
     def update(
         self, desc: Optional[str] = None, total: Optional[float] = None,

@@ -1,7 +1,5 @@
 import os
 import gc
-import sys
-import tqdm
 import json
 
 import torch
@@ -31,6 +29,7 @@ from collie.trainer.arguments import load_config
 from collie.driver.io.petrel import PetrelIODriver
 from collie.models.llama.arguments import LlamaArguments
 from collie.module import ColumnParallelLinearWithoutBias, RowParallelLinearWithoutBias
+from collie.utils import progress
 
 from typing import Union
 from collections import OrderedDict
@@ -333,7 +332,7 @@ class LlamaModel(BaseModel):
                     else:
                         # 如果没有 pytorch_model.bin.index.json 文件的话，那么就加载所有的权重
                         weights = [weight for weight in IODriver.list(path) if weight.endswith(".bin")]
-                    with tqdm.tqdm(weights, desc="Loading state dict", total=len(weights), disable=hide_progress) as pbar:
+                    with progress(weights, desc="Loading state dict", total=len(weights), disable=hide_progress) as pbar:
                         for weight in pbar:
                             part_state_dict = IODriver.load(os.path.join(path, weight), mode="rb")
                             for key in list(part_state_dict.keys()):
@@ -368,7 +367,7 @@ class LlamaModel(BaseModel):
                     weights = [weight for weight in IODriver.list(path) if weight.endswith(".pt") or weight.endswith(".pth")]
                     # 因为 meta 的权重默认 按照张量并行分割，cat 的时候存在顺序问题，所以先排序一下
                     weights = sorted(weights, key=lambda x: int(x.split(".")[1]))
-                    with tqdm.tqdm(weights, desc="Loading state dict", total=len(weights), disable=hide_progress) as pbar:
+                    with progress(weights, desc="Loading state dict", total=len(weights), disable=hide_progress) as pbar:
                         for weight in pbar:
                             part_state_dict = IODriver.load(os.path.join(path, weight), mode="rb")
                             for key in list(part_state_dict.keys()):
