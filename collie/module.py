@@ -71,7 +71,8 @@ class PipelineModel(PipelineModule):
         os.environ["COLLIE_PP_PARTS"] = json.dumps(self.parts)
         os.environ["COLLIE_PP_RANK"] = str(self.stage_id)
         os.environ["COLLIE_DP_RANK"] = str(self._grid.data_parallel_id)
-        
+
+
 class CollieCasualLM(nn.Module, GenerationMixin):
     def __init__(self, engine: DeepSpeedEngine, config: GenerationConfig = GenerationConfig()) -> None:
         super().__init__()
