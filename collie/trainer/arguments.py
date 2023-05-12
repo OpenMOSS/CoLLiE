@@ -150,9 +150,8 @@ class Arguments:
         width = os.get_terminal_size().columns // 2 * 2
         title = self.__class__.__name__
         single_side = (width - len(title) - 2) // 2
-        r = f"\n{'-' * single_side} {title} {'-' * single_side}\n"
+        r = f"{title}:\n"
         r += _repr_dict(self.__dict__, 0)
-        r += f"\n{'-' * width}\n"
 
         return r
 

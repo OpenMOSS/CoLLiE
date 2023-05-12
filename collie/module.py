@@ -1,5 +1,6 @@
 from megatron.core.tensor_parallel import (ColumnParallelLinear,
-                                           RowParallelLinear)
+                                           RowParallelLinear,
+                                           VocabParallelEmbedding)
 from deepspeed.runtime.pipe.module import PipelineModule
 from deepspeed.runtime.pipe.topology import ProcessTopology, PipeModelDataParallelTopology
 from deepspeed.runtime.engine import DeepSpeedEngine
@@ -98,6 +99,7 @@ class CollieCasualLM(nn.Module, GenerationMixin):
             else:
                 if self.communicate_buffer_shape != batch[0].shape:
                     self.engine.reset_activation_shape()
+                    self.engine.total_loss = None
                     self.communicate_buffer_shape = batch[0].shape
             _, logits = self.engine.eval_batch(
                 data_iter=iter([batch]),
@@ -105,9 +107,9 @@ class CollieCasualLM(nn.Module, GenerationMixin):
                 compute_loss=False,
                 reduce_output=None
             )
-            logits = logits.detach().clone()
             src_rank = self.engine.grid.stage_to_global(self.engine.num_stages - 1)
             if logits is not None:
+                logits = logits.detach().clone()
                 ndim = torch.tensor([logits.ndim]).int().cuda()
             else:
                 ndim = torch.tensor([3]).int().cuda()

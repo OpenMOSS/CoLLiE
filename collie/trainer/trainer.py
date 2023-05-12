@@ -1,13 +1,11 @@
 from collie.trainer.arguments import Arguments, load_config
-from collie.module import CollieCasualLM
-from collie.module import GPTLMLoss
+from collie.module import CollieCasualLM, GPTLMLoss
 from collie.log.print import print
 from collie.log import logger
 
 import tqdm
 import torch
 import deepspeed
-from dataclasses import asdict
 import torch.distributed as dist
 from megatron.core import parallel_state
 from deepspeed.runtime.constants import ROUTE_EVAL
@@ -59,7 +57,7 @@ class Trainer:
             self.args.ds_config["train_micro_batch_size_per_gpu"] = self.args.train_micro_batch_size
         if "gradient_accumulation_steps" not in self.args.ds_config.keys():
             self.args.ds_config["gradient_accumulation_steps"] = self.args.gradient_accumulation_steps
-        print("Collie config", asdict(self.args))
+        print(self.args)
         
     def setup_parallel_model(self):
         """Setup parallel model.
@@ -76,7 +74,6 @@ class Trainer:
             model_parameters=[p for p in self.model.parameters() if p.requires_grad],
             optimizer=self.optimizer,
             training_data=self.train_dataset,
-            collate_fn=self.train_dataset_collate_fn,
             mpu=parallel_state if self.args.pp_size == 1 else None,
             config=self.args.ds_config
         )
@@ -145,7 +142,7 @@ class Trainer:
             loss = trainer.engine.train_batch(data_iter=iter([batch]))
         else:
             input_ids, labels = batch
-            logits = trainer.engine(input_ids.cuda())
+            logits = trainer.engine(input_ids)
             loss = trainer.loss_fn(logits, labels)
             trainer.engine.backward(loss)
             trainer.engine.step()
