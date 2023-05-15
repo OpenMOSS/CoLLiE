@@ -85,8 +85,13 @@ class InplaceSGD:
 
     def backward_step(self, loss, lr):
         self.lr = lr
-        if self.clip_grad_norm is not None and self.clip_grad_norm > 0:
-            self.grad_norm(loss)  # TODO: hack ds for double backward
+        # User need call grad_norm themselves and then call backward_step
+        # if self.clip_grad_norm is not None and self.clip_grad_norm > 0:
+        #     self.grad_norm(loss)  # TODO: hack ds for double backward
+        if self.clip_grad_norm is not None and self.clip_grad_norm > 0 and self.clip_coef is None:
+            raise ValueError(
+                "clip_grad_norm is not None, but clip_coef is None. Please call grad_norm before backward_step."
+            )
         loss.backward()
         # update the last one since the hook function will not be called for the last parameter
         self.grad_func(0)
