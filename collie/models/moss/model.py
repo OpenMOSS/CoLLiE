@@ -427,8 +427,7 @@ class MossModel(BaseModel):
                                  path: str, 
                                  args: MossArguments,
                                  process_exclusion: bool = False,
-                                 protocol: str = 'file', 
-                                 format: str = 'hf'):
+                                 protocol: str = 'file'):
         """
         Save state_dict to ``path``.
         """
@@ -441,7 +440,6 @@ class MossModel(BaseModel):
         tp_group = parallel_state.get_tensor_model_parallel_group()
         tp_rank = get_tp_rank()
         pp_rank = get_pp_rank()
-        assert format in ["hf", "meta"], f"Only support hf and meta , not `{format}`."
         assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
         IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
         # gather to tp rank 0

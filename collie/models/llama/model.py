@@ -11,6 +11,7 @@ from deepspeed.runtime.activation_checkpointing.checkpointing import checkpoint
 from deepspeed.pipe import LayerSpec, TiedLayerSpec
 
 from megatron.core import tensor_parallel
+from megatron.core import parallel_state
 
 from apex.normalization.fused_layer_norm import FusedRMSNorm
 
@@ -29,10 +30,11 @@ from collie.trainer.arguments import load_config
 from collie.driver.io.petrel import PetrelIODriver
 from collie.models.llama.arguments import LlamaArguments
 from collie.module import ColumnParallelLinearWithoutBias, RowParallelLinearWithoutBias
-from collie.utils import progress
+from collie.utils import progress, get_pp_rank, get_tp_rank, get_dp_rank, is_pipeline
 
 from typing import Union
 from collections import OrderedDict
+from transformers.modeling_utils import dtype_byte_size
 
 class RotaryPositionEmbedding(nn.Module):
     def __init__(self, head_dim: int) -> None:
@@ -294,7 +296,7 @@ class LlamaModel(BaseModel):
             # 如果开启了进程互斥，那么只有对应 RANK 的能进入循环；不开启进程互斥的话就都可以进
             if int(os.environ.get("RANK", "0")) == rank or not process_exclusion:
                 # PP 分层的方法保存在了 os.environ["COLLIE_PP_PARTS"], 格式类似于 [0, 17, 35], 左闭右开
-                if "COLLIE_PP_PARTS" in os.environ.keys():
+                if is_pipeline():
                     # 保存的是 json 格式
                     parts = json.loads(os.environ["COLLIE_PP_PARTS"])
                 if format == "hf":
@@ -462,9 +464,7 @@ class LlamaModel(BaseModel):
                 # 如果选择了进程互斥，那么本次循环中不需要加载权重的进程需等待
                 dist.barrier()
         return state_dict
-            
                 
-    
     @staticmethod
     def save_parallel_state_dict(state_dict: dict, path: str,
                                  args: LlamaArguments,
@@ -474,15 +474,118 @@ class LlamaModel(BaseModel):
                                  path: str, 
                                  args: LlamaArguments,
                                  process_exclusion: bool = False,
-                                 protocol: str = 'file', 
-                                 format: str = 'hf'):
+                                 protocol: str = 'file'):
         """
         Save state_dict to ``path``.
 
         The format of saved state dict should be the same as that of
         `huggingface`.
         """
-        raise NotImplementedError(
-            "Every model should implement `save_parallel_state_dict` "
-            "to properly save a state dict for the cuurent rank."
-        )
+        tp_group = parallel_state.get_tensor_model_parallel_group()
+        tp_rank = get_tp_rank()
+        pp_rank = get_pp_rank()
+        dp_rank = get_dp_rank()
+        assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
+        IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
+        def reshape_wq_wk(w: torch.Tensor):
+            return w.view(args.num_attention_heads, 
+                          args.hidden_size // args.num_attention_heads // 2, 
+                          2, 
+                          args.hidden_size).transpose(1, 2).reshape(args.hidden_size, 
+                                                                    args.hidden_size)
+        # gather to tp rank 0
+        if is_pipeline():
+            parts = json.loads(os.environ["COLLIE_PP_PARTS"])
+            layers = list(range(parts[pp_rank], parts[pp_rank + 1]))
+            for key in list(state_dict.keys()):
+                if key == "tied_modules.embed_tokens.weight":
+                    if 0 in layers:
+                        state_dict["model.embed_tokens.weight"] = state_dict.pop(key)
+                    elif max(layers) - 1 in layers:
+                        state_dict["lm_head.weight"] = state_dict.pop(key)
+                else:
+                    layer = int(key.split(".")[0])
+                    if layer == max(parts) - 2:
+                        state_dict[key.replace(f"{layer}.", "model.norm.")] = state_dict.pop(key)
+                    else:
+                        state_dict[key.replace(f"{layer}.", f"model.layers.{layer - 1}.")] = state_dict.pop(key)
+        if dist.is_initialized() and process_exclusion:
+            # 如果启动了进程互斥，则要进行 pp_size 次循环
+            rank_order = range(args.pp_size)
+        else:
+            # 不开启只进行一次循环
+            rank_order = range(1)
+        dst = parallel_state.get_tensor_model_parallel_src_rank()
+        with progress(rank_order, desc="Saving model", disable=int(os.environ.get("RANK", "0")) != 0) as pbar:
+            for rank in pbar:
+                if dp_rank == 0 \
+                    and (pp_rank == rank 
+                         or not process_exclusion):
+                    for key in sorted(list(state_dict.keys())):
+                        device = state_dict[key].device
+                        tensor_list = None
+                        if tp_rank == 0:
+                            tensor_list = [torch.zeros_like(state_dict[key]).to(state_dict[key].dtype).cuda() for _ in range(args.tp_size)]
+                        dist.gather(state_dict[key].cuda(), dst=dst, gather_list=tensor_list, group=tp_group)
+                        if tp_rank == 0:
+                            if key.endswith("q_proj.weight") \
+                                or key.endswith("k_proj.weight") \
+                                    or key.endswith("v_proj.weight") \
+                                        or key.endswith("gate_proj.weight") \
+                                            or key.endswith("up_proj.weight") \
+                                                or key.endswith("embed_tokens.weight") \
+                                                    or key.endswith("lm_head.weight"):
+                                                        state_dict[key] = torch.cat(tensor_list, dim=0).detach().clone().to(device)
+                                                        if key.endswith("q_proj.weight")  or key.endswith("k_proj.weight"):
+                                                            state_dict[key] = reshape_wq_wk(state_dict[key])
+                                                        del tensor_list
+                                                        if process_exclusion:
+                                                            # CPU 内存回收（速度很慢）
+                                                            gc.collect()
+                            elif key.endswith("o_proj.weight") \
+                                or key.endswith("down_proj.weight"):
+                                    state_dict[key] = torch.cat(tensor_list, dim=1).detach().clone().to(device)
+                                    del tensor_list
+                                    if process_exclusion:
+                                        # CPU 内存回收（速度很慢）
+                                        gc.collect()
+                    if tp_rank == 0:
+                        # Save gathered weights
+                        if is_pipeline():
+                            ckpt_name = f"pytorch_model-{pp_rank+1:05d}-of-{args.pp_size:05d}.bin"
+                            total_size = 0
+                            weight_map = {}
+                            for name, weight in state_dict.items():
+                                weight_size = weight.numel() * dtype_byte_size(weight.dtype)
+                                weight_map[name] = ckpt_name
+                                total_size += weight_size
+                            index_dict = dict(total_size=total_size, weight_map=weight_map)
+                            tmp_index_file = os.path.join(path, "_tmp_index_{}.json")
+                            IODriver.save(
+                                json.dumps(index_dict), tmp_index_file.format(pp_rank)
+                            )
+                        else:
+                            ckpt_name = f"pytorch_model.bin"
+                        ckpt_path = os.path.join(path, ckpt_name)
+                        IODriver.save(state_dict, ckpt_path)
+                if dist.is_initialized() and process_exclusion:
+                    dist.barrier()
+        if dist.get_rank() == 0 and is_pipeline():
+            # merge
+            tmp_index_files = [tmp_index_file.format(i) for i in range(args.pp_size)]
+            total_size = 0
+            weight_map = {}
+            for _file in tmp_index_files:
+                _index_dict = json.loads(IODriver.load(_file, mode="r"))
+                total_size += _index_dict["total_size"]
+                weight_map.update(_index_dict["weight_map"])
+                os.remove(_file)
+            merged_dict = {
+                "metadata": {"total_size": total_size},
+                "weight_map": weight_map
+            }
+            IODriver.save(
+                json.dumps(merged_dict, indent=2, sort_keys=True) + "\n",
+                os.path.join(path, "pytorch_model.bin.index.json")
+            )
+        dist.barrier()
