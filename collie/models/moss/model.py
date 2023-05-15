@@ -147,7 +147,6 @@ class MossAttention(nn.Module):
         key = self._split_heads(key, self.num_attention_heads, self.head_dim, mp_num=mp_num)
 
         value = self._split_heads(value, self.num_attention_heads, self.head_dim, mp_num=mp_num)
-        value = value.permute(0, 2, 1, 3)
 
         embed_positions = self.embed_positions
         if embed_positions.device != position_ids.device:
@@ -173,19 +172,20 @@ class MossAttention(nn.Module):
             key = apply_rotary_pos_emb(key, sin, cos)
             query = apply_rotary_pos_emb(query, sin, cos)
 
-        key = key.permute(0, 2, 1, 3)
-        query = query.permute(0, 2, 1, 3)
-
         if layer_past is not None:
             past_key = layer_past[0]
             past_value = layer_past[1]
-            key = torch.cat((past_key, key), dim=-2)
-            value = torch.cat((past_value, value), dim=-2)
+            key = torch.cat((past_key, key), dim=1)
+            value = torch.cat((past_value, value), dim=1)
 
         if use_cache is True:
             present = (key, value)
         else:
             present = None
+
+        key = key.permute(0, 2, 1, 3)
+        query = query.permute(0, 2, 1, 3)
+        value = value.permute(0, 2, 1, 3)
 
         # compute self-attention: V x Softmax(QK^T)
         attn_output, attn_weights = self._attn(query, key, value, attention_mask, head_mask)
@@ -230,7 +230,7 @@ class MossBlock(nn.Module):
         self.args = args
         self.idx = layer_idx
 
-        self.layer_past = None
+        self.past_key_values = None
 
     def _forward(
         self,
@@ -266,10 +266,10 @@ class MossBlock(nn.Module):
 
     def forward(self, hidden_states):
 
-        if self.layer_past is None or self.training:
+        if self.past_key_values is None or self.training:
             past_length = 0
         else:
-            past_length = self.layer_past[0].size(-2)
+            past_length = self.past_key_values[0].size(-2)
 
         end_pos = hidden_states.shape[1]
         position_ids = torch.arange(
@@ -296,14 +296,14 @@ class MossBlock(nn.Module):
             outputs = self._forward(
                 hidden_states,
                 position_ids=position_ids,
-                layer_past=self.layer_past,
+                layer_past=self.past_key_values,
                 attention_mask=None,
                 head_mask=None,
                 use_cache=not self.training,
             )
 
         if not self.training:
-            self.layer_past = outputs[1]
+            self.past_key_values = outputs[1]
 
         # hidden_states 
         return outputs[0]

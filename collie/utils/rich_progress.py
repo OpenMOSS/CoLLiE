@@ -259,8 +259,7 @@ class SpeedColumn(ProgressColumn):
             return Text(str(round(1/speed, 2))+' s/it.', style='progress.data.speed')
 
 
-if (sys.stdin and sys.stdin.isatty()) and \
-        int(os.getenv("RANK", "0")) == 0:
+if (sys.stdin and sys.stdin.isatty()):
     # TODO 是不是应该可以手动关掉，防止一些 debug 问题
     f_rich_progress = FRichProgress().new_progess(
         "[progress.description]{task.description}",

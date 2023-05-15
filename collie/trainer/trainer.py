@@ -1,5 +1,5 @@
 from collie.trainer.arguments import Arguments, load_config
-from collie.module import CollieCasualLM, GPTLMLoss
+from collie.module import CollieCausalLM, GPTLMLoss
 from collie.log.print import print
 from collie.log import logger
 from collie.utils import progress
@@ -176,7 +176,7 @@ class Trainer:
                 batch: Tuple, 
                 train_meta: Dict = {"epoch_idx": 0, "batch_idx": 0, "last_loss": 0.0}) -> Any:
         input_ids, labels = batch
-        generation_model = CollieCasualLM(
+        generation_model = CollieCausalLM(
             engine=trainer.engine,
             config=trainer.eval_config
         )
