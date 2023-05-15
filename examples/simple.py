@@ -11,7 +11,7 @@ from collie.module import CollieCasualLM
 from torch.utils.data import Dataset
 import torch
 args = LlamaArguments(
-    use_flash=True,checkpointing=False,seed=42,pp_size=2,tp_size=1,dp_size=1,dropout=0,
+    use_flash=True,checkpointing=False,seed=42,pp_size=2,tp_size=2,dp_size=2,dropout=0,
     ds_config={
         "train_micro_batch_size_per_gpu": 1,
         "train_batch_size": 1,
@@ -33,6 +33,7 @@ class DummyDataset(Dataset):
     def __getitem__(self, idx):
         return "It's well known that Collie is a framework for "
     
+torch.set_default_tensor_type(torch.HalfTensor)
 dataset = DummyDataset()
 model = LlamaModel(args)
 optimizer = torch.optim.SGD(model.parameters(), lr=1e-6)
@@ -43,9 +44,14 @@ state_dict = LlamaModel.load_parallel_state_dict(
     format="hf",
     process_exclusion=False,
     args=args)
-model.load_state_dict(state_dict)
-trainer = Trainer(model, train_dataset=dataset, optimizer=optimizer, args=args)
-generation_model = CollieCasualLM(trainer.engine)
+LlamaModel.save_parallel_state_dict(
+    state_dict,
+    path="/mnt/lustre/zhangshuo/model/test",
+    args=args
+)
+# model.load_state_dict(state_dict)
+# trainer = Trainer(model, train_dataset=dataset, optimizer=optimizer, args=args)
+# generation_model = CollieCasualLM(trainer.engine)
 # trainer.engine.module.eval()
-generation_model.generate(input_ids=torch.Tensor([[1, 6324, 29892, 278, 17251, 338, 2675, 304]]).long().cuda())
+# generation_model.generate(input_ids=torch.Tensor([[1, 6324, 29892, 278, 17251, 338, 2675, 304]]).long().cuda())
 # trainer.train()

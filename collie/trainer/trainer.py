@@ -1,5 +1,7 @@
 from collie.trainer.arguments import Arguments, load_config
 from collie.module import CollieCausalLM, GPTLMLoss
+from collie.driver.io.file import FileIODriver
+from collie.driver.io.petrel import PetrelIODriver
 from collie.log.print import print
 from collie.log import logger
 from collie.utils import progress
@@ -48,6 +50,7 @@ class Trainer:
         self.set_ds_config()
         self.setup_parallel_model()
         self.init_metrics()
+        get_accelerator().empty_cache()
         
     def set_ds_config(self):
         if isinstance(self.args, str):
@@ -186,3 +189,11 @@ class Trainer:
             "labels": labels,
             "train_meta": train_meta
         }
+        
+    def save_checkpoint(self, path: str, protocol: str="file"):
+        assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
+        IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
+        
+    def load_checkpoint(self, path: str, protocol: str="file"):
+        assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
+        IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
