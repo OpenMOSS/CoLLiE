@@ -6,6 +6,7 @@ from collie.log.print import print
 from collie.log import logger
 from collie.utils import progress
 
+import os
 import torch
 import deepspeed
 import torch.distributed as dist
@@ -21,6 +22,7 @@ from typing import Optional, Callable, Union, Tuple, Iterable, Any, Dict, Sequen
 class Trainer:
     def __init__(self, 
                  model: torch.nn.Module,
+                 args: Union[Arguments, str],
                  loss_fn: Callable = GPTLMLoss(),
                  train_fn: Optional[Callable] = None,
                  eval_fn: Optional[Callable] = None,
@@ -30,8 +32,7 @@ class Trainer:
                  train_dataset_collate_fn: Optional[Callable] = None,
                  eval_dataset_collate_fn: Optional[Callable] = None,
                  eval_config: GenerationConfig = GenerationConfig(),
-                 metrics: Sequence = [],
-                 args: Union[Arguments, str] = Arguments()) -> None:
+                 metrics: Sequence = []) -> None:
         self.model = model
         self.optimizer = optimizer
         self.train_dataset = train_dataset
@@ -120,6 +121,7 @@ class Trainer:
     def train(self, dataloader: Optional[Iterable] = None):
         self.engine.train()
         train_dataloader = self.train_dataloader
+        loss = 0.0
         if dataloader is not None:
             train_dataloader = dataloader
         with progress(range(self.args.train_epochs), desc="Training Epoch: ", disable=dist.get_rank() != 0) as tqbar_epoch:
@@ -137,13 +139,16 @@ class Trainer:
                         tqbar_batch.set_postfix(
                             loss=round(loss, 2), 
                             batch=f"{batch_idx + 1}/{len(self.train_dataloader)}")
+                        if self.args.eval_per_n_steps > 0 and (batch_idx + 1) % self.args.eval_per_n_steps == 0:
+                            self.eval(train_meta={"epoch_idx": epoch_idx, "batch_idx": batch_idx, "last_loss": loss})
                 tqbar_epoch.set_postfix(epoch=f"{epoch_idx + 1}/{self.args.train_epochs}")
+                if self.args.eval_per_n_epochs > 0 and (epoch_idx + 1) % self.args.eval_per_n_epochs == 0:
+                            self.eval(train_meta={"epoch_idx": epoch_idx, "batch_idx": 0, "last_loss": loss})
                 
     def eval(self, 
              dataloader: Optional[Iterable] = None, 
              train_meta: Dict = {"epoch_idx": 0, "batch_idx": 0, "last_loss": 0.0}):
         self.engine.eval()
-        # reset buffer size after training.
         eval_dataloader = self.eval_dataloader
         if dataloader is not None:
             eval_dataloader = dataloader
@@ -152,8 +157,14 @@ class Trainer:
             for batch_idx, batch in enumerate(tqbar_batch):
                 if isinstance(self.engine, PipelineEngine):
                     self.engine.reset_activation_shape()
+                    if self.engine.total_loss is not None:
+                        total_loss = self.engine.total_loss.detach().clone()
+                    else:
+                        total_loss = None
                     self.engine.total_loss = None
                 result = self.eval_fn(self, batch, train_meta)
+                if isinstance(self.engine, PipelineEngine):
+                    self.engine.total_loss = total_loss
                 for metric in self.metrics:
                     if metric.gather_result:
                         result = metric.gather(result)
@@ -161,6 +172,8 @@ class Trainer:
                         metric.update(result)
                 tqbar_batch.set_postfix(
                     batch=f"{batch_idx + 1}/{num_eval_batches}")
+        if isinstance(self.engine, PipelineEngine):
+            self.engine.reset_activation_shape()
                 
     @staticmethod
     def train_fn(trainer, batch: Tuple) -> float:
@@ -168,7 +181,7 @@ class Trainer:
             loss = trainer.engine.train_batch(data_iter=iter([batch]))
         else:
             input_ids, labels = batch
-            logits = trainer.engine(input_ids)
+            logits = trainer.engine(input_ids.cuda())
             loss = trainer.loss_fn(logits, labels)
             trainer.engine.backward(loss)
             trainer.engine.step()
@@ -183,17 +196,9 @@ class Trainer:
             engine=trainer.engine,
             config=trainer.eval_config
         )
-        input_ids = generation_model.generate(input_ids=input_ids.cuda())
+        input_ids = generation_model.generate(input_ids=input_ids.cuda(), attention_mask=torch.ones_like(input_ids).cuda())
         return {
             "input_ids": input_ids,
             "labels": labels,
             "train_meta": train_meta
         }
-        
-    def save_checkpoint(self, path: str, protocol: str="file"):
-        assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
-        IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
-        
-    def load_checkpoint(self, path: str, protocol: str="file"):
-        assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
-        IODriver = FileIODriver if protocol == 'file' else PetrelIODriver

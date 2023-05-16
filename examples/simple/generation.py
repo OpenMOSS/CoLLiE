@@ -62,4 +62,8 @@ trainer = Trainer(model=model,
                   train_dataset_collate_fn=collate_fn,
                   args=args)
 torch.cuda.empty_cache()
+import os
+if os.environ.get("RANK") == "0":
+    import pdb
+    pdb.set_trace()
 trainer.eval()
