@@ -106,7 +106,7 @@ class Arguments:
         else:
             suffix = kwargs.pop("suffix", "json")
             if os.path.isdir(name_or_path):
-                path = os.path.join(path, f"config.{suffix}")
+                path = os.path.join(name_or_path, f"config.{suffix}")
             json_config = load_config(path)
         arg_cls = cls._get_cls(json_config)
         argument = arg_cls()
@@ -144,6 +144,7 @@ class Arguments:
                 f"match the current model's type `{cls.model_type}`, which "
                 f"may cause some unexpected behaviours."
             )
+            model_type = cls.model_type
         if cls.model_type != "":
             return cls
 
@@ -163,13 +164,9 @@ class Arguments:
         assert isinstance(self.ds_config, dict), self.ds_config
 
     def __str__(self) -> str:        
-
-        width = os.get_terminal_size().columns // 2 * 2
         title = self.__class__.__name__
-        single_side = (width - len(title) - 2) // 2
         r = f"{title}:\n"
         r += _repr_dict(self.__dict__, 0)
-
         return r
 
     

@@ -207,6 +207,7 @@ class Trainer:
             config=trainer.eval_config
         )
         input_ids = generation_model.generate(input_ids=input_ids.cuda(), attention_mask=torch.ones_like(input_ids).cuda())
+        generation_model._clean_past_key_values()
         return {
             "input_ids": input_ids,
             "labels": labels,

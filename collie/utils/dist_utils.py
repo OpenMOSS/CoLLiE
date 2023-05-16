@@ -28,39 +28,43 @@ def setup_distributation(args) -> None:
         # launch from pytorch
         master_addr = os.environ.get("MASTER_ADDR", "localhost")
         master_port = os.environ.get("MASTER_PORT", "27001")
-    elif "SLURM_JOB_NODELIST" in os.environ.keys():
+    elif "SLURM_PROCID" in os.environ.keys():
         # launch from slurm
-        node_list_str = os.environ["SLURM_JOB_NODELIST"]
-        node_list = []
-        result = re.search(r"\[(.*?)\]", node_list_str)
-        if result is None:
-            node_list.append(node_list_str)
-        else:
-            node_list.extend([item for item in result.groups(1)[0].split(",")])
-            for i in node_list:
-                if "-" in i:
-                    node_list.extend(list(map(lambda x: f"{x}", range(int(i.split("-")[0]), int(i.split("-")[1]) + 1))))
-                    node_list.remove(i)
-            node_list = list(map(lambda x: re.sub(r"\[(.*?)\]", x, node_list_str), node_list))
-            node_list = sorted(node_list)
-            master_addr = node_list[0]
-            result = subprocess.run(["scontrol", "show", "node", master_addr], capture_output=True)
-            result = re.search(r"NodeAddr=(.*?)\s", result.stdout.decode())
-            if result:
-                master_addr = result.groups(1)[0]
-            if "MASTER_PORT" in os.environ.keys():
-                master_port = os.environ["MASTER_PORT"]
+        if "SLURM_JOB_NODELIST" not in os.environ.keys():
+            node_list_str = os.environ["SLURM_JOB_NODELIST"]
+            node_list = []
+            result = re.search(r"\[(.*?)\]", node_list_str)
+            if result is None:
+                node_list.append(node_list_str)
             else:
-                master_port = 27002
-            os.environ["LOCAL_RANK"] = os.environ["SLURM_LOCALID"]
-            os.environ["RANK"] = os.environ["SLURM_PROCID"]
-            os.environ["WORLD_SIZE"] = os.environ["SLURM_NTASKS"]
+                node_list.extend([item for item in result.groups(1)[0].split(",")])
+                for i in node_list:
+                    if "-" in i:
+                        node_list.extend(list(map(lambda x: f"{x}", range(int(i.split("-")[0]), int(i.split("-")[1]) + 1))))
+                        node_list.remove(i)
+                node_list = list(map(lambda x: re.sub(r"\[(.*?)\]", x, node_list_str), node_list))
+                node_list = sorted(node_list)
+                master_addr = node_list[0]
+                result = subprocess.run(["scontrol", "show", "node", master_addr], capture_output=True)
+                result = re.search(r"NodeAddr=(.*?)\s", result.stdout.decode())
+                if result:
+                    master_addr = result.groups(1)[0]
+        else:
+            master_addr = "localhost"
+        if "MASTER_PORT" in os.environ.keys():
+            master_port = os.environ["MASTER_PORT"]
+        else:
+            master_port = 27002
+        os.environ["LOCAL_RANK"] = os.environ["SLURM_LOCALID"]
+        os.environ["RANK"] = os.environ["SLURM_PROCID"]
+        os.environ["WORLD_SIZE"] = os.environ["SLURM_NTASKS"]
     deepspeed.init_distributed(dist_backend='nccl', 
-                                init_method="tcp://{}:{}".format(
-                                    master_addr, 
-                                    master_port),
-                                world_size=int(os.environ["WORLD_SIZE"]),
-                                rank=int(os.environ["RANK"]))
+                               auto_mpi_discovery=False,
+                               init_method="tcp://{}:{}".format(
+                                   master_addr, 
+                                   master_port),
+                               world_size=int(os.environ["WORLD_SIZE"]),
+                               rank=int(os.environ["RANK"]))
     parallel_state.initialize_model_parallel(
         tensor_model_parallel_size=args.tp_size,
         pipeline_model_parallel_size=args.pp_size
