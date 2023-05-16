@@ -1,5 +1,5 @@
 from collie.trainer.arguments import Arguments, load_config
-from collie.module import CollieCasualLM, GPTLMLoss
+from collie.module import CollieCausalLM, GPTLMLoss
 from collie.driver.io.file import FileIODriver
 from collie.driver.io.petrel import PetrelIODriver
 from collie.log.print import print
@@ -192,7 +192,7 @@ class Trainer:
                 batch: Tuple, 
                 train_meta: Dict = {"epoch_idx": 0, "batch_idx": 0, "last_loss": 0.0}) -> Any:
         input_ids, labels = batch
-        generation_model = CollieCasualLM(
+        generation_model = CollieCausalLM(
             engine=trainer.engine,
             config=trainer.eval_config
         )
@@ -201,4 +201,16 @@ class Trainer:
             "input_ids": input_ids,
             "labels": labels,
             "train_meta": train_meta
+<<<<<<< HEAD
         }
+=======
+        }
+        
+    def save_checkpoint(self, path: str, protocol: str="file"):
+        assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
+        IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
+        
+    def load_checkpoint(self, path: str, protocol: str="file"):
+        assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
+        IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
+>>>>>>> dc9c5867f762966a0f49c1fbabf3ceaf9551c9f4

@@ -19,3 +19,5 @@ class MossArguments(Arguments):
     resid_pdrop: float = 0.0
 
     model_type: str = "moss"
+
+    checkpointing: bool = True

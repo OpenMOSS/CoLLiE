@@ -73,7 +73,7 @@ class PipelineModel(PipelineModule):
         os.environ["COLLIE_DP_RANK"] = str(self._grid.data_parallel_id)
 
 
-class CollieCasualLM(nn.Module, GenerationMixin):
+class CollieCausalLM(nn.Module, GenerationMixin):
     def __init__(self, engine: DeepSpeedEngine, config: GenerationConfig = GenerationConfig()) -> None:
         super().__init__()
         self.config = PretrainedConfig(is_decoder=True)
