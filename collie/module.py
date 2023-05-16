@@ -1,33 +1,37 @@
-from megatron.core.tensor_parallel import (ColumnParallelLinear,
-                                           RowParallelLinear,
-                                           VocabParallelEmbedding)
-from deepspeed.runtime.pipe.module import PipelineModule
-from deepspeed.runtime.pipe.topology import ProcessTopology, PipeModelDataParallelTopology
-from deepspeed.runtime.engine import DeepSpeedEngine
-from deepspeed.runtime.pipe.engine import PipelineEngine
-from transformers.generation.utils import GenerationConfig, GenerateOutput, GenerationMixin
-from transformers.modeling_utils import PretrainedConfig, PreTrainedModel
-from transformers.modeling_outputs import CausalLMOutputWithPast
-
 import os
 import json
 import torch
-import random
+from typing import Optional, Sequence
+
 from torch import nn
-import torch.distributed as dist
-from typing import Callable, Union, Tuple, Optional, Sequence
+from torch import distributed as dist
+from megatron.core.tensor_parallel import (ColumnParallelLinear,
+                                           RowParallelLinear,
+                                           VocabParallelEmbedding)
+from megatron.core import parallel_state
+from deepspeed.runtime.pipe.module import PipelineModule
+from deepspeed.runtime.pipe.topology import (PipeModelDataParallelTopology,
+                                             PipelineParallelGrid,
+                                             _prime_factors)
+from deepspeed.runtime.engine import DeepSpeedEngine
+from deepspeed.runtime.pipe.engine import PipelineEngine
+from deepspeed.runtime.activation_checkpointing import checkpointing
+from deepspeed.accelerator import get_accelerator
+from transformers.generation.utils import GenerationConfig, GenerationMixin
+from transformers.modeling_utils import PretrainedConfig
+from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from collie.log import logger
-from collie.trainer.arguments import Arguments, load_config
+from collie.trainer.arguments import Arguments
 
 class ColumnParallelLinearWithoutBias(ColumnParallelLinear):
     def forward(self, input_):
         return super().forward(input_)[0]
-    
+
 class RowParallelLinearWithoutBias(RowParallelLinear):
     def forward(self, input_):
         return super().forward(input_)[0]
-    
+
 class GPTLMLoss(torch.nn.Module):
     def __init__(self, ignore_index=0):
         super().__init__()
@@ -38,36 +42,93 @@ class GPTLMLoss(torch.nn.Module):
         shift_labels = labels[..., 1:].contiguous().to(logits.device)
         # Flatten the tokens
         return self.loss(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
-    
+
+
 class PipelineModel(PipelineModule):
-    def __init__(self, *args, **kwargs):
-        for idx, param in enumerate(args):
-            if isinstance(param, ProcessTopology):
-                pp_size, dp_size, tp_size = param.dims
-                if int(os.environ.get('WORLD_SIZE')) != pp_size * dp_size * tp_size:
-                    logger.rank_zero_warning("The world size is not equal to the product of the parallel sizes set."
-                                     f"{int(os.environ.get('WORLD_SIZE'))} != {pp_size} * {dp_size} * {tp_size}.")
-                    dp_size = int(os.environ.get('WORLD_SIZE')) // (tp_size * pp_size)
-                    logger.rank_zero_warning("Set dp_size to {dp_size}.")
-                args[idx] = PipeModelDataParallelTopology(
-                    num_pp=pp_size, 
-                    num_dp=dp_size, 
-                    num_mp=tp_size)
-                break
-        for key in kwargs.keys():
-            if isinstance(kwargs[key], ProcessTopology):
-                pp_size, dp_size, tp_size = kwargs[key].dims
-                if int(os.environ.get('WORLD_SIZE')) != pp_size * dp_size * tp_size:
-                    logger.rank_zero_warning("The world size is not equal to the product of the parallel sizes set."
-                                     f"{int(os.environ.get('WORLD_SIZE'))} != {pp_size} * {dp_size} * {tp_size}.")
-                    dp_size = int(os.environ.get('WORLD_SIZE')) // (tp_size * pp_size)
-                    logger.rank_zero_warning("Set dp_size to {dp_size}.")
-                kwargs[key] = PipeModelDataParallelTopology(
-                    num_pp=pp_size, 
-                    num_dp=dp_size, 
-                    num_mp=tp_size)
-                break
-        super().__init__(*args, **kwargs)
+    def __init__(self,
+                 layers,
+                 topology,
+                 loss_fn=None,
+                 seed_layers=False,
+                 seed_fn=None,
+                 base_seed=1234,
+                 partition_method='parameters',
+                 activation_checkpoint_interval=0,
+                 activation_checkpoint_func=checkpointing.checkpoint,
+                 checkpointable_layers=None):
+        """
+        Rewrite PipelineModule to use megaton's process group
+        """
+        nn.Module.__init__(self)
+
+        if topology is None:
+            raise RuntimeError('must provide topology')
+
+        self.micro_offset = 0
+
+        self.loss_fn = loss_fn
+
+        self.checkpointable_layers = checkpointable_layers
+        if checkpointable_layers is not None:
+            assert isinstance(checkpointable_layers, list), "param `checkpointable_layers` must be type of list."
+
+        self.seed_layers = seed_layers
+        self.seed_fn = seed_fn
+        self.base_seed = base_seed
+        if dist.get_rank() == 0:
+            try:
+                seed_str = self.seed_fn.__name__
+            except AttributeError:
+                seed_str = None
+            print(f'SEED_LAYERS={self.seed_layers} BASE_SEED={self.base_seed} SEED_FN={seed_str}')
+
+        # Setup world info
+        self.world_group = dist.new_group(ranks=range(dist.get_world_size()))
+        self.global_rank = dist.get_rank(group=self.world_group)
+        self.world_size = dist.get_world_size(group=self.world_group)
+        self.local_rank = int(os.environ.get("LOCAL_RANK", None))
+        assert self.local_rank != None
+
+        pp_size, dp_size, tp_size = topology.dims
+        if int(os.environ.get('WORLD_SIZE')) != pp_size * dp_size * tp_size:
+            logger.rank_zero_warning("The world size is not equal to the product of the parallel sizes set."
+                                f"{int(os.environ.get('WORLD_SIZE'))} != {pp_size} * {dp_size} * {tp_size}.")
+            dp_size = int(os.environ.get('WORLD_SIZE')) // (tp_size * pp_size)
+            logger.rank_zero_warning("Set dp_size to {dp_size}.")
+        topology = PipeModelDataParallelTopology(
+            num_pp=pp_size, 
+            num_dp=dp_size, 
+            num_mp=tp_size)
+        self._topo = topology
+        self.num_stages = self._topo.get_dim('pipe')
+
+        # Construct communicators for pipeline topology
+        # Replace with our grid
+        self._grid = MultiParallelGrid(self._topo)
+
+        self.stage_id = self._topo.get_coord(self.global_rank).pipe
+
+        # Initialize partition information
+        self._layer_specs = list(layers)
+        self._num_layers = len(self._layer_specs)
+        self._local_start = 0
+        self._local_stop = None
+        self._partition_layers(method=partition_method)
+
+        self.forward_funcs = []
+        self.fwd_map = {}
+        self.tied_modules = nn.ModuleDict()
+        self.tied_weight_attrs = {}
+
+        self._build()
+        self.to(get_accelerator().device_name(self.local_rank))
+
+        self.tied_comms = self._index_tied_modules()
+        self._synchronize_tied_weights()
+
+        self.activation_checkpoint_interval = activation_checkpoint_interval
+        self.activation_checkpoint_func = activation_checkpoint_func
+
         os.environ["COLLIE_PP_PARTS"] = json.dumps(self.parts)
         os.environ["COLLIE_PP_RANK"] = str(self.stage_id)
         os.environ["COLLIE_DP_RANK"] = str(self._grid.data_parallel_id)
@@ -188,3 +249,47 @@ class CollieCausalLM(nn.Module, GenerationMixin):
         for layer in self.layers:
             if hasattr(layer, "past_key_values"):
                 object.__setattr__(layer, "past_key_values", next(past_key_values))
+
+
+class MultiParallelGrid(PipelineParallelGrid):
+    """
+    Rewrite to use process group from megatron.
+    """
+    def __init__(self, topology):
+        self.global_rank = dist.get_rank()
+        self.world_size = dist.get_world_size()
+        self._topo = topology
+
+        self.data_parallel_size = max(self._topo.get_dim('data'), 1)
+        self.pipe_parallel_size = max(self._topo.get_dim('pipe'), 1)
+        self.model_parallel_size = max(self._topo.get_dim('model'), 1)
+        self.slice_parallel_size = self.model_parallel_size
+        assert self._is_grid_valid(), "Invalid Grid"
+
+        self.stage_id = self.get_stage_id()
+        self.data_parallel_id = self.get_data_parallel_id()
+
+        # Create new ProcessGroups for all model parallelism. DeepSpeedLight uses these
+        # to detect overflow, etc.
+        self.ds_model_proc_group = parallel_state.get_model_parallel_group()
+        self.ds_model_world_size = self.ds_model_proc_group.size()
+        self.ds_model_rank = self.ds_model_proc_group.rank()
+        assert self.ds_model_rank > -1
+        assert self.ds_model_proc_group is not None
+
+        # Create new ProcessGroup for gradient all-reduces - these are the data parallel groups
+        self.dp_group = list(parallel_state._DATA_PARALLEL_GLOBAL_RANKS)
+        self.dp_proc_group = parallel_state.get_data_parallel_group()
+
+        self.is_first_stage = (self.stage_id == 0)
+        self.is_last_stage = (self.stage_id == (self.pipe_parallel_size - 1))
+
+        self.p2p_groups = self._build_p2p_groups()
+
+        # Create new ProcessGroup for pipeline collectives - these are pipe parallel groups
+        self.pp_group = list(parallel_state._PIPELINE_GLOBAL_RANKS)
+        self.pp_proc_group = parallel_state.get_pipeline_model_parallel_group()
+
+        # Create new ProcessGroup for model (tensor-slicing) collectives
+        self.slice_proc_group = parallel_state.get_tensor_model_parallel_group()
+        self.slice_group = dist.get_process_group_ranks(self.slice_proc_group)
