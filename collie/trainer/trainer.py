@@ -4,7 +4,7 @@ from collie.driver.io.file import FileIODriver
 from collie.driver.io.petrel import PetrelIODriver
 from collie.log.print import print
 from collie.log import logger
-from collie.utils import progress
+from collie.utils import progress, find_tensors
 
 import os
 import torch

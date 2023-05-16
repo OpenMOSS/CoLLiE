@@ -1,8 +1,9 @@
 import os
 import torch
 import torch.distributed as dist
+from torch.optim.optimizer import Optimizer
 
-class InplaceSGD:
+class InplaceSGD(Optimizer):
     def __init__(self, model, lr=1e-3, zero_enabled=False, clip_grad_norm=None, clip_grad_value=None):
         self.model = model
         self.lr = lr
@@ -21,7 +22,9 @@ class InplaceSGD:
         self.grad_func = self.inplace_sgd() if not self.zero_enbaled else self.inplace_sgd_zero3()
         for n, p in self.model.named_parameters():
             if p.requires_grad:
-                p.requires_grad(self.grad_func)
+                p.register_hook(self.grad_func)
+        defaults = dict(lr=lr, zero_enabled=zero_enabled, clip_grad_norm=clip_grad_norm, clip_grad_value=clip_grad_value)
+        super(InplaceSGD, self).__init__(self.model.parameters(), defaults)
 
     def inplace_sgd(self):
         def func(x):
@@ -118,3 +121,6 @@ class InplaceSGD:
             self.clip_coef = float(self.clip_grad_norm) / (total_norm + 1e-6)
             self.clip_coef = torch.clamp(self.clip_coef, max=1.0)
         self.gather_norm = False
+
+    def step(self, closure=None):
+        pass

@@ -29,18 +29,6 @@ class BaseModel(nn.Module):
             args = Arguments.from_pretrained(args)
         args.update(**kwargs)
         setup_distributation(args)
-        dtype = torch.cuda.FloatTensor
-        try:
-            if args.ds_config["fp16"]["enabled"]:
-                dtype = torch.cuda.HalfTensor
-        except KeyError:
-            pass
-        try:
-            if args.ds_config["bf16"]["enabled"]:
-                dtype = torch.cuda.BFloat16Tensor
-        except KeyError:
-            pass
-        torch.set_default_tensor_type(dtype)
         model_cls = cls._get_model_cls(args)
         if args.pp_size == 1:
             model = super().__new__(model_cls)
