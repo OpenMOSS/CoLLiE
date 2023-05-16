@@ -16,8 +16,11 @@ import json
 tokenizer = LlamaTokenizer.from_pretrained("decapoda-research/llama-7b-hf", 
                                            padding_side="left", 
                                            add_eos_token=True)
+# <unk>
+tokenizer.pad_token_id = 0
 tokenizer.bos_token_id = 1
 tokenizer.eos_token_id = 2
+
 args = LlamaArguments.from_pretrained("decapoda-research/llama-7b-hf")
 args.pp_size = 2
 args.tp_size = 2
@@ -56,13 +59,14 @@ def collate_fn(batch):
     batch_inputs = []
     batch_labels = []
     for sample in batch:
-        sample_prompt = sample['prompt']
         sample_label = sample['prompt'] + sample['label']
-        batch_inputs.append(sample_prompt)
+        sample_input = sample_label
+        sample[len(sample['prompt']):] = 'unk'
+        batch_inputs.append(sample_input)
         batch_labels.append(sample_label)
     input_ids = tokenizer(batch_inputs, return_tensors='pt')['input_ids']
-    # label_ids = tokenizer(batch_labels, return_tensors='pt')['input_ids']
-    return input_ids, input_ids
+    label_ids = tokenizer(batch_labels, return_tensors='pt')['input_ids']
+    return input_ids, label_ids
 
 dataset = AlpacaDataset('alpaca_data.json')
 train_dataset = dataset[:-32]
