@@ -61,8 +61,8 @@ def collate_fn(batch):
         batch_inputs.append(sample_prompt)
         batch_labels.append(sample_label)
     input_ids = tokenizer(batch_inputs, return_tensors='pt')['input_ids']
-    label_ids = tokenizer(batch_labels, return_tensors='pt')['input_ids']
-    return input_ids, label_ids
+    # label_ids = tokenizer(batch_labels, return_tensors='pt')['input_ids']
+    return input_ids, input_ids
 
 dataset = AlpacaDataset('alpaca_data.json')
 train_dataset = dataset[:-32]
