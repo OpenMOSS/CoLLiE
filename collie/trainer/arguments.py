@@ -106,7 +106,7 @@ class Arguments:
         else:
             suffix = kwargs.pop("suffix", "json")
             if os.path.isdir(name_or_path):
-                path = os.path.join(path, f"config.{suffix}")
+                path = os.path.join(name_or_path, f"config.{suffix}")
             json_config = load_config(path)
         arg_cls = cls._get_cls(json_config)
         argument = arg_cls()
@@ -144,6 +144,7 @@ class Arguments:
                 f"match the current model's type `{cls.model_type}`, which "
                 f"may cause some unexpected behaviours."
             )
+            model_type = cls.model_type
         if cls.model_type != "":
             return cls
 
