@@ -1,14 +1,13 @@
+import os
 import torch
-
-from torch.optim import Optimizer, adam
-
+import torch.distributed as dist
 
 class InplaceSGD:
-    def __init__(self, model, lr=1e-3, local_rank=0, world_size=1, zero_enabled=False, clip_grad_norm=None, clip_grad_value=None):
+    def __init__(self, model, lr=1e-3, zero_enabled=False, clip_grad_norm=None, clip_grad_value=None):
         self.model = model
         self.lr = lr
-        self.local_rank = local_rank
-        self.world_size = world_size
+        self.local_rank = int(os.environ["LOCAL_RANK"])
+        self.world_size = dist.get_world_size()
         self.zero_enbaled = zero_enabled
         self.clip_grad_norm = clip_grad_norm
         self.clip_grad_value = clip_grad_value
