@@ -21,8 +21,7 @@ from collie.trainer.arguments import load_config
 from collie.driver.io.file import FileIODriver
 from collie.driver.io.petrel import PetrelIODriver
 from collie.models.base import BaseModel
-from collie.utils import (get_pp_rank, get_tp_rank, get_dp_rank, is_pipeline,
-                          progress)
+from collie.utils import env, progress
 from .arguments import MossArguments
 from .utils import (apply_rotary_pos_emb, create_sinusoidal_positions,
                     set_index_dict, _state_dict_to_save, _state_dict_to_load,
@@ -59,7 +58,6 @@ class MossAttention(nn.Module):
 
         self.out_proj = RowParallelLinearWithoutBias(
             self.embed_dim, self.embed_dim, bias=False, input_is_parallel=False
-            
         )
         self.rotary_dim = args.rotary_dim
         pos_embd_dim = self.rotary_dim or self.embed_dim
@@ -276,7 +274,7 @@ class MossBlock(nn.Module):
             past_length, end_pos + past_length, dtype=torch.long).cuda()
         position_ids = position_ids.unsqueeze(0).view(-1, end_pos)
 
-        if self.args.checkpointing and self.training:
+        if self.args.gradient_checkpointing and self.training:
 
             def create_custom_forward(module):
                 def custom_forward(*inputs):
@@ -375,14 +373,13 @@ class MossModel(BaseModel):
         IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
         if not IODriver.exists(path):
             raise FileNotFoundError(f"folder {path} not found.")
-        global_rank = dist.get_rank()
-        pp_rank, tp_rank, dp_rank = get_pp_rank(), get_tp_rank(), get_dp_rank()
+
         # 如果开启了进程互斥，那么每个进程都会显示进度条，否则只显示 RANK0 的
-        hide_progress = not process_exclusion and global_rank != 0
+        hide_progress = not process_exclusion and env.rank != 0
         for cur_rank in range(dist.get_world_size()):
             if process_exclusion:
                 dist.barrier()
-            if cur_rank != global_rank:
+            if cur_rank != env.rank:
                 continue
             if IODriver.exists(os.path.join(path, "config.json")):
                 # update args from config.json
@@ -397,7 +394,7 @@ class MossModel(BaseModel):
             index_file = os.path.join(path, "pytorch_model.bin.index.json")
             # start load
             state_dict = OrderedDict()
-            if IODriver.exists(index_file) and is_pipeline():
+            if IODriver.exists(index_file) and env.is_pipeline:
                 # 有 index 且是流水线
                 weight_map = json.loads(IODriver.load(index_file, mode="r"))["weight_map"]
                 # layers 表示当前 rank 自己需要的层
@@ -409,11 +406,12 @@ class MossModel(BaseModel):
 
             desc = "Loading state dict"
             if process_exclusion:
-                desc += f" on pp={pp_rank} tp={tp_rank} dp={dp_rank}"
+                desc += f" on pp={env.pp_rank} tp={env.tp_rank} dp={env.dp_rank}"
             for weight in progress(weights, desc, disable=hide_progress):
                 part_state_dict = IODriver.load(os.path.join(path, weight), mode="rb")
                 state_dict.update(_state_dict_to_load(
-                    part_state_dict, tp_rank, args.tp_size, process_exclusion
+                    part_state_dict, env.tp_rank, args.tp_size,
+                    process_exclusion
                 ))
 
         return state_dict
@@ -431,31 +429,78 @@ class MossModel(BaseModel):
         """
         Save state_dict to ``path``.
         """
-        if get_dp_rank() != 0:
+        assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
+        IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
+        if env.rank == 0:
+            # TODO more elegant way
+            config = {
+                "activation_function": "gelu_new",
+                "architectures": [
+                    "MossForCausalLM"
+                ],
+                "auto_map": {
+                    "AutoConfig": "configuration_moss.MossConfig",
+                    "AutoModel": "modeling_moss.MossModel",    
+                    "AutoModelForCausalLM": "modeling_moss.MossForCausalLM"
+                },
+                "attn_pdrop": args.attn_pdrop,
+                "bos_token_id": 106028,
+                "embd_pdrop": args.embd_pdrop,
+                "eos_token_id": 106068,
+                "gradient_checkpointing": args.gradient_checkpointing,
+                "initializer_range": 0.02,
+                "layer_norm_epsilon": args.layer_norm_epsilon,
+                "model_type": "moss",
+                "n_ctx": args.n_ctx,
+                "n_embd": args.n_embd,
+                "n_head": args.n_head,
+                "n_inner": args.n_inner,
+                "n_layer": args.n_layer,
+                "n_positions": args.n_positions,
+                "resid_pdrop": args.resid_pdrop,
+                "rotary_dim": args.rotary_dim,
+                "scale_attn_weights": True,
+                "summary_activation": None,
+                "summary_first_dropout": 0.1,
+                "summary_proj_to_labels": True,
+                "summary_type": "cls_index",
+                "summary_use_proj": True,
+                "task_specific_params": {
+                    "text-generation": {
+                    "do_sample": True,
+                    "max_length": 50,
+                    "temperature": 1.0
+                    }
+                },
+                "tie_word_embeddings": False,
+                "tokenizer_class": "GPT2Tokenizer",
+                "torch_dtype": "float16",
+                "transformers_version": "4.25.1",
+                "use_cache": True,
+                "vocab_size": args.vocab_size,
+            }
+            IODriver.save(json.dumps(config), os.path.join(path, "config.json"))
+        if env.dp_rank != 0:
             # only gather on dp rank 0
             # TODO 妥当地处理通信组
             dist.barrier()
             dist.barrier()
             return
-        tp_group = parallel_state.get_tensor_model_parallel_group()
-        tp_rank = get_tp_rank()
-        pp_rank = get_pp_rank()
-        assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
-        IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
+
         # gather to tp rank 0
 
-        state_dict = _state_dict_to_save(state_dict, tp_rank, args.tp_size,
-                                         tp_group, process_exclusion)
+        state_dict = _state_dict_to_save(state_dict, env.tp_rank, args.tp_size,
+                                         env.tp_group, process_exclusion)
         # save at tp_rank 0
         # Now dp_rank is 0
-        if tp_rank == 0:
+        if env.tp_rank == 0:
             # Save gathered weights
-            if is_pipeline():
-                ckpt_name = f"pytorch_model-{pp_rank+1:05d}-of-{args.pp_size:05d}.bin"
+            if env.is_pipeline:
+                ckpt_name = f"pytorch_model-{env.pp_rank+1:05d}-of-{args.pp_size:05d}.bin"
                 index_dict = set_index_dict(state_dict, ckpt_name)
                 tmp_index_file = os.path.join(path, "_tmp_index_{}.json")
                 IODriver.save(
-                    json.dumps(index_dict), tmp_index_file.format(get_pp_rank())
+                    json.dumps(index_dict), tmp_index_file.format(env.pp_rank)
                 )
             else:
                 ckpt_name = f"pytorch_model.bin"
@@ -463,7 +508,7 @@ class MossModel(BaseModel):
             IODriver.save(state_dict, ckpt_path)
         dist.barrier()
         # Only save and merge on rank0
-        if dist.get_rank() == 0 and is_pipeline():
+        if env.rank == 0 and env.is_pipeline:
             # merge
             tmp_index_files = [tmp_index_file.format(i) for i in range(args.pp_size)]
             total_size = 0

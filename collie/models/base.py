@@ -45,6 +45,7 @@ class BaseModel(nn.Module):
                 ), loss_fn=GPTLMLoss()
             )
             setattr(pipeline_model, "args", args)
+            setattr(pipeline_model, "_model_cls", model_cls)
             return pipeline_model
             
     def __new__(cls, args: Arguments, **kwargs):

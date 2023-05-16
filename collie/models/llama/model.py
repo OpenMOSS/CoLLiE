@@ -30,7 +30,7 @@ from collie.trainer.arguments import load_config
 from collie.driver.io.petrel import PetrelIODriver
 from collie.models.llama.arguments import LlamaArguments
 from collie.module import ColumnParallelLinearWithoutBias, RowParallelLinearWithoutBias
-from collie.utils import progress, get_pp_rank, get_tp_rank, get_dp_rank, is_pipeline
+from collie.utils import progress, env
 
 from typing import Union
 from collections import OrderedDict
@@ -296,9 +296,9 @@ class LlamaModel(BaseModel):
             # 如果开启了进程互斥，那么只有对应 RANK 的能进入循环；不开启进程互斥的话就都可以进
             if int(os.environ.get("RANK", "0")) == rank or not process_exclusion:
                 # PP 分层的方法保存在了 os.environ["COLLIE_PP_PARTS"], 格式类似于 [0, 17, 35], 左闭右开
-                if is_pipeline():
+                if env.is_pipeline:
                     # 保存的是 json 格式
-                    parts = json.loads(os.environ["COLLIE_PP_PARTS"])
+                    parts = env.pipline_parts
                 if format == "hf":
                     # 根据 huggingface 中的 config.json 更新一下用户配置
                     if IODriver.exists(os.path.join(path, "config.json")):
@@ -481,10 +481,6 @@ class LlamaModel(BaseModel):
         The format of saved state dict should be the same as that of
         `huggingface`.
         """
-        tp_group = parallel_state.get_tensor_model_parallel_group()
-        tp_rank = get_tp_rank()
-        pp_rank = get_pp_rank()
-        dp_rank = get_dp_rank()
         assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
         IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
         def reshape_wq_wk(w: torch.Tensor):
@@ -494,9 +490,9 @@ class LlamaModel(BaseModel):
                           args.hidden_size).transpose(1, 2).reshape(args.hidden_size, 
                                                                     args.hidden_size)
         # gather to tp rank 0
-        if is_pipeline():
-            parts = json.loads(os.environ["COLLIE_PP_PARTS"])
-            layers = list(range(parts[pp_rank], parts[pp_rank + 1]))
+        if env.is_pipeline:
+            layers = env.pipline_layers_idx
+            parts = env.pipline_parts
             for key in list(state_dict.keys()):
                 if key == "tied_modules.embed_tokens.weight":
                     if 0 in layers:
@@ -518,16 +514,16 @@ class LlamaModel(BaseModel):
         dst = parallel_state.get_tensor_model_parallel_src_rank()
         with progress(rank_order, desc="Saving model", disable=int(os.environ.get("RANK", "0")) != 0) as pbar:
             for rank in pbar:
-                if dp_rank == 0 \
-                    and (pp_rank == rank 
+                if env.dp_rank == 0 \
+                    and (env.pp_rank == rank 
                          or not process_exclusion):
                     for key in sorted(list(state_dict.keys())):
                         device = state_dict[key].device
                         tensor_list = None
-                        if tp_rank == 0:
+                        if env.tp_rank == 0:
                             tensor_list = [torch.zeros_like(state_dict[key]).to(state_dict[key].dtype).cuda() for _ in range(args.tp_size)]
-                        dist.gather(state_dict[key].cuda(), dst=dst, gather_list=tensor_list, group=tp_group)
-                        if tp_rank == 0:
+                        dist.gather(state_dict[key].cuda(), dst=dst, gather_list=tensor_list, group=env.tp_group)
+                        if env.tp_rank == 0:
                             if key.endswith("q_proj.weight") \
                                 or key.endswith("k_proj.weight") \
                                     or key.endswith("v_proj.weight") \
@@ -549,10 +545,10 @@ class LlamaModel(BaseModel):
                                     if process_exclusion:
                                         # CPU 内存回收（速度很慢）
                                         gc.collect()
-                    if tp_rank == 0:
+                    if env.tp_rank == 0:
                         # Save gathered weights
-                        if is_pipeline():
-                            ckpt_name = f"pytorch_model-{pp_rank+1:05d}-of-{args.pp_size:05d}.bin"
+                        if env.is_pipeline:
+                            ckpt_name = f"pytorch_model-{env.pp_rank+1:05d}-of-{args.pp_size:05d}.bin"
                             total_size = 0
                             weight_map = {}
                             for name, weight in state_dict.items():
@@ -562,7 +558,7 @@ class LlamaModel(BaseModel):
                             index_dict = dict(total_size=total_size, weight_map=weight_map)
                             tmp_index_file = os.path.join(path, "_tmp_index_{}.json")
                             IODriver.save(
-                                json.dumps(index_dict), tmp_index_file.format(pp_rank)
+                                json.dumps(index_dict), tmp_index_file.format(env.pp_rank)
                             )
                         else:
                             ckpt_name = f"pytorch_model.bin"
@@ -570,7 +566,7 @@ class LlamaModel(BaseModel):
                         IODriver.save(state_dict, ckpt_path)
                 if dist.is_initialized() and process_exclusion:
                     dist.barrier()
-        if dist.get_rank() == 0 and is_pipeline():
+        if env.rank == 0 and env.is_pipeline:
             # merge
             tmp_index_files = [tmp_index_file.format(i) for i in range(args.pp_size)]
             total_size = 0

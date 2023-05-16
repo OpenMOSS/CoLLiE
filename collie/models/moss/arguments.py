@@ -20,4 +20,4 @@ class MossArguments(Arguments):
 
     model_type: str = "moss"
 
-    checkpointing: bool = True
+    gradient_checkpointing: bool = True
