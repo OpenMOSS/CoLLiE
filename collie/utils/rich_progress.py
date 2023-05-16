@@ -272,7 +272,8 @@ if (sys.stdin and sys.stdin.isatty()):
         TextColumn("{task.fields[post_desc]}", justify="right"),
         transient=True,
         disable=False,
-        speed_estimate_period=30
+        speed_estimate_period=30,
+        auto_refresh=True,
     )
 else:
     f_rich_progress = DummyFRichProgress()

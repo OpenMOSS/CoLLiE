@@ -267,7 +267,7 @@ class MossBlock(nn.Module):
         if self.past_key_values is None or self.training:
             past_length = 0
         else:
-            past_length = self.past_key_values[0].size(-2)
+            past_length = self.past_key_values[0].size(1)
 
         end_pos = hidden_states.shape[1]
         position_ids = torch.arange(
@@ -479,21 +479,29 @@ class MossModel(BaseModel):
                 "use_cache": True,
                 "vocab_size": args.vocab_size,
             }
-            IODriver.save(json.dumps(config), os.path.join(path, "config.json"))
-        if env.dp_rank != 0:
-            # only gather on dp rank 0
-            # TODO 妥当地处理通信组
-            dist.barrier()
-            dist.barrier()
-            return
+            IODriver.save(json.dumps(config, indent=2), os.path.join(path, "config.json"))
 
         # gather to tp rank 0
+        desc = "Saving state dict"
+        # 没有 process_exclusion 的时候就不显示了
+        hide_progress = process_exclusion and env.rank != 0
+        for cur_pp_rank in progress(range(env.pp_size), desc, disable=hide_progress):
+            if process_exclusion:
+                dist.barrier()
+            if env.dp_rank != 0:
+                continue
+            # continue execution when dp_rank == 0
+            if cur_pp_rank != env.pp_rank:
+                continue
+            # continue when pp_rank is available
 
-        state_dict = _state_dict_to_save(state_dict, env.tp_rank, args.tp_size,
-                                         env.tp_group, process_exclusion)
-        # save at tp_rank 0
-        # Now dp_rank is 0
-        if env.tp_rank == 0:
+            state_dict = _state_dict_to_save(
+                state_dict, env.tp_rank, args.tp_size, env.tp_group,
+                process_exclusion
+            )
+            if env.tp_rank != 0:
+                continue
+            # save at tp_rank 0
             # Save gathered weights
             if env.is_pipeline:
                 ckpt_name = f"pytorch_model-{env.pp_rank+1:05d}-of-{args.pp_size:05d}.bin"
@@ -507,6 +515,7 @@ class MossModel(BaseModel):
             ckpt_path = os.path.join(path, ckpt_name)
             IODriver.save(state_dict, ckpt_path)
         dist.barrier()
+
         # Only save and merge on rank0
         if env.rank == 0 and env.is_pipeline:
             # merge

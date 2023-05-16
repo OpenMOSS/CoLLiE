@@ -1,4 +1,5 @@
 from typing import Optional
+from operator import length_hint
 
 from .rich_progress import f_rich_progress
 
@@ -39,11 +40,12 @@ class progress:
                  upgrade_period=0.1, disable=False, post_desc: str = ""):
         self.bar = f_rich_progress
         self.bar.set_disable(disable)
+        self.total = float(length_hint(sequence)) if total is None else total
         self.task_id = self.bar.add_task(
-            desc, upgrade_period=upgrade_period, post_desc=post_desc
+            desc, upgrade_period=upgrade_period, post_desc=post_desc,
+            visible=not disable, total=self.total
         )
         self.sequence = sequence
-        self.total = total
 
     def __iter__(self):
         yield from self.bar.track(
