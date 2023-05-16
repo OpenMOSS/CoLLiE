@@ -565,7 +565,7 @@ class LlamaModel(BaseModel):
                         ckpt_path = os.path.join(path, ckpt_name)
                         IODriver.save(state_dict, ckpt_path)
                 if dist.is_initialized() and process_exclusion:
-                    dist.barrier()=
+                    dist.barrier()
         if dist.get_rank() == 0:
             config = {"architectures": ["LlamaForCausalLM"], 
                       "bos_token_id": 0, 
