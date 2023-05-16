@@ -89,6 +89,7 @@ class Arguments:
             "help": "Type of model. Such as 'moss', 'llama'."
         }
     )
+
     @classmethod
     def from_pretrained(cls, name_or_path: str, **kwargs):
         """

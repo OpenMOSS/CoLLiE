@@ -3,8 +3,7 @@ import gc
 import torch
 from torch import distributed as dist
 from transformers.modeling_utils import dtype_byte_size
-from collie.utils import (is_pipeline, pipline_layers_idx, pipline_parts,
-                          get_tp_rank)
+from collie.utils import env
 
 
 def create_sinusoidal_positions(num_pos: int, dim: int) -> torch.Tensor:
@@ -26,7 +25,7 @@ def apply_rotary_pos_emb(tensor: torch.Tensor, sin: torch.Tensor, cos: torch.Ten
     return (tensor * cos) + (rotate_every_two(tensor) * sin)
 
 def _name_to_pipline(name):
-    max_pipe_idx = max(pipline_parts())
+    max_pipe_idx = max(env.pipline_parts)
     if name.startswith("transformer.wte."):
         pipe_name = name.replace("transformer.wte.", "0.")
     elif name.startswith("lm_head."):
@@ -50,7 +49,7 @@ def _name_to_hf(name):
     Examples: 15.ln_1.bias -> transformer.h.15.ln_1.bias
     """
     name_split = name.split(".")
-    parts = pipline_parts()
+    parts = env.pipline_parts
     layer_pipe_idx = int(name_split[0])
     if layer_pipe_idx == 0:
         # 0 -> embedding
@@ -74,10 +73,10 @@ def _name_to_hf(name):
     return hf_name
 
 def _weight_name_in_current_rank(names):
-    if not is_pipeline():
+    if not env.is_pipeline:
         return names
-    layers = pipline_layers_idx()
-    parts = pipline_parts()
+    layers = env.pipline_layers_idx
+    parts = env.pipline_parts
     cur_names = []
     # MossModel 的模型顺序为：
     # vocab: transformer.wte.weight
@@ -149,7 +148,7 @@ def _state_dict_to_load(state_dict, tp_rank, tp_size, process_exclusion):
         state_dict = _split_weights(state_dict, tp_rank, tp_size,
                                     process_exclusion)
     # 流水线情况下，弹出不需要的并且更名
-    if is_pipeline():
+    if env.is_pipeline:
         cur_names = _weight_name_in_current_rank(state_dict.keys())
         for name in list(state_dict.keys()):
             if name in cur_names:
@@ -192,7 +191,7 @@ def _gather_weights(state_dict, tp_rank, tp_size, tp_group, process_exclusion):
 
 def _state_dict_to_save(state_dict, tp_rank, tp_size, tp_group,
                         process_exclusion):
-    if is_pipeline():
+    if env.is_pipeline:
         # rename
         for name in list(state_dict.keys()):
             hf_name = _name_to_hf(name)

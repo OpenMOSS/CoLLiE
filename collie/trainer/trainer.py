@@ -1,10 +1,14 @@
+import os
+import json
+from typing import Optional, Callable, Union, Tuple, Iterable, Any, Dict, Sequence
+
 from collie.trainer.arguments import Arguments, load_config
-from collie.module import CollieCausalLM, GPTLMLoss
+from collie.module import CollieCausalLM, GPTLMLoss, PipelineModel
 from collie.driver.io.file import FileIODriver
 from collie.driver.io.petrel import PetrelIODriver
 from collie.log.print import print
 from collie.log import logger
-from collie.utils import progress
+from collie.utils import progress, env
 
 import os
 import torch
@@ -15,9 +19,8 @@ from megatron.core import parallel_state
 from deepspeed.runtime.constants import ROUTE_EVAL
 from deepspeed.accelerator import get_accelerator
 from deepspeed.runtime.pipe.engine import PipelineEngine
+from deepspeed.runtime.zero.utils import ZeRORuntimeException
 from transformers.generation.utils import GenerationConfig
-
-from typing import Optional, Callable, Union, Tuple, Iterable, Any, Dict, Sequence
 
 class Trainer:
     def __init__(self, 
@@ -52,6 +55,13 @@ class Trainer:
         self.setup_parallel_model()
         self.init_metrics()
         get_accelerator().empty_cache()
+
+        self.checkpoint_file = "collie_dp{}_pp{}_tp{}.pt".format(
+            env.dp_rank, env.pp_rank, env.tp_rank
+        )
+        self.zero_checkpoint_file = "collie_zero_dp{}_pp{}_tp{}.pt".format(
+            env.dp_rank, env.pp_rank, env.tp_rank
+        )
         
     def set_ds_config(self):
         if isinstance(self.args, str):
@@ -201,16 +211,137 @@ class Trainer:
             "input_ids": input_ids,
             "labels": labels,
             "train_meta": train_meta
-<<<<<<< HEAD
         }
-=======
-        }
-        
-    def save_checkpoint(self, path: str, protocol: str="file"):
+
+    def save_checkpoint(self, path: str, process_exclusion: bool = False):...
+    def save_checkpoint(self, path: str, process_exclusion: bool = False,
+                        protocol: str="file"):
         assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
         IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
+        IODriver.makedirs(path, exist_ok=True)
+        # save parallel_settings
+        if env.dp_rank == 0:
+            dist_config = {
+                "dp_size": env.dp_size, "tp_size": env.tp_size,
+                "pp_size": env.pp_size
+            }
+            IODriver.save(json.dumps(dist_config), os.path.join(path, "collie.json"))
+        engine = self.engine
+        # DeepSpeedEngine.save_checkpoint
         
-    def load_checkpoint(self, path: str, protocol: str="file"):
+        if engine.zero_optimization_partition_weights():
+            # Prepare for checkpoint save by ensuring all parameters are partitioned
+            engine.optimizer.checkpoint_event_prologue()
+
+        ## DeepSpeedEngine._save_checkpoint
+        zero_optimizer_state = engine.zero_optimization() or engine.bfloat16_enabled()
+        state = dict(optimizer=engine.optimizer.state_dict() if engine.optimizer and not zero_optimizer_state else None,
+                     lr_scheduler=engine.lr_scheduler.state_dict() if engine.lr_scheduler is not None else None,
+                     data_sampler=engine.training_dataloader.data_sampler.state_dict() if
+                     (engine.training_dataloader is not None and engine.curriculum_learning_enabled()) else None,
+                     sparse_tensor_module_names=engine.sparse_tensor_module_names,
+                     skipped_steps=engine.skipped_steps,
+                     global_steps=engine.global_steps,
+                     global_samples=engine.global_samples)
+
+        IODriver.save(state, os.path.join(path, self.checkpoint_file))
+
+        if engine.save_zero_checkpoint:
+            self._save_zero_checkpoint(path, IODriver)
+
+        if engine.zero_optimization_partition_weights():
+            engine.optimizer.checkpoint_event_epilogue()
+
+        # state dict
+        state_dict = self.model.state_dict()
+        self.model.save_parallel_state_dict(
+            state_dict, path, self.args, process_exclusion,
+            protocol=protocol
+        )
+
+        dist.barrier()
+
+    def load_checkpoint(self, path: str, process_exclusion: bool = False):...
+    def load_checkpoint(self, path: str, process_exclusion: bool = False,
+                        protocol: str = 'file'):
         assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
         IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
->>>>>>> dc9c5867f762966a0f49c1fbabf3ceaf9551c9f4
+        assert IODriver.exists(path), f"`{path}` does not exist."
+        engine = self.engine
+        # check
+        loaded_args = json.loads(IODriver.load(os.path.join(path, "collie.json"), "r"))
+        assert loaded_args["dp_size"] == env.dp_size and \
+            loaded_args["tp_size"] == env.tp_size and \
+            loaded_args["pp_size"] == env.pp_size, \
+            "Loaded checkpoint's world_size is not equal to the current " \
+            f"settings: dp * tp * pp {loaded_args['dp_size']} * " \
+            f"{loaded_args['tp_size']} * {loaded_args['pp_size']}" \
+            f"!= {env.dp_size} * {env.tp_size} * {env.pp_size}."
+
+        # DeepSpeed.load_checkpoint
+        if engine.zero_optimization_partition_weights():
+            # Prepare for checkpoint load by ensuring all parameters are partitioned
+            engine.optimizer.checkpoint_event_prologue()
+
+        ## DeepSpeed._load_checkpoint
+        checkpoint = IODriver.load(os.path.join(path, self.checkpoint_file), "b")
+
+        has_zero_optimizer_state = engine.zero_optimization() or engine.bfloat16_enabled()
+        if engine.optimizer is not None and not has_zero_optimizer_state:
+            engine.optimizer.load_state_dict(checkpoint['optimizer'])
+
+        if engine.lr_scheduler is not None:
+            engine.lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
+
+        if engine.training_dataloader is not None and engine.curriculum_learning_enabled(
+        ) and 'data_sampler' in checkpoint:
+            engine.training_dataloader.data_sampler.load_state_dict(checkpoint['data_sampler'])
+
+        if 'sparse_tensor_module_names' in checkpoint:
+            sparse_tensor_module_names = checkpoint['sparse_tensor_module_names']
+        elif 'csr_tensor_module_names' in checkpoint:
+            sparse_tensor_module_names = checkpoint['csr_tensor_module_names']
+        else:
+            sparse_tensor_module_names = None
+        if sparse_tensor_module_names is not None:
+            engine.sparse_tensor_module_names = sparse_tensor_module_names
+
+        engine.global_steps = checkpoint['global_steps']
+        engine.global_samples = checkpoint.get('global_samples', engine.global_steps * engine.train_batch_size())
+        engine.skipped_steps = checkpoint['skipped_steps']
+
+        load_zero_checkpoint = engine.zero_optimization() or engine.bfloat16_enabled()
+        if load_zero_checkpoint:
+            success = self._load_zero_checkpoint(path, IODriver)
+            if not success:
+                engine.optimizer._restore_from_bit16_weights()
+
+        if engine.zero_optimization_partition_weights():
+            engine.optimizer.checkpoint_event_epilogue()
+
+        # state_dict
+        state_dict = self.model.load_parallel_state_dict(
+            path=path, args=self.args, process_exclusion=process_exclusion,
+        )
+        self.model.load_state_dict(state_dict)
+
+    def _save_zero_checkpoint(self, path, driver):
+        zero_path = os.path.join(path, self.zero_checkpoint_file)
+        zero_sd = self.engine.optimizer.state_dict()
+        driver.save(zero_sd, zero_path)
+
+    def _load_zero_checkpoint(self, path, driver):
+        engine = self.engine
+        
+        zero_sd_list = []
+        for dp_rank in range(engine.dp_world_size):
+            zero_ckpt = os.path.join(path, self.zero_checkpoint_file)
+            zero_ckpt = zero_ckpt.replace(F"dp{env.dp_rank}", f"dp{dp_rank}")
+            zero_sd_list.append(driver.load(zero_ckpt, "b"))
+
+        engine.optimizer.load_state_dict(
+            state_dict_list=zero_sd_list,
+            load_from_fp32_weights=engine.zero_load_from_fp32_weights(),
+        )
+
+        return True

@@ -2,4 +2,6 @@ rich
 tqdm
 torch
 deepspeed
+apex
 transformers
+git+https://github.com/NVIDIA/Megatron-LM.git@main#egg=megatron.core

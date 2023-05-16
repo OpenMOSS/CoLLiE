@@ -1,7 +1,24 @@
 from typing import Optional
+from operator import length_hint
 
-from rich.progress import Progress, TimeRemainingColumn, BarColumn, TimeElapsedColumn, TextColumn, ProgressColumn, Text
 from .rich_progress import f_rich_progress
+
+class classproperty:
+    """
+    Reference to https://github.com/hottwaj/classproperties/tree/main
+
+    Decorator for a Class-level property.
+    Credit to Denis Rhyzhkov on Stackoverflow: https://stackoverflow.com/a/13624858/1280629"""
+    def __init__(self, fget, cached=False):
+        self.fget = fget
+        self.cached = cached
+
+    def __get__(self, owner_self, owner_cls):
+        val = self.fget(owner_cls)
+        if self.cached:
+            setattr(owner_cls, self.fget.__name__, val)
+        return val
+
 
 def find_tensors():
     """
@@ -16,19 +33,6 @@ def find_tensors():
         except:
             pass
 
-class SpeedColumn(ProgressColumn):
-    """
-    显示 task 的速度。
-
-    """
-    def render(self, task):
-        speed = task.speed
-        if speed is None:
-            return Text('-- it./s', style='progress.data.speed')
-        if speed > 0.1:
-            return Text(str(round(speed, 2))+' it./s', style='progress.data.speed')
-        else:
-            return Text(str(round(1/speed, 2))+' s/it.', style='progress.data.speed')
         
 class progress:
 
@@ -36,11 +40,12 @@ class progress:
                  upgrade_period=0.1, disable=False, post_desc: str = ""):
         self.bar = f_rich_progress
         self.bar.set_disable(disable)
+        self.total = float(length_hint(sequence)) if total is None else total
         self.task_id = self.bar.add_task(
-            desc, upgrade_period=upgrade_period, post_desc=post_desc
+            desc, upgrade_period=upgrade_period, post_desc=post_desc,
+            visible=not disable, total=self.total
         )
         self.sequence = sequence
-        self.total = total
 
     def __iter__(self):
         yield from self.bar.track(
