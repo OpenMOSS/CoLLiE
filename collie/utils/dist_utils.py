@@ -11,6 +11,8 @@ from deepspeed.runtime.zero.stage_1_and_2 import DeepSpeedZeroOptimizer
 from deepspeed.accelerator import get_accelerator
 from megatron.core import parallel_state, tensor_parallel
 
+from .utils import classproperty
+
 def setup_distributation(args) -> None:
     """Setup the distributed training environment.
     Support two kinds of distributed training:
@@ -59,7 +61,10 @@ def setup_distributation(args) -> None:
                                     master_port),
                                 world_size=int(os.environ["WORLD_SIZE"]),
                                 rank=int(os.environ["RANK"]))
-    parallel_state.initialize_model_parallel(tensor_model_parallel_size=args.tp_size)
+    parallel_state.initialize_model_parallel(
+        tensor_model_parallel_size=args.tp_size,
+        pipeline_model_parallel_size=args.pp_size
+    )
     # random seed has to be set after deepspeed.init_distributed
     set_seed(args)
     torch.cuda.set_device(torch.device('cuda:{}'.format(os.environ["LOCAL_RANK"])))
@@ -109,33 +114,89 @@ def patch_megatron():
     parallel_state.get_model_parallel_world_size = lambda: parallel_state.get_tensor_model_parallel_world_size()
     parallel_state.get_model_parallel_rank = lambda: parallel_state.get_tensor_model_parallel_rank()
 
-def is_pipeline():
-    return "COLLIE_PP_PARTS" in os.environ.keys()
 
-def pipline_parts():
-    if "COLLIE_PP_PARTS" in os.environ.keys():
-        parts = json.loads(os.environ["COLLIE_PP_PARTS"])
-    else:
-        parts = None
+class env:
+    @classproperty
+    def rank(self):
+        return int(os.getenv("RANK", "0"))
+    
+    @classproperty
+    def local_rank(self):
+        return int(os.getenv("LOCAL_RANK", "0"))
+    
+    @classproperty
+    def world_size(self):
+        return int(os.getenv("WORLD_SIZE", "1"))
 
-    return parts
+    @classproperty
+    def pp_rank(self):
+        return parallel_state.get_pipeline_model_parallel_rank()
+    
+    @classproperty
+    def dp_rank(self):
+        return parallel_state.get_data_parallel_rank()
+    
+    @classproperty
+    def tp_rank(self):
+        return parallel_state.get_tensor_model_parallel_rank()
+    
+    @classproperty
+    def mp_rank(self):
+        return parallel_state.get_model_parallel_group().rank()
+    
+    @classproperty
+    def is_pipeline(self):
+        return "COLLIE_PP_PARTS" in os.environ.keys()
+    
+    @classproperty
+    def pipline_parts(self):
+        if "COLLIE_PP_PARTS" in os.environ.keys():
+            parts = json.loads(os.environ["COLLIE_PP_PARTS"])
+        else:
+            parts = None
 
-def pipline_layers_idx():
-    """
-    :return: list or None
-    """
-    parts = pipline_parts()
-    if parts is None:
-        return None
-    else:
-        stage = get_pp_rank()
-        return list(range(parts[stage], parts[stage + 1]))
+        return parts
 
-def get_dp_rank():
-    return int(os.getenv("COLLIE_DP_RANK", "0"))
-
-def get_tp_rank():
-    return int(os.getenv("COLLIE_TP_RANK", "0"))
-
-def get_pp_rank():
-    return int(os.getenv("COLLIE_PP_RANK", "0"))
+    @classproperty
+    def pipline_layers_idx(self):
+        """
+        :return: list or None
+        """
+        parts = self.pipline_parts
+        if parts is None:
+            return None
+        else:
+            stage = self.pp_rank
+            return list(range(parts[stage], parts[stage + 1]))
+        
+    @classproperty
+    def tp_group(self):
+        return parallel_state.get_tensor_model_parallel_group()
+    
+    @classproperty
+    def pp_group(self):
+        return parallel_state.get_pipeline_model_parallel_group()
+    
+    @classproperty
+    def dp_group(self):
+        return parallel_state.get_data_parallel_group()
+    
+    @classproperty
+    def dp_size(self):
+        return parallel_state.get_data_parallel_world_size()
+    
+    @classproperty
+    def tp_size(self):
+        return parallel_state.get_tensor_model_parallel_world_size()
+    
+    @classproperty
+    def pp_size(self):
+        return parallel_state.get_pipeline_model_parallel_world_size()
+    
+    @classproperty
+    def is_last_stage(self):
+        return parallel_state.is_pipeline_last_stage()
+    
+    @classproperty
+    def is_first_stage(self):
+        return parallel_state.is_pipeline_first_stage()

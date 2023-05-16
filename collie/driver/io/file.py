@@ -39,3 +39,7 @@ class FileIODriver(IODriver):
     @staticmethod
     def delete(path: str):
         shutil.rmtree(path)
+
+    @staticmethod
+    def makedirs(path: str, exist_ok: bool = False):
+        os.makedirs(path, exist_ok=exist_ok)

@@ -25,3 +25,7 @@ class IODriver(ABC):
     @abstractmethod
     def delete(path: str):
         raise NotImplementedError
+    
+    @staticmethod
+    def makedirs(path: str, exist_ok: bool = False):
+        raise NotImplementedError

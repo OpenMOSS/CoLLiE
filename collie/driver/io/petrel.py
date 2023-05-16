@@ -53,3 +53,7 @@ class PetrelIODriver(IODriver):
         from petrel_client.client import Client
         client = Client()
         client.delete(path)
+
+    @staticmethod
+    def makedirs(path: str, exist_ok: bool = False):
+        pass
