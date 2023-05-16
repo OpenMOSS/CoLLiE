@@ -366,7 +366,7 @@ class LlamaModel(BaseModel):
                         }.items():
                             setattr(args, key, value)
                     # 权重全部加载
-                    weights = [weight for weight in IODriver.list(path) if weight.endswith(".pt") or weight.endswith(".pth")]
+                    weights = [weight for weight in IODriver.list(path) if (weight.endswith(".pt") or weight.endswith(".pth"))]
                     # 因为 meta 的权重默认 按照张量并行分割，cat 的时候存在顺序问题，所以先排序一下
                     weights = sorted(weights, key=lambda x: int(x.split(".")[1]))
                     with progress(weights, desc="Loading state dict", total=len(weights), disable=hide_progress) as pbar:
@@ -565,7 +565,26 @@ class LlamaModel(BaseModel):
                         ckpt_path = os.path.join(path, ckpt_name)
                         IODriver.save(state_dict, ckpt_path)
                 if dist.is_initialized() and process_exclusion:
-                    dist.barrier()
+                    dist.barrier()=
+        if dist.get_rank() == 0:
+            config = {"architectures": ["LlamaForCausalLM"], 
+                      "bos_token_id": 0, 
+                      "eos_token_id": 1, 
+                      "hidden_act": "silu", 
+                      "hidden_size": args.hidden_size, 
+                      "intermediate_size": args.intermediate_size, 
+                      "initializer_range": 0.02, 
+                      "max_sequence_length": 2048, 
+                      "model_type": "llama", 
+                      "num_attention_heads": args.num_attention_heads, 
+                      "num_hidden_layers": args.num_hidden_layers, 
+                      "pad_token_id": -1, 
+                      "rms_norm_eps": args.layer_norm_epsilon, 
+                      "torch_dtype": "float16" if args.fp16 else "float32", 
+                      "transformers_version": "4.27.0.dev0", 
+                      "use_cache": True, 
+                      "vocab_size": args.vocab_size}
+            IODriver.save(json.dumps(config, indent=4, sort_keys=True), os.path.join(path, "config.json"))
         if env.rank == 0 and env.is_pipeline:
             # merge
             tmp_index_files = [tmp_index_file.format(i) for i in range(args.pp_size)]

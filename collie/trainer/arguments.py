@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Union
 
 from collie.log import logger
+from transformers.configuration_utils import PretrainedConfig
 
 @dataclass
 class Arguments:
@@ -46,6 +47,18 @@ class Arguments:
             "help": "Number of training epochs."
         }
     )
+    eval_per_n_steps: int = field(
+        default=0,
+        metadata={
+            "help": "Evaluate every n steps."
+        }
+    )
+    eval_per_n_epochs: int = field(
+        default=0,
+        metadata={
+            "help": "Evaluate every n epochs."
+        }
+    )
     train_micro_batch_size: int = field(
         default=1,
         metadata={
@@ -78,7 +91,7 @@ class Arguments:
     )
 
     @classmethod
-    def from_pretrained(cls, path: str, **kwargs):
+    def from_pretrained(cls, name_or_path: str, **kwargs):
         """
         Load pretrained model arguments.
 
@@ -88,10 +101,13 @@ class Arguments:
               directory. Choices: ['json', 'yaml']. Default: 'json'
             The remained kwargs is used to adjust arguments.
         """
-        suffix = kwargs.pop("suffix", "json")
-        if os.path.isdir(path):
-            path = os.path.join(path, f"config.{suffix}")
-        json_config = load_config(path)
+        if not os.path.exists(name_or_path):
+            json_config = PretrainedConfig.get_config_dict(name_or_path)[0]
+        else:
+            suffix = kwargs.pop("suffix", "json")
+            if os.path.isdir(name_or_path):
+                path = os.path.join(path, f"config.{suffix}")
+            json_config = load_config(path)
         arg_cls = cls._get_cls(json_config)
         argument = arg_cls()
         json_config.update(kwargs)

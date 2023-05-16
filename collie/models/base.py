@@ -1,4 +1,5 @@
 import os
+import torch
 import inspect
 import importlib
 from abc import abstractmethod
@@ -45,7 +46,8 @@ class BaseModel(nn.Module):
                 ), loss_fn=GPTLMLoss()
             )
             setattr(pipeline_model, "args", args)
-            setattr(pipeline_model, "_model_cls", model_cls)
+            setattr(pipeline_model, "save_parallel_state_dict", cls.save_parallel_state_dict)
+            setattr(pipeline_model, "load_parallel_state_dict", cls.load_parallel_state_dict)
             return pipeline_model
             
     def __new__(cls, args: Arguments, **kwargs):

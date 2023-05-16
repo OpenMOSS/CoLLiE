@@ -204,7 +204,10 @@ class CollieCausalLM(nn.Module, GenerationMixin):
             past_key_values=past_key_values
         )
     
-    def prepare_inputs_for_generation(self, input_ids, past_key_values: Optional[list] = None, *args, **kwargs):
+    def prepare_inputs_for_generation(self, 
+                                      input_ids, 
+                                      past_key_values: Optional[list] = None, 
+                                      attention_mask: Optional[torch.Tensor] = None, *args, **kwargs):
         return {"input_ids": input_ids, "past_key_values": past_key_values}
     
     def can_generate(self) -> bool:
