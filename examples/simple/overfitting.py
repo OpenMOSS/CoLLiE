@@ -15,8 +15,7 @@ tokenizer = LlamaTokenizer.from_pretrained("decapoda-research/llama-7b-hf",
 tokenizer.bos_token_id = 1
 tokenizer.eos_token_id = 2
 args = LlamaArguments.from_pretrained("decapoda-research/llama-7b-hf")
-args.pp_size = 2
-args.tp_size = 2
+args.pp_size = 5
 args.train_epochs = 10
 args.train_micro_batch_size = 1
 args.eval_batch_size = 1
@@ -46,7 +45,11 @@ trainer = Trainer(
     model = model,
     train_dataset=train_dataset,
     eval_dataset=eval_dataset,
-    eval_config=GenerationConfig(max_new_tokens=128, eos_token_id=2, pad_token_id=0, bos_token_id=1),
+    eval_config=GenerationConfig(max_new_tokens=128, 
+                                 eos_token_id=2, 
+                                 pad_token_id=0, 
+                                 bos_token_id=1,
+                                 use_cache=False),
     metrics=[DecodeMetric(tokenizer=tokenizer)],
     args=args
 )

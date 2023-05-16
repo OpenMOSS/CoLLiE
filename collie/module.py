@@ -154,8 +154,10 @@ class CollieCausalLM(nn.Module, GenerationMixin):
             start_pos = past_key_values[0][0].shape[1]
         else:
             start_pos = 0
+        if self.generation_config.use_cache:
+            input_ids = input_ids[:, start_pos:]
         if isinstance(self.engine, PipelineEngine):
-            batch = (input_ids[:, start_pos:], input_ids[:, start_pos:])
+            batch = (input_ids, input_ids)
             if self.communicate_buffer_shape is None:
                 self.communicate_buffer_shape = batch[0].shape
             else:
@@ -196,9 +198,13 @@ class CollieCausalLM(nn.Module, GenerationMixin):
                 logits = torch.zeros(tuple(shape.cpu().numpy().tolist())).to(dtype).cuda()
             dist.broadcast(tensor=logits, src=src_rank, group=self.engine.mpu.get_pipe_parallel_group())
         else:
-            logits = self.engine(input_ids[:, start_pos:])
+            logits = self.engine(input_ids)
             logits = logits.detach().clone()
-        past_key_values = self._get_past_key_values()
+        if self.generation_config.use_cache:
+            past_key_values = self._get_past_key_values()
+        else:
+            past_key_values = None
+            self._clean_past_key_values()
         return CausalLMOutputWithPast(
             logits=logits,
             past_key_values=past_key_values
@@ -244,6 +250,7 @@ class CollieCausalLM(nn.Module, GenerationMixin):
         for layer in self.layers:
             if hasattr(layer, "past_key_values"):
                 object.__setattr__(layer, "past_key_values", None)
+        get_accelerator().empty_cache()
                 
     def _set_past_key_values(self, past_key_values: list):
         if self.layers is None:
