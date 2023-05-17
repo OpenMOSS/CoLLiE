@@ -32,9 +32,11 @@ from collie.models.llama.arguments import LlamaArguments
 from collie.module import ColumnParallelLinearWithoutBias, RowParallelLinearWithoutBias, ColumnParallelLMHead
 from collie.utils import progress, env
 
-from typing import Union
+from typing import Union, Optional
 from collections import OrderedDict
 from transformers.modeling_utils import dtype_byte_size
+from transformers.modeling_utils import PretrainedConfig
+from transformers.modeling_outputs import CausalLMOutputWithPast
 
 class RotaryPositionEmbedding(nn.Module):
     def __init__(self, head_dim: int) -> None:
@@ -135,15 +137,13 @@ class LlamaLayer(nn.Module):
             eps=args.layer_norm_epsilon
         )
         # 务必保持变量名一致
+        self.use_cache = True
         self.past_key_values = None
         self.hidden_states = None
 
     def _forward(self, hidden_states: torch.Tensor):
         if not self.training:
-            if self.hidden_states is not None:
-                hidden_states = self.hidden_states
-            else:
-                self.hidden_states = hidden_states
+            self.hidden_states = hidden_states
         assert hidden_states.ndim == 3, f"hidden_states.shape must be (B, N, H), but got {hidden_states.shape}"
         batch_size, seq_len, _ = hidden_states.shape
         head_dim = self.args.hidden_size // self.args.num_attention_heads
@@ -158,7 +158,7 @@ class LlamaLayer(nn.Module):
         else:
             start_pos = 0
         query, key = self.self_attn["rotary_emb"](query, key, seq_len, start_pos)
-        if not self.training:
+        if not self.training and self.use_cache:
             if self.past_key_values is not None:
                 query = torch.cat([self.past_key_values[0], query], dim=1)
                 key = torch.cat([self.past_key_values[0], key], dim=1)
@@ -204,7 +204,7 @@ class LlamaLayer(nn.Module):
             return self._forward(hidden_states)
 
 
-class LlamaModel(BaseModel):
+class LlamaForCasualLM(BaseModel):
     def __init__(self, args: Union[LlamaArguments, str]) -> None:
         super().__init__()
         if isinstance(args, str):
@@ -225,15 +225,40 @@ class LlamaModel(BaseModel):
             self.args.vocab_size,
             bias=False
         )
+        # GenerationMixin 需要的额外参数
+        self.config = PretrainedConfig(is_decoder=True)
+        self.main_input_name = "input_ids"
+        
 
     def forward(self, input_ids: torch.Tensor):
+        past_key_values=self._get_past_key_values(self.layers)
+        if past_key_values is not None:
+            input_ids = input_ids[:, -1:]
         assert input_ids.ndim == 2, f"input_ids.shape must be (B, N), but got {input_ids.shape}"
         hidden_states = self.embed_tokens(input_ids)
         for layer in self.layers:
             hidden_states = layer(hidden_states)
         hidden_states = self.norm(hidden_states)
         logits = self.lm_head(hidden_states)
-        return logits
+        
+        return CausalLMOutputWithPast(
+            loss=None,
+            logits=logits,
+            past_key_values=self._get_past_key_values(self.layers),
+            hidden_states=self._get_hidden_states([*self.layers, self.lm_head]),
+            attentions=None
+        )
+        
+    def prepare_inputs_for_generation(self, 
+                                      input_ids: torch.Tensor,
+                                      past_key_values: Optional[list] = None,
+                                      attention_mask: Optional[torch.Tensor] = None):
+        self._set_use_cache(self.layers, self.generation_config.use_cache)
+        if past_key_values is None:
+            self._clean_past_key_values()
+        else:
+            self._set_past_key_values(self.layers, past_key_values)
+        return {"input_ids": input_ids}
 
     @classmethod
     def pipeline_layers(cls, args: Union[LlamaArguments, str]):
