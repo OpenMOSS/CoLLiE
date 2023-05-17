@@ -22,10 +22,10 @@ tokenizer.eos_token_id = 2
 args = LlamaArguments.from_pretrained("decapoda-research/llama-7b-hf")
 args.pp_size = 2
 args.tp_size = 2
-args.train_epochs = 10
-args.train_micro_batch_size = 1
-args.eval_batch_size = 1
-args.eval_per_n_steps = 2
+args.train_epochs = 3
+args.train_micro_batch_size = 64
+args.eval_batch_size = 32
+args.eval_per_n_steps = 4
 args.ds_config = {
     "fp16": {"enabled": True},
     "optimizer": {
@@ -53,57 +53,90 @@ class AlpacaDataset(Dataset):
     def __getitem__(self, idx):
         return self.alpaca[idx]
     
-def train_collate_fn(batch):
-    # input_ids_list = []
-    # label_ids_list = []
-    batch_inputs = []
+def train_collate_fn(batch, max_length=512):
+    input_ids_list = []
+    label_ids_list = []
     for sample in batch:
-        batch_inputs.append(sample['prompt'] + sample['label'])
-        # sample_label = tokenizer.bos_token + sample['prompt'] + sample['label'] + tokenizer.eos_token
-        # sample_input = sample_label
-        # input_ids = tokenizer.encode(sample_input, add_special_tokens=False)
-        # label_ids = tokenizer.encode(sample_label, add_special_tokens=False)
-        # prompt_len = len(tokenizer.encode(sample['prompt'], add_special_tokens=False))
-        # input_ids = input_ids[1:prompt_len+1] + [tokenizer.pad_token_id] * (len(label_ids) - prompt_len -1)
-        # label_ids = [-100] * (prompt_len + 1) + label_ids[prompt_len + 1:]
-        # input_ids_list.append(torch.tensor(input_ids))
-        # label_ids_list.append(torch.tensor(label_ids))
-    input_ids = tokenizer(batch_inputs, return_tensors="pt", add_eos_token=True)["input_ids"]
-    # input_ids = torch.nn.utils.rnn.pad_sequence(input_ids_list, batch_first=True)
-    # label_ids = torch.nn.utils.rnn.pad_sequence(label_ids_list, batch_first=True)
-    return input_ids, input_ids
+        sample_prompt = sample['prompt']
+        sample_label = sample['label']
+        sample_prompt_ids = [1] + tokenizer.encode(sample_prompt, add_special_tokens=False)
+        sample_label_ids = tokenizer.encode(sample_label, add_special_tokens=False) + [2]
+        # heuristic truncation
+        if len(sample_prompt_ids) + len(sample_label_ids) >= max_length:
+            if len(sample_label_ids) >= max_length:
+                # truncate front 64 tokens
+                sample_label_ids = sample_label_ids[:63] + [2]
+            temp_length = (max_length - len(sample_label_ids)) // 2
+            sample_prompt_ids = sample_prompt_ids[:temp_length] + sample_prompt_ids[-temp_length:]
+        input_ids_list.append(sample_prompt_ids + sample_label_ids)
+        label_ids_list.append([0] * len(sample_prompt_ids) + sample_label_ids)
+    # pad to longest
+    batch_size = len(input_ids_list)
+    longest = max(len(input_ids) for input_ids in input_ids_list)
+    input_ids_tensor = torch.full((batch_size, longest), 0).long()
+    label_ids_tensor = torch.full((batch_size, longest), 0).long()
+    for i in range(batch_size):
+        input_ids = input_ids_list[i]
+        label_ids = label_ids_list[i]
+        assert len(input_ids) == len(label_ids)
+        input_ids_tensor[i, -len(input_ids):] = torch.LongTensor(input_ids)
+        label_ids_tensor[i, -len(label_ids):] = torch.LongTensor(label_ids)
+    return input_ids_tensor, label_ids_tensor
 
-def eval_collate_fn(batch):
-    batch_inputs = []
+def eval_collate_fn(batch, max_length=512):
+    input_ids_list = []
+    label_ids_list = []
     for sample in batch:
-        batch_inputs.append(sample['prompt'])
-    input_ids = tokenizer(batch_inputs, return_tensors="pt", add_eos_token=False)["input_ids"]
-    return input_ids, input_ids  
+        sample_prompt = sample['prompt']
+        sample_label = sample['label']
+        sample_prompt_ids = [1] + tokenizer.encode(sample_prompt, add_special_tokens=False)
+        sample_label_ids = tokenizer.encode(sample_label, add_special_tokens=False) + [2]
+        # heuristic truncation
+        if len(sample_prompt_ids) + len(sample_label_ids) >= max_length:
+            if len(sample_label_ids) >= max_length:
+                # truncate front 64 tokens
+                sample_label_ids = sample_label_ids[:63] + [2]
+            temp_length = (max_length - len(sample_label_ids)) // 2
+            sample_prompt_ids = sample_prompt_ids[:temp_length] + sample_prompt_ids[-temp_length:]
+        input_ids_list.append(sample_prompt_ids + sample_label_ids)
+        label_ids_list.append([0] * len(sample_prompt_ids) + sample_label_ids)
+    # pad to longest
+    batch_size = len(input_ids_list)
+    longest = max(len(input_ids) for input_ids in input_ids_list)
+    input_ids_tensor = torch.full((batch_size, longest), 0).long()
+    label_ids_tensor = torch.full((batch_size, longest), 0).long()
+    for i in range(batch_size):
+        input_ids = input_ids_list[i]
+        label_ids = label_ids_list[i]
+        assert len(input_ids) == len(label_ids)
+        input_ids_tensor[i, -len(input_ids):] = torch.LongTensor(input_ids)
+        label_ids_tensor[i, -len(label_ids):] = torch.LongTensor(label_ids)
+    return input_ids_tensor, label_ids_tensor
+
 
 dataset = AlpacaDataset('alpaca_data.json')
-print(dataset[0])
-# train_dataset = dataset[:-32]
-# eval_dataset = dataset[-32:]
+train_dataset = dataset[:-32]
+eval_dataset = dataset[-32:]
 
-# model = LlamaModel(args)
-# state_dict = LlamaModel.load_parallel_state_dict(
-#     path="hdd:s3://opennlplab_hdd/models/llama/llama-7b-hf/",
-#     protocol="petrel",
-#     format="hf",
-#     process_exclusion=False,
-#     args=args)
-# model.load_state_dict(state_dict)
+model = LlamaModel(args)
+state_dict = LlamaModel.load_parallel_state_dict(
+    path="hdd:s3://opennlplab_hdd/models/llama/llama-7b-hf/",
+    protocol="petrel",
+    format="hf",
+    process_exclusion=False,
+    args=args)
+model.load_state_dict(state_dict)
 
-# trainer = Trainer(
-#     model = model,
-#     train_dataset=train_dataset,
-#     eval_dataset=eval_dataset,
-#     train_dataset_collate_fn=train_collate_fn,
-#     eval_dataset_collate_fn=eval_collate_fn,
-#     eval_config=GenerationConfig(max_new_tokens=128, eos_token_id=2, pad_token_id=0, bos_token_id=1),
-#     metrics=[DecodeMetric(tokenizer=tokenizer)],
-#     args=args
-# )
+trainer = Trainer(
+    model = model,
+    train_dataset=train_dataset,
+    eval_dataset=eval_dataset,
+    train_dataset_collate_fn=train_collate_fn,
+    eval_dataset_collate_fn=eval_collate_fn,
+    eval_config=GenerationConfig(max_new_tokens=128, eos_token_id=2, pad_token_id=0, bos_token_id=1),
+    metrics=[DecodeMetric(tokenizer=tokenizer)],
+    args=args
+)
 
-# torch.cuda.empty_cache()
-# trainer.train()
+torch.cuda.empty_cache()
+trainer.train()
