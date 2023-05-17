@@ -6,8 +6,7 @@ from collie.trainer.arguments import Arguments, load_config
 from collie.module import PipelineGenerationMixin, GPTLMLoss, PipelineModel
 from collie.driver.io.file import FileIODriver
 from collie.driver.io.petrel import PetrelIODriver
-from collie.log.print import print
-from collie.log import logger
+from collie.log import logger, print
 from collie.utils import progress, env
 
 import os
@@ -175,10 +174,11 @@ class Trainer:
                 result = self.eval_fn(self, batch, train_meta)
                 if isinstance(self.engine, PipelineEngine):
                     self.engine.total_loss = total_loss
-                for metric in self.metrics:
-                    if metric.gather_result:
-                        result = metric.gather(result)
-                    if not metric.only_rank0_update or dist.get_rank() == 0:
+                if (self.args.pp_size == 1 or env.pp_rank == self.args.pp_size - 1) \
+                    and (self.args.tp_size == 1 or env.tp_rank == self.args.tp_size - 1):
+                    for metric in self.metrics:
+                        if metric.gather_result:
+                            result = metric.gather(result)
                         metric.update(result)
                 tqbar_batch.set_postfix(
                     batch=f"{batch_idx + 1}/{num_eval_batches}")
@@ -208,8 +208,7 @@ class Trainer:
             )
         else:
             generation_model = trainer.engine
-        input_ids = generation_model.generate(input_ids=input_ids.cuda(), attention_mask=torch.ones_like(input_ids).cuda())
-        generation_model._clean_past_key_values()
+        input_ids = generation_model.generate(input_ids=input_ids.cuda(), attention_mask=torch.ones_like(input_ids).cuda(), generation_config=trainer.eval_config)
         return {
             "input_ids": input_ids,
             "labels": labels,

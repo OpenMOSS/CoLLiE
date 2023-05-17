@@ -7,10 +7,8 @@ from collie.trainer.trainer import Trainer
 
 class BaseMetric(ABC):
     def __init__(self, 
-                 gather_result: bool=True,
-                 only_rank0_update: bool=True) -> None:
+                 gather_result: bool=False) -> None:
         self.gather_result = gather_result
-        self.only_rank0_update = only_rank0_update
         
     def construct(self, trainer: Trainer):
         self.trainer = trainer

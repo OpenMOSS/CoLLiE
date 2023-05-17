@@ -117,6 +117,7 @@ def patch_deepspeed(args):
 def patch_megatron():
     parallel_state.get_model_parallel_world_size = lambda: parallel_state.get_tensor_model_parallel_world_size()
     parallel_state.get_model_parallel_rank = lambda: parallel_state.get_tensor_model_parallel_rank()
+    parallel_state.get_pipe_parallel_rank = lambda: parallel_state.get_pipeline_model_parallel_rank()
 
 
 class env:
