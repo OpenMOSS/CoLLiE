@@ -136,8 +136,14 @@ class LlamaLayer(nn.Module):
         )
         # 务必保持变量名一致
         self.past_key_values = None
+        self.hidden_states = None
 
     def _forward(self, hidden_states: torch.Tensor):
+        if not self.training:
+            if self.hidden_states is not None:
+                hidden_states = self.hidden_states
+            else:
+                self.hidden_states = hidden_states
         assert hidden_states.ndim == 3, f"hidden_states.shape must be (B, N, H), but got {hidden_states.shape}"
         batch_size, seq_len, _ = hidden_states.shape
         head_dim = self.args.hidden_size // self.args.num_attention_heads
