@@ -252,7 +252,8 @@ class LlamaForCasualLM(BaseModel):
     def prepare_inputs_for_generation(self, 
                                       input_ids: torch.Tensor,
                                       past_key_values: Optional[list] = None,
-                                      attention_mask: Optional[torch.Tensor] = None):
+                                      attention_mask: Optional[torch.Tensor] = None,
+                                      **kwargs):
         self._set_use_cache(self.layers, self.generation_config.use_cache)
         if past_key_values is None:
             self._clean_past_key_values()
