@@ -164,13 +164,9 @@ class Arguments:
         assert isinstance(self.ds_config, dict), self.ds_config
 
     def __str__(self) -> str:        
-
-        width = os.get_terminal_size().columns // 2 * 2
         title = self.__class__.__name__
-        single_side = (width - len(title) - 2) // 2
         r = f"{title}:\n"
         r += _repr_dict(self.__dict__, 0)
-
         return r
 
     
