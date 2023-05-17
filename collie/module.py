@@ -148,6 +148,7 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
     def __init__(self, engine: DeepSpeedEngine) -> None:
         super().__init__()
         self.config = PretrainedConfig(is_decoder=True)
+        self.generation_config = GenerationConfig()
         self.main_input_name = "input_ids"
         self.device = torch.device("cuda")
         self.engine = engine
