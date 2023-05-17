@@ -1,6 +1,7 @@
 import os
 import json
 import torch
+from inspect import signature
 from typing import Optional, Sequence
 
 from torch import nn
@@ -33,7 +34,8 @@ class ColumnParallelLMHead(ColumnParallelLinearWithoutBias):
         self.hidden_states = None
 
     def forward(self, input_):
-        self.hidden_states = input_
+        if not self.training:
+            self.hidden_states = input_
         return super().forward(input_)
 
 class RowParallelLinearWithoutBias(RowParallelLinear):
