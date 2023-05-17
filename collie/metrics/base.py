@@ -1,4 +1,3 @@
-from deepspeed.runtime.pipe.engine import PipelineEngine
 from abc import ABC, abstractmethod
 import torch.distributed as dist
 from typing import Any
