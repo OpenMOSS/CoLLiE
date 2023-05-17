@@ -156,6 +156,7 @@ class LlamaLayer(nn.Module):
         if not self.training and self.past_key_values is not None:
             start_pos = self.past_key_values[0].shape[1]
         else:
+            self.past_key_values = None
             start_pos = 0
         query, key = self.self_attn["rotary_emb"](query, key, seq_len, start_pos)
         if not self.training and self.use_cache:
@@ -228,7 +229,7 @@ class LlamaForCasualLM(BaseModel):
         self.main_input_name = "input_ids"
         
 
-    def forward(self, input_ids: torch.Tensor):
+    def forward(self, input_ids: torch.Tensor, **kwargs):
         past_key_values=self._get_past_key_values(self.layers)
         if past_key_values is not None:
             input_ids = input_ids[:, -1:]
@@ -254,7 +255,7 @@ class LlamaForCasualLM(BaseModel):
                                       **kwargs):
         self._set_use_cache(self.layers, self.generation_config.use_cache)
         if past_key_values is None:
-            self._clean_past_key_values()
+            self._clean_past_key_values(self.layers)
         else:
             self._set_past_key_values(self.layers, past_key_values)
         return {"input_ids": input_ids}

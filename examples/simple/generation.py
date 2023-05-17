@@ -56,7 +56,7 @@ trainer = Trainer(model=model,
                   train_dataset=dataset,
                   eval_dataset=dataset,
                   eval_config=GenerationConfig(max_new_tokens=100),
-                  metrics=[DecodeMetric(tokenizer=tokenizer, gather_result=True, only_rank0_update=True)],
+                  metrics=[DecodeMetric(tokenizer=tokenizer)],
                   eval_dataset_collate_fn=collate_fn,
                   train_dataset_collate_fn=collate_fn,
                   args=args)

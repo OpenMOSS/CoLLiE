@@ -22,6 +22,7 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from collie.log import logger
 from collie.trainer.arguments import CollieConfig
+from collie.utils import env
 
 class ColumnParallelLinearWithoutBias(ColumnParallelLinear):
     def forward(self, input_):
@@ -157,7 +158,8 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
         self.communicate_buffer_shape = None
         self._find_layers()
         
-    def forward(self, input_ids: torch.Tensor, past_key_values: Optional[list] = None, *args, **kwargs) -> torch.Tensor:
+    def forward(self, input_ids: torch.Tensor, **kwargs) -> torch.Tensor:
+        past_key_values=self._get_past_key_values()
         if past_key_values is not None:
             input_ids = input_ids[:, -1:]
         batch = (input_ids, input_ids)
@@ -217,7 +219,7 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
         if past_key_values is None:
             self._clean_past_key_values()
         else:
-            self._set_past_key_values(self.layers, past_key_values)
+            self._set_past_key_values(past_key_values)
         return {"input_ids": input_ids}
     
     def can_generate(self) -> bool:

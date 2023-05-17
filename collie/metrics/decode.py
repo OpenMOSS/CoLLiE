@@ -1,6 +1,5 @@
 from typing import Any
 from collie.metrics.base import BaseMetric
-from collie.log.print import print
 import torch
 
 class DecodeMetric(BaseMetric):
@@ -9,9 +8,8 @@ class DecodeMetric(BaseMetric):
                  verbose: bool = True,
                  save_to_file: bool = False,
                  save_path: str = None,
-                 gather_result: bool = True, 
-                 only_rank0_update: bool = True) -> None:
-        super().__init__(gather_result, only_rank0_update)
+                 gather_result: bool = False) -> None:
+        super().__init__(gather_result)
         self.verbose = verbose
         self.save_to_file = save_to_file
         self.save_path = save_path
