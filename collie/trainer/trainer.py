@@ -2,7 +2,7 @@ import os
 import json
 from typing import Optional, Callable, Union, Tuple, Iterable, Any, Dict, Sequence
 
-from collie.trainer.arguments import Arguments, load_config
+from collie.trainer.arguments import CollieConfig, load_config
 from collie.module import PipelineGenerationMixin, GPTLMLoss, PipelineModel
 from collie.driver.io.file import FileIODriver
 from collie.driver.io.petrel import PetrelIODriver
@@ -25,7 +25,7 @@ from transformers.generation.utils import GenerationConfig
 class Trainer:
     def __init__(self, 
                  model: torch.nn.Module,
-                 args: Union[Arguments, str],
+                 config: Union[CollieConfig, str],
                  loss_fn: Callable = GPTLMLoss(),
                  train_fn: Optional[Callable] = None,
                  eval_fn: Optional[Callable] = None,
@@ -49,7 +49,7 @@ class Trainer:
         self.eval_dataset_collate_fn = eval_dataset_collate_fn
         self.eval_config = eval_config
         self.metrics = metrics
-        self.args = args
+        self.config = config
         self.communicate_buffer_shape = None
         self.set_ds_config()
         self.setup_parallel_model()
@@ -64,40 +64,40 @@ class Trainer:
         )
         
     def set_ds_config(self):
-        if isinstance(self.args, str):
-            self.args = load_config(self.args)
-        if isinstance(self.args.ds_config, str):
-            self.args.ds_config = load_config(self.args.ds_config)
-        if "train_micro_batch_size_per_gpu" not in self.args.ds_config.keys():
-            self.args.ds_config["train_micro_batch_size_per_gpu"] = self.args.train_micro_batch_size
-        if "gradient_accumulation_steps" not in self.args.ds_config.keys():
-            self.args.ds_config["gradient_accumulation_steps"] = self.args.gradient_accumulation_steps
-        print(self.args)
+        if isinstance(self.config, str):
+            self.config = load_config(self.config)
+        if isinstance(self.config.ds_config, str):
+            self.config.ds_config = load_config(self.config.ds_config)
+        if "train_micro_batch_size_per_gpu" not in self.config.ds_config.keys():
+            self.config.ds_config["train_micro_batch_size_per_gpu"] = self.config.train_micro_batch_size
+        if "gradient_accumulation_steps" not in self.config.ds_config.keys():
+            self.config.ds_config["gradient_accumulation_steps"] = self.config.gradient_accumulation_steps
+        print(self.config)
         
     def setup_parallel_model(self):
         """Setup parallel model.
         """
-        if dist.get_world_size() != self.args.tp_size * self.args.dp_size * self.args.pp_size:
+        if dist.get_world_size() != self.config.tp_size * self.config.dp_size * self.config.pp_size:
             logger.rank_zero_warning("The world size is not equal to the product of the parallel sizes set."
-                                     f"{dist.get_world_size()} != {self.args.tp_size} * {self.args.dp_size} * {self.args.dp_size}.")
-            self.args.dp_size = dist.get_world_size() // (self.args.tp_size * self.args.pp_size)
-            logger.rank_zero_warning(f"Set dp_size to {self.args.dp_size}.")
-        if self.args.pp_size > 1:
+                                     f"{dist.get_world_size()} != {self.config.tp_size} * {self.config.dp_size} * {self.config.dp_size}.")
+            self.config.dp_size = dist.get_world_size() // (self.config.tp_size * self.config.pp_size)
+            logger.rank_zero_warning(f"Set dp_size to {self.config.dp_size}.")
+        if self.config.pp_size > 1:
             self.model.loss_fn = self.loss_fn
         self.engine, self.optimizer, _, _ = deepspeed.initialize(
             model=self.model,
             model_parameters=[p for p in self.model.parameters() if p.requires_grad],
             optimizer=self.optimizer,
-            mpu=parallel_state if self.args.pp_size == 1 else None,
-            config=self.args.ds_config
+            mpu=parallel_state if self.config.pp_size == 1 else None,
+            config=self.config.ds_config
         )
-        self.args.train_micro_batch_size = self.engine.train_micro_batch_size_per_gpu()
-        self.args.gradient_accumulation_steps = self.engine.gradient_accumulation_steps()
+        self.config.train_micro_batch_size = self.engine.train_micro_batch_size_per_gpu()
+        self.config.gradient_accumulation_steps = self.engine.gradient_accumulation_steps()
 
         # train_dataloader
         if self.train_dataset is None:
             self.train_dataloader = None
-        if self.args.pp_size == 1:
+        if self.config.pp_size == 1:
             self.train_dataloader = self.engine.deepspeed_io(
                 self.train_dataset, collate_fn=self.train_dataset_collate_fn
             )
@@ -114,7 +114,7 @@ class Trainer:
         if self.eval_dataset is not None:
             self.eval_dataloader = self.engine.deepspeed_io(
                 self.eval_dataset,
-                batch_size=self.args.eval_batch_size,
+                batch_size=self.config.eval_batch_size,
                 route=ROUTE_EVAL,
                 pin_memory=True,
                 data_sampler=None,
@@ -134,7 +134,7 @@ class Trainer:
         loss = 0.0
         if dataloader is not None:
             train_dataloader = dataloader
-        with progress(range(self.args.train_epochs), desc="Training Epoch: ", disable=dist.get_rank() != 0) as tqbar_epoch:
+        with progress(range(self.config.train_epochs), desc="Training Epoch: ", disable=dist.get_rank() != 0) as tqbar_epoch:
             for epoch_idx in tqbar_epoch:
                 with progress(train_dataloader, desc="Training Batch: ", disable=dist.get_rank() != 0) as tqbar_batch:
                     for batch_idx, batch in enumerate(tqbar_batch):
@@ -149,10 +149,10 @@ class Trainer:
                         tqbar_batch.set_postfix(
                             loss=round(loss, 2), 
                             batch=f"{batch_idx + 1}/{len(self.train_dataloader)}")
-                        if self.args.eval_per_n_steps > 0 and (batch_idx + 1) % self.args.eval_per_n_steps == 0:
+                        if self.config.eval_per_n_steps > 0 and (batch_idx + 1) % self.config.eval_per_n_steps == 0:
                             self.eval(train_meta={"epoch_idx": epoch_idx, "batch_idx": batch_idx, "last_loss": loss})
-                tqbar_epoch.set_postfix(epoch=f"{epoch_idx + 1}/{self.args.train_epochs}")
-                if self.args.eval_per_n_epochs > 0 and (epoch_idx + 1) % self.args.eval_per_n_epochs == 0:
+                tqbar_epoch.set_postfix(epoch=f"{epoch_idx + 1}/{self.config.train_epochs}")
+                if self.config.eval_per_n_epochs > 0 and (epoch_idx + 1) % self.config.eval_per_n_epochs == 0:
                             self.eval(train_meta={"epoch_idx": epoch_idx, "batch_idx": 0, "last_loss": loss})
                 
     def eval(self, 
@@ -187,7 +187,7 @@ class Trainer:
                 
     @staticmethod
     def train_fn(trainer, batch: Tuple) -> float:
-        if trainer.args.pp_size > 1:
+        if trainer.config.pp_size > 1:
             loss = trainer.engine.train_batch(data_iter=iter([batch]))
         else:
             input_ids, labels = batch
@@ -207,7 +207,7 @@ class Trainer:
                 engine=trainer.engine
             )
         else:
-            generation_model = trainer.engine
+            generation_model = trainer.model
         input_ids = generation_model.generate(input_ids=input_ids.cuda(), attention_mask=torch.ones_like(input_ids).cuda())
         generation_model._clean_past_key_values()
         return {
@@ -258,7 +258,7 @@ class Trainer:
         # state dict
         state_dict = self.model.state_dict()
         self.model.save_parallel_state_dict(
-            state_dict, path, self.args, process_exclusion,
+            state_dict, path, self.config, process_exclusion,
             protocol=protocol
         )
 
@@ -324,7 +324,7 @@ class Trainer:
 
         # state_dict
         state_dict = self.model.load_parallel_state_dict(
-            path=path, args=self.args, process_exclusion=process_exclusion,
+            path=path, args=self.config, process_exclusion=process_exclusion,
         )
         self.model.load_state_dict(state_dict)
 

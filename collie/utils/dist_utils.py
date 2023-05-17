@@ -13,7 +13,7 @@ from megatron.core import parallel_state, tensor_parallel
 
 from .utils import classproperty
 
-def setup_distributation(args) -> None:
+def setup_distributation(config) -> None:
     """Setup the distributed training environment.
     Support two kinds of distributed training:
     1. launch from torchrun
@@ -23,7 +23,7 @@ def setup_distributation(args) -> None:
     """
     if torch.distributed.is_initialized():
         return
-    patch_deepspeed(args);patch_megatron()
+    patch_deepspeed(config);patch_megatron()
     if "WORLD_SIZE" in os.environ.keys():
         # launch from pytorch
         master_addr = os.environ.get("MASTER_ADDR", "localhost")
@@ -66,34 +66,34 @@ def setup_distributation(args) -> None:
                                world_size=int(os.environ["WORLD_SIZE"]),
                                rank=int(os.environ["RANK"]))
     parallel_state.initialize_model_parallel(
-        tensor_model_parallel_size=args.tp_size,
-        pipeline_model_parallel_size=args.pp_size
+        tensor_model_parallel_size=config.tp_size,
+        pipeline_model_parallel_size=config.pp_size
     )
     # random seed has to be set after deepspeed.init_distributed
-    set_seed(args)
+    set_seed(config)
     torch.cuda.set_device(torch.device('cuda:{}'.format(os.environ["LOCAL_RANK"])))
     os.environ["COLLIE_PP_RANK"] = "0"
     os.environ["COLLIE_TP_RANK"] = str(parallel_state.get_tensor_model_parallel_rank())
     os.environ["COLLIE_DP_RANK"] = str(parallel_state.get_data_parallel_rank())
 
-def set_seed(args):
+def set_seed(config):
     """Set random seed for reproducibility.
     """
-    tensor_parallel.model_parallel_cuda_manual_seed(args.seed)
-    set_random_seed(args.seed)
+    tensor_parallel.model_parallel_cuda_manual_seed(config.seed)
+    set_random_seed(config.seed)
 
-def patch_deepspeed(args):
-    if hasattr(args, "ds_config") \
-        and "zero_optimization" in args.ds_config.keys() \
-            and "offload_optimizer" in args.ds_config["zero_optimization"].keys() \
-                and "pin_memory" in args.ds_config["zero_optimization"]["offload_optimizer"].keys() \
-                    and not args.ds_config["zero_optimization"]["offload_optimizer"]["pin_memory"]:
+def patch_deepspeed(config):
+    if hasattr(config, "ds_config") \
+        and "zero_optimization" in config.ds_config.keys() \
+            and "offload_optimizer" in config.ds_config["zero_optimization"].keys() \
+                and "pin_memory" in config.ds_config["zero_optimization"]["offload_optimizer"].keys() \
+                    and not config.ds_config["zero_optimization"]["offload_optimizer"]["pin_memory"]:
         get_accelerator().pin_memory = lambda x: x
-    if hasattr(args, "ds_config") \
-        and "zero_optimization" in args.ds_config.keys() \
-            and "offload_param" in args.ds_config["zero_optimization"].keys() \
-                and "pin_memory" in args.ds_config["zero_optimization"]["offload_param"].keys() \
-                    and not args.ds_config["zero_optimization"]["offload_param"]["pin_memory"]:
+    if hasattr(config, "ds_config") \
+        and "zero_optimization" in config.ds_config.keys() \
+            and "offload_param" in config.ds_config["zero_optimization"].keys() \
+                and "pin_memory" in config.ds_config["zero_optimization"]["offload_param"].keys() \
+                    and not config.ds_config["zero_optimization"]["offload_param"]["pin_memory"]:
         get_accelerator().pin_memory = lambda x: x
     raw_init = copy.deepcopy(DeepSpeedZeroOptimizer.__init__)
     def safe_init(self, *args, **kwargs):

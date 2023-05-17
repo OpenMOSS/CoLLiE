@@ -21,7 +21,7 @@ from transformers.modeling_utils import PretrainedConfig
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from collie.log import logger
-from collie.trainer.arguments import Arguments
+from collie.trainer.arguments import CollieConfig
 
 class ColumnParallelLinearWithoutBias(ColumnParallelLinear):
     def forward(self, input_):
@@ -152,7 +152,7 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
         self.main_input_name = "input_ids"
         self.device = torch.device("cuda")
         self.engine = engine
-        self.args: Arguments = self.engine.module.args
+        self.config: CollieConfig = self.engine.module.config
         self.layers = None
         self.communicate_buffer_shape = None
         self._find_layers()
@@ -188,12 +188,12 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
         dist.broadcast(tensor=shape, src=src_rank, group=self.engine.mpu.get_pipe_parallel_group())
         dtype = torch.float32
         try:
-            if self.args.ds_config["fp16"]["enabled"]:
+            if self.config.ds_config["fp16"]["enabled"]:
                 dtype = torch.float16
         except KeyError:
             pass
         try:
-            if self.args.ds_config["bf16"]["enabled"]:
+            if self.config.ds_config["bf16"]["enabled"]:
                 dtype = torch.bfloat16
         except KeyError:
             pass

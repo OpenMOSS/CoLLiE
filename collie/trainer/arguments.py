@@ -5,12 +5,10 @@ from dataclasses import dataclass, field
 from typing import Union
 
 from collie.log import logger
-from transformers.configuration_utils import PretrainedConfig
+from transformers import PretrainedConfig, AutoConfig
 
 @dataclass
-class Arguments:
-    """Arguments for Trainer.
-    """
+class CollieConfig:
     seed: int = field(
         default=42,
         metadata={
@@ -83,10 +81,10 @@ class Arguments:
             "help": "DeepSpeed configuration file."
         }
     )
-    model_type: str = field(
-        default="",
+    model_config: PretrainedConfig = field(
+        default=None,
         metadata={
-            "help": "Type of model. Such as 'moss', 'llama'."
+            "help": "Model configuration."
         }
     )
 
@@ -97,66 +95,22 @@ class Arguments:
 
         :param path:
         :param kwargs:
-            - suffix: The suffix of config file. Used only when ``path`` is a
-              directory. Choices: ['json', 'yaml']. Default: 'json'
             The remained kwargs is used to adjust arguments.
         """
-        if not os.path.exists(name_or_path):
-            json_config = PretrainedConfig.get_config_dict(name_or_path)[0]
-        else:
-            suffix = kwargs.pop("suffix", "json")
-            if os.path.isdir(name_or_path):
-                path = os.path.join(name_or_path, f"config.{suffix}")
-            json_config = load_config(path)
-        arg_cls = cls._get_cls(json_config)
-        argument = arg_cls()
-        json_config.update(kwargs)
-        argument.update(**json_config)
+        cfg = cls()
+        for key in list(kwargs.keys()):
+            if key in cls.__annotations__.keys():
+                setattr(cfg, key, kwargs.pop(key))
 
-        return argument
+        cfg.model_config = AutoConfig.from_pretrained(name_or_path, **kwargs)
+
+        return cfg
     
-    def update(self, **kwargs):
-        unexpected = set()
-        for key, value in kwargs.items():
-            if key in dir(self):
-                setattr(self, key, value)
-            else:
-                unexpected.add(key)
-        if len(unexpected) != 0:
-            logger.warning(
-                f"The following arguments from `from_pretrained` are not "
-                f"defined in {self.__class__.__name__} and will be ignored:\n"
-                f"{list(unexpected)}"
-            )
+    def save_pretrained(self, path):
+        self.model_config.save_pretrained(path)
 
-    @classmethod
-    def _get_cls(cls, json_config):
-        model_type = json_config.get("model_type", None)
-        # for hf
-        if model_type is None:
-            raise ValueError(
-                "'model_type' must be set in your config file to figure out "
-                "the type of pretrained model."
-            )
-        if cls.model_type != "" and cls.model_type != model_type:
-            logger.warning(
-                f"The model type of pretrained config `{model_type}` does not "
-                f"match the current model's type `{cls.model_type}`, which "
-                f"may cause some unexpected behaviours."
-            )
-            model_type = cls.model_type
-        if cls.model_type != "":
-            return cls
-
-        mod = importlib.import_module(
-            ".arguments", package=f"collie.models.{model_type}"
-        )
-        classes = inspect.getmembers(mod, inspect.isclass)
-        for name, arg_cls in classes:
-            if arg_cls.model_type == model_type:
-                return arg_cls
-
-        raise NotImplementedError(f"Unexpected Argument type `{model_type}`")
+    def __getattr__(self, name):
+        return getattr(self.model_config, name)
 
     def __post_init__(self):
         if isinstance(self.ds_config, str):
@@ -181,6 +135,8 @@ def load_config(path: str):
     return content
 
 def _repr_dict(d, depth):
+    if isinstance(d, PretrainedConfig):
+        d = d.to_diff_dict()
     if not isinstance(d, dict):
         return f" {d}"
     space = "    "

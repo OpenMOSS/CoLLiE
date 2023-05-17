@@ -18,22 +18,21 @@ from collie.module import (ColumnParallelLinearWithoutBias,
                            RowParallelLinearWithoutBias,
                            VocabParallelEmbedding,
                            ColumnParallelLMHead)
-from collie.trainer.arguments import load_config
 from collie.driver.io.file import FileIODriver
 from collie.driver.io.petrel import PetrelIODriver
 from collie.models.base import BaseModel
 from collie.utils import env, progress
-from .arguments import MossArguments
+from collie.trainer.arguments import CollieConfig
 from .utils import (apply_rotary_pos_emb, create_sinusoidal_positions,
                     set_index_dict, _state_dict_to_save, _state_dict_to_load,
                     _weight_name_in_current_rank)
 
 class MossAttention(nn.Module):
-    def __init__(self, args):
+    def __init__(self, config):
         super().__init__()
 
-        self.args = args
-        max_positions = args.n_positions
+        self.config = config
+        max_positions = config.n_positions
         self.register_buffer(
             "causal_mask",
             torch.tril(torch.ones((max_positions, max_positions), dtype=torch.bool)).view(
@@ -41,11 +40,11 @@ class MossAttention(nn.Module):
             ),
         )
 
-        self.attn_dropout = nn.Dropout(args.attn_pdrop)
-        self.resid_dropout = nn.Dropout(args.resid_pdrop)
+        self.attn_dropout = nn.Dropout(config.attn_pdrop)
+        self.resid_dropout = nn.Dropout(config.resid_pdrop)
 
-        self.embed_dim = args.n_embd
-        self.num_attention_heads = args.n_head
+        self.embed_dim = config.n_embd
+        self.num_attention_heads = config.n_head
         self.head_dim = self.embed_dim // self.num_attention_heads
         if self.head_dim * self.num_attention_heads != self.embed_dim:
             raise ValueError(
@@ -60,7 +59,7 @@ class MossAttention(nn.Module):
         self.out_proj = RowParallelLinearWithoutBias(
             self.embed_dim, self.embed_dim, bias=False, input_is_parallel=False
         )
-        self.rotary_dim = args.rotary_dim
+        self.rotary_dim = config.rotary_dim
         pos_embd_dim = self.rotary_dim or self.embed_dim
         self.embed_positions = create_sinusoidal_positions(max_positions, pos_embd_dim)
 
@@ -199,9 +198,9 @@ class MossAttention(nn.Module):
 
 
 class MossMLP(nn.Module):
-    def __init__(self, intermediate_size, args):  # in MLP: intermediate_size= 4 * embed_dim
+    def __init__(self, intermediate_size, config):  # in MLP: intermediate_size= 4 * embed_dim
         super().__init__()
-        embed_dim = args.n_embd
+        embed_dim = config.n_embd
 
         self.fc_in = ColumnParallelLinearWithoutBias(
             embed_dim, intermediate_size, gather_output=False)
@@ -209,7 +208,7 @@ class MossMLP(nn.Module):
             intermediate_size, embed_dim, input_is_parallel=True)
 
         self.act = NewGELUActivation()
-        self.dropout = nn.Dropout(args.resid_pdrop)
+        self.dropout = nn.Dropout(config.resid_pdrop)
 
     def forward(self, hidden_states: Optional[torch.FloatTensor]) -> torch.FloatTensor:
         hidden_states = self.fc_in(hidden_states)
@@ -220,15 +219,16 @@ class MossMLP(nn.Module):
 
 
 class MossBlock(nn.Module):
-    def __init__(self, args, layer_idx):
+    def __init__(self, config, layer_idx):
         super().__init__()
-        inner_dim = args.n_inner if args.n_inner is not None else 4 * args.n_embd
-        self.ln_1 = nn.LayerNorm(args.n_embd, eps=args.layer_norm_epsilon)
-        self.attn = MossAttention(args)
-        self.mlp = MossMLP(inner_dim, args)
-        self.args = args
+        inner_dim = config.n_inner if config.n_inner is not None else 4 * config.n_embd
+        self.ln_1 = nn.LayerNorm(config.n_embd, eps=config.layer_norm_epsilon)
+        self.attn = MossAttention(config)
+        self.mlp = MossMLP(inner_dim, config)
+        self.config = config
         self.idx = layer_idx
 
+        self.use_cache = True
         self.past_key_values = None
         self.hidden_states = None
 
@@ -265,8 +265,10 @@ class MossBlock(nn.Module):
         return outputs  # hidden_states, present, (attentions)
 
     def forward(self, hidden_states):
+        if not self.training:
+            self.hidden_states = hidden_states
+        use_cache = not self.training and self.use_cache
 
-        self.hidden_states = hidden_states
         if self.past_key_values is None or self.training:
             past_length = 0
         else:
@@ -277,7 +279,7 @@ class MossBlock(nn.Module):
             past_length, end_pos + past_length, dtype=torch.long).cuda()
         position_ids = position_ids.unsqueeze(0).view(-1, end_pos)
 
-        if self.args.gradient_checkpointing and self.training:
+        if self.config.gradient_checkpointing and self.training:
 
             def create_custom_forward(module):
                 def custom_forward(*inputs):
@@ -300,30 +302,30 @@ class MossBlock(nn.Module):
                 layer_past=self.past_key_values,
                 attention_mask=None,
                 head_mask=None,
-                use_cache=not self.training,
+                use_cache=use_cache
             )
 
-        if not self.training:
+        if use_cache:
             self.past_key_values = outputs[1]
 
         # hidden_states 
         return outputs[0]
 
 
-class MossModel(BaseModel):
+class MossForCausalLM(BaseModel):
     # MossForCausalLM
-    def __init__(self, args):
+    def __init__(self, config):
         super().__init__()
-        self.args = args
-        self.embed_dim = args.n_embd
-        self.vocab_size = args.vocab_size
-        self.wte = VocabParallelEmbedding(args.vocab_size, self.embed_dim)
-        self.drop = nn.Dropout(args.embd_pdrop)
+        self.config = config
+        self.embed_dim = config.n_embd
+        self.vocab_size = config.vocab_size
+        self.wte = VocabParallelEmbedding(config.vocab_size, self.embed_dim)
+        self.drop = nn.Dropout(config.embd_pdrop)
         self.h = nn.ModuleList([
-            MossBlock(args, i) for i in range(args.n_layer)
+            MossBlock(config, i) for i in range(config.n_layer)
         ])
-        self.ln_f = nn.LayerNorm(self.embed_dim, eps=args.layer_norm_epsilon)
-        self.lm_head = ColumnParallelLMHead(args.n_embd, args.vocab_size)
+        self.ln_f = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_epsilon)
+        self.lm_head = ColumnParallelLMHead(config.n_embd, config.vocab_size)
 
     def forward(self, input_ids):
         inputs_embed = self.wte(input_ids)
@@ -338,27 +340,29 @@ class MossModel(BaseModel):
         return logits
     
     @classmethod
-    def pipeline_layers(cls, args):
+    def pipeline_layers(cls, config):
+        if isinstance(config, str):
+            config = CollieConfig.from_pretrained(config)
         layers = [
-            VocabParallelEmbedding(args.vocab_size, args.n_embd),
-            nn.Dropout(args.embd_pdrop),
+            VocabParallelEmbedding(config.vocab_size, config.n_embd),
+            nn.Dropout(config.embd_pdrop),
         ]
         layers += [
-            LayerSpec(MossBlock, args, i) for i in range(args.n_layer)
+            LayerSpec(MossBlock, config, i) for i in range(config.n_layer)
         ]
         layers += [
-            nn.LayerNorm(args.n_embd, eps=args.layer_norm_epsilon),
-            ColumnParallelLMHead(args.n_embd, args.vocab_size)
+            nn.LayerNorm(config.n_embd, eps=config.layer_norm_epsilon),
+            ColumnParallelLMHead(config.n_embd, config.vocab_size)
         ]
 
         return layers
     
     @staticmethod
-    def load_parallel_state_dict(path: str, args: Union[MossArguments, str],
+    def load_parallel_state_dict(path: str, config: Union[CollieConfig, str],
                                  process_exclusion: bool = False):...
     @staticmethod
     def load_parallel_state_dict(path: str,
-                                 args: Union[MossArguments, str],
+                                 config: Union[CollieConfig, str],
                                  process_exclusion: bool = False,
                                  protocol: str = 'file',
                                  format: str = 'hf'):
@@ -371,8 +375,8 @@ class MossModel(BaseModel):
         assert format in ["hf", "meta"], f"Only support hf and meta , not `{format}`."
         assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
         # Actually Moss only supports `hf` format
-        if isinstance(args, str) and os.path.exists(args):
-            args = MossArguments.from_pretrained(args)
+        if isinstance(config, str):
+            config = CollieConfig.from_pretrained(config)
         IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
         if not IODriver.exists(path):
             raise FileNotFoundError(f"folder {path} not found.")
@@ -385,14 +389,8 @@ class MossModel(BaseModel):
             if cur_rank != env.rank:
                 continue
             if IODriver.exists(os.path.join(path, "config.json")):
-                # update args from config.json
-                hf_config = load_config(os.path.join(path, "config.json"))
-                update_keys = [list(args.__dict__.keys())]
-                update_keys = ["vocab_size", "n_embd", "n_ctx", "n_head",
-                               "n_layer", "n_positions", "layer_norm_epsilon",
-                               "rotary_dim", "n_inner", "attn_pdrop",
-                               "embd_pdrop", "resid_pdrop"]
-                args.update(**{k: hf_config[k] for k in update_keys})
+                # update config from config.json
+                config = CollieConfig.from_pretrained(path)
             # 如果存在 pytorch_model.bin.index.json 文件的话，此时不同的 pp 进程可以按需加载自己需要的权重
             index_file = os.path.join(path, "pytorch_model.bin.index.json")
             # start load
@@ -413,7 +411,7 @@ class MossModel(BaseModel):
             for weight in progress(weights, desc, disable=hide_progress):
                 part_state_dict = IODriver.load(os.path.join(path, weight), mode="rb")
                 state_dict.update(_state_dict_to_load(
-                    part_state_dict, env.tp_rank, args.tp_size,
+                    part_state_dict, env.tp_rank, config.tp_size,
                     process_exclusion
                 ))
 
@@ -421,12 +419,12 @@ class MossModel(BaseModel):
 
     @staticmethod
     def save_parallel_state_dict(state_dict: dict, path: str,
-                                 args: MossArguments,
+                                 config: CollieConfig,
                                  process_exclusion: bool = False):...
     @staticmethod
     def save_parallel_state_dict(state_dict: dict,
                                  path: str, 
-                                 args: MossArguments,
+                                 config: CollieConfig,
                                  process_exclusion: bool = False,
                                  protocol: str = 'file'):
         """
@@ -435,54 +433,7 @@ class MossModel(BaseModel):
         assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
         IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
         if env.rank == 0:
-            # TODO more elegant way
-            config = {
-                "activation_function": "gelu_new",
-                "architectures": [
-                    "MossForCausalLM"
-                ],
-                "auto_map": {
-                    "AutoConfig": "configuration_moss.MossConfig",
-                    "AutoModel": "modeling_moss.MossModel",    
-                    "AutoModelForCausalLM": "modeling_moss.MossForCausalLM"
-                },
-                "attn_pdrop": args.attn_pdrop,
-                "bos_token_id": 106028,
-                "embd_pdrop": args.embd_pdrop,
-                "eos_token_id": 106068,
-                "gradient_checkpointing": args.gradient_checkpointing,
-                "initializer_range": 0.02,
-                "layer_norm_epsilon": args.layer_norm_epsilon,
-                "model_type": "moss",
-                "n_ctx": args.n_ctx,
-                "n_embd": args.n_embd,
-                "n_head": args.n_head,
-                "n_inner": args.n_inner,
-                "n_layer": args.n_layer,
-                "n_positions": args.n_positions,
-                "resid_pdrop": args.resid_pdrop,
-                "rotary_dim": args.rotary_dim,
-                "scale_attn_weights": True,
-                "summary_activation": None,
-                "summary_first_dropout": 0.1,
-                "summary_proj_to_labels": True,
-                "summary_type": "cls_index",
-                "summary_use_proj": True,
-                "task_specific_params": {
-                    "text-generation": {
-                    "do_sample": True,
-                    "max_length": 50,
-                    "temperature": 1.0
-                    }
-                },
-                "tie_word_embeddings": False,
-                "tokenizer_class": "GPT2Tokenizer",
-                "torch_dtype": "float16",
-                "transformers_version": "4.25.1",
-                "use_cache": True,
-                "vocab_size": args.vocab_size,
-            }
-            IODriver.save(json.dumps(config, indent=2), os.path.join(path, "config.json"))
+            config.save_pretrained(path)
 
         # gather to tp rank 0
         desc = "Saving state dict"
@@ -499,7 +450,7 @@ class MossModel(BaseModel):
             # continue when pp_rank is available
 
             state_dict = _state_dict_to_save(
-                state_dict, env.tp_rank, args.tp_size, env.tp_group,
+                state_dict, env.tp_rank, config.tp_size, env.tp_group,
                 process_exclusion
             )
             if env.tp_rank != 0:
@@ -507,7 +458,7 @@ class MossModel(BaseModel):
             # save at tp_rank 0
             # Save gathered weights
             if env.is_pipeline:
-                ckpt_name = f"pytorch_model-{env.pp_rank+1:05d}-of-{args.pp_size:05d}.bin"
+                ckpt_name = f"pytorch_model-{env.pp_rank+1:05d}-of-{config.pp_size:05d}.bin"
                 index_dict = set_index_dict(state_dict, ckpt_name)
                 tmp_index_file = os.path.join(path, "_tmp_index_{}.json")
                 IODriver.save(
@@ -522,7 +473,7 @@ class MossModel(BaseModel):
         # Only save and merge on rank0
         if env.rank == 0 and env.is_pipeline:
             # merge
-            tmp_index_files = [tmp_index_file.format(i) for i in range(args.pp_size)]
+            tmp_index_files = [tmp_index_file.format(i) for i in range(config.pp_size)]
             total_size = 0
             weight_map = {}
             for _file in tmp_index_files:
