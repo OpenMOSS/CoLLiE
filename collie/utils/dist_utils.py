@@ -123,6 +123,10 @@ class env:
     @classproperty
     def local_rank(self):
         return int(os.getenv("LOCAL_RANK", "0"))
+
+    @staticmethod
+    def barrier(group=None):
+        torch.distributed.barrier(group)
     
     @classproperty
     def world_size(self):
