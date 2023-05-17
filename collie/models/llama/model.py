@@ -29,7 +29,7 @@ from collie.driver.io.file import FileIODriver
 from collie.trainer.arguments import load_config
 from collie.driver.io.petrel import PetrelIODriver
 from collie.models.llama.arguments import LlamaArguments
-from collie.module import ColumnParallelLinearWithoutBias, RowParallelLinearWithoutBias
+from collie.module import ColumnParallelLinearWithoutBias, RowParallelLinearWithoutBias, ColumnParallelLMHead
 from collie.utils import progress, env
 
 from typing import Union
@@ -220,7 +220,7 @@ class LlamaModel(BaseModel):
             normalized_shape=self.args.hidden_size,
             eps=self.args.layer_norm_epsilon
         )
-        self.lm_head = ColumnParallelLinearWithoutBias(
+        self.lm_head = ColumnParallelLMHead(
             self.args.hidden_size,
             self.args.vocab_size,
             bias=False
@@ -256,7 +256,7 @@ class LlamaModel(BaseModel):
                       eps=args.layer_norm_epsilon),
             TiedLayerSpec(
             "embed_tokens",
-            ColumnParallelLinearWithoutBias,
+            ColumnParallelLMHead,
             args.hidden_size,
             args.vocab_size,
             bias=False)

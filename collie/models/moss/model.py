@@ -16,7 +16,8 @@ from megatron.core import parallel_state
 from collie.log import logger
 from collie.module import (ColumnParallelLinearWithoutBias,
                            RowParallelLinearWithoutBias,
-                           VocabParallelEmbedding)
+                           VocabParallelEmbedding,
+                           ColumnParallelLMHead)
 from collie.trainer.arguments import load_config
 from collie.driver.io.file import FileIODriver
 from collie.driver.io.petrel import PetrelIODriver
@@ -229,6 +230,7 @@ class MossBlock(nn.Module):
         self.idx = layer_idx
 
         self.past_key_values = None
+        self.hidden_states = None
 
     def _forward(
         self,
@@ -264,6 +266,7 @@ class MossBlock(nn.Module):
 
     def forward(self, hidden_states):
 
+        self.hidden_states = hidden_states
         if self.past_key_values is None or self.training:
             past_length = 0
         else:
@@ -320,8 +323,7 @@ class MossModel(BaseModel):
             MossBlock(args, i) for i in range(args.n_layer)
         ])
         self.ln_f = nn.LayerNorm(self.embed_dim, eps=args.layer_norm_epsilon)
-        self.lm_head = ColumnParallelLinearWithoutBias(args.n_embd,
-                                                       args.vocab_size)
+        self.lm_head = ColumnParallelLMHead(args.n_embd, args.vocab_size)
 
     def forward(self, input_ids):
         inputs_embed = self.wte(input_ids)
@@ -331,6 +333,7 @@ class MossModel(BaseModel):
             hidden_states = l(hidden_states)
 
         hidden_states = self.ln_f(hidden_states)
+        self.last_hidden_states += (hidden_states, )
         logits = self.lm_head(hidden_states)
         return logits
     
@@ -345,7 +348,7 @@ class MossModel(BaseModel):
         ]
         layers += [
             nn.LayerNorm(args.n_embd, eps=args.layer_norm_epsilon),
-            ColumnParallelLinearWithoutBias(args.n_embd, args.vocab_size)
+            ColumnParallelLMHead(args.n_embd, args.vocab_size)
         ]
 
         return layers

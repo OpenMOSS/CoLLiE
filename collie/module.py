@@ -11,8 +11,7 @@ from megatron.core.tensor_parallel import (ColumnParallelLinear,
 from megatron.core import parallel_state
 from deepspeed.runtime.pipe.module import PipelineModule
 from deepspeed.runtime.pipe.topology import (PipeModelDataParallelTopology,
-                                             PipelineParallelGrid,
-                                             _prime_factors)
+                                             PipelineParallelGrid)
 from deepspeed.runtime.engine import DeepSpeedEngine
 from deepspeed.runtime.pipe.engine import PipelineEngine
 from deepspeed.runtime.activation_checkpointing import checkpointing
@@ -27,6 +26,15 @@ from collie.trainer.arguments import Arguments
 class ColumnParallelLinearWithoutBias(ColumnParallelLinear):
     def forward(self, input_):
         return super().forward(input_)[0]
+    
+class ColumnParallelLMHead(ColumnParallelLinearWithoutBias):
+    def __init__(self, *args, **kwargs):
+        super(ColumnParallelLMHead, self).__init__(*args, **kwargs)
+        self.hidden_states = None
+
+    def forward(self, input_):
+        self.hidden_states = input_
+        return super().forward(input_)
 
 class RowParallelLinearWithoutBias(RowParallelLinear):
     def forward(self, input_):
@@ -40,6 +48,7 @@ class GPTLMLoss(torch.nn.Module):
     def forward(self, logits, labels):
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous().to(logits.device)
+        print(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1), shift_logits.shape, shift_labels.shape, self.loss.ignore_index)
         # Flatten the tokens
         return self.loss(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
 
@@ -144,6 +153,8 @@ class CollieCausalLM(nn.Module, GenerationMixin):
         self.args: Arguments = self.engine.module.args
         self.layers = None
         self.communicate_buffer_shape = None
+        if isinstance(config, dict):
+            config = GenerationConfig.from_dict(config)
         self.generation_config = config
         self._find_layers()
         self._clean_past_key_values()
