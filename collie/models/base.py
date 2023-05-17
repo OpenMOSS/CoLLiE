@@ -3,23 +3,76 @@ import torch
 import inspect
 import importlib
 from abc import abstractmethod
-from typing import Union, Optional
+from typing import Union, Optional, Sequence, List
 from huggingface_hub import snapshot_download
 
 from torch import nn
 from torch import distributed as dist
 from deepspeed.runtime.pipe.topology import PipeModelDataParallelTopology
+from transformers.generation.utils import GenerationMixin
+from transformers.generation.utils import GenerationConfig
 from collie.module import PipelineModel, GPTLMLoss
 from collie.trainer.arguments import Arguments, load_config
 from collie.log import logger
 from collie.utils import setup_distributation
 
-class BaseModel(nn.Module):
+class BaseModel(nn.Module, GenerationMixin):
     """
     Base model of CoLLiE.
 
     Every new model should inherit this class.
     """
+    def __init__(self) -> None:
+        super().__init__()
+        self.device = torch.device("cuda")
+        self.generation_config = GenerationConfig()
+            
+    def _get_past_key_values(self, layers: Sequence[nn.Module], attr_name: str="past_key_values"):
+        past_key_values = []
+        for layer in layers:
+            assert hasattr(layer, attr_name), f"{layer} does not have {attr_name}"
+            if getattr(layer, attr_name) is not None:
+                past_key_values.append(getattr(layer, attr_name))
+        return past_key_values if len(past_key_values) > 1 else None
+    
+    def _clean_past_key_values(self, layers: Sequence[nn.Module], attr_name: str="past_key_values"):
+        for layer in layers:
+            if hasattr(layer, attr_name):
+                object.__setattr__(layer, attr_name, None)
+                
+    def _set_past_key_values(self, layers: Sequence[nn.Module], past_key_values: List[List[torch.Tensor]], attr_name: str="past_key_values"):
+        past_key_values = iter(past_key_values)
+        for layer in layers:
+            if hasattr(layer, attr_name):
+                object.__setattr__(layer, attr_name, next(past_key_values))
+            
+    def _get_hidden_states(self, layers: Sequence[nn.Module], attr_name: str="hidden_states"):
+        past_key_values = []
+        for layer in layers:
+            assert hasattr(layer, attr_name), f"{layer} does not have {attr_name}"
+            if getattr(layer, attr_name) is not None:
+                past_key_values.append(getattr(layer, attr_name))
+        return past_key_values if len(past_key_values) > 1 else None
+    
+    def _clean_hidden_states(self, layers: Sequence[nn.Module], attr_name: str="hidden_states"):
+        for layer in layers:
+            if hasattr(layer, attr_name):
+                object.__setattr__(layer, attr_name, None)
+                
+    def _set_hidden_states(self, layers: Sequence[nn.Module], hidden_states: List[torch.Tensor], attr_name: str="hidden_states"):
+        hidden_states = iter(hidden_states)
+        for layer in layers:
+            if hasattr(layer, attr_name):
+                object.__setattr__(layer, attr_name, next(hidden_states))    
+                
+    def _set_use_cache(self, layers: Sequence[nn.Module], use_cache: bool=True, attr_name: str="use_cache"):
+        for layer in layers:
+            if hasattr(layer, attr_name):
+                object.__setattr__(layer, attr_name, use_cache)    
+    
+    def can_generate(self) -> bool:
+        return True
+    
     @classmethod
     def from_config(cls, args: Union[Arguments, str], **kwargs):
         """

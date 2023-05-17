@@ -1,6 +1,6 @@
 import sys
 sys.path.append("/mnt/lustre/zhangshuo/projects/collie/")
-from collie.models.llama.model import LlamaModel, LlamaArguments
+from collie.models.llama.model import LlamaForCasualLM, LlamaArguments
 from collie.trainer.trainer import Trainer
 from collie.metrics.decode import DecodeMetric
 
@@ -9,13 +9,13 @@ from transformers.generation.utils import GenerationConfig
 from torch.utils.data import Dataset
 import torch
 
-tokenizer = LlamaTokenizer.from_pretrained("/mnt/lustre/zhangshuo/model/llama-30b-hf", 
+tokenizer = LlamaTokenizer.from_pretrained("decapoda-research/llama-7b-hf", 
                                            padding_side="left")
 tokenizer.pad_token_id = 0
 tokenizer.bos_token_id = 1
 tokenizer.eos_token_id = 2
 
-args = LlamaArguments.from_pretrained("/mnt/lustre/zhangshuo/model/llama-30b-hf")
+args = LlamaArguments.from_pretrained("decapoda-research/llama-7b-hf")
 args.dp_size = 2
 args.pp_size = 2
 args.tp_size = 2
@@ -50,7 +50,7 @@ dataset = GenerationDataset([
     "So this is the reason why",
     "We have to"
 ])
-model = LlamaModel.from_pretrained("/mnt/lustre/zhangshuo/model/test/", args=args)
+model = LlamaForCasualLM.from_pretrained("/mnt/lustre/zhangshuo/model/test/", args=args)
 
 trainer = Trainer(model=model,
                   train_dataset=dataset,
@@ -60,9 +60,4 @@ trainer = Trainer(model=model,
                   eval_dataset_collate_fn=collate_fn,
                   train_dataset_collate_fn=collate_fn,
                   args=args)
-torch.cuda.empty_cache()
-import os
-if os.environ.get("RANK") == "0":
-    import pdb
-    pdb.set_trace()
 trainer.eval()

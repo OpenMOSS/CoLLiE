@@ -3,7 +3,7 @@ import json
 from typing import Optional, Callable, Union, Tuple, Iterable, Any, Dict, Sequence
 
 from collie.trainer.arguments import Arguments, load_config
-from collie.module import CollieCausalLM, GPTLMLoss, PipelineModel
+from collie.module import PipelineGenerationMixin, GPTLMLoss, PipelineModel
 from collie.driver.io.file import FileIODriver
 from collie.driver.io.petrel import PetrelIODriver
 from collie.log.print import print
@@ -202,10 +202,12 @@ class Trainer:
                 batch: Tuple, 
                 train_meta: Dict = {"epoch_idx": 0, "batch_idx": 0, "last_loss": 0.0}) -> Any:
         input_ids, labels = batch
-        generation_model = CollieCausalLM(
-            engine=trainer.engine,
-            config=trainer.eval_config
-        )
+        if isinstance(trainer.engine, PipelineEngine):
+            generation_model = PipelineGenerationMixin(
+                engine=trainer.engine
+            )
+        else:
+            generation_model = trainer.engine
         input_ids = generation_model.generate(input_ids=input_ids.cuda(), attention_mask=torch.ones_like(input_ids).cuda())
         generation_model._clean_past_key_values()
         return {
