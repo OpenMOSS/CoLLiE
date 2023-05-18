@@ -5,6 +5,7 @@ import re
 import subprocess
 
 import torch
+from torch import distributed as dist
 import deepspeed
 from deepspeed.runtime.utils import set_random_seed
 from deepspeed.runtime.zero.stage_1_and_2 import DeepSpeedZeroOptimizer
@@ -139,18 +140,26 @@ class env:
 
     @classproperty
     def pp_rank(self):
+        if not dist.is_initialized():
+            return 0
         return parallel_state.get_pipeline_model_parallel_rank()
     
     @classproperty
     def dp_rank(self):
+        if not dist.is_initialized():
+            return 0
         return parallel_state.get_data_parallel_rank()
     
     @classproperty
     def tp_rank(self):
+        if not dist.is_initialized():
+            return 0
         return parallel_state.get_tensor_model_parallel_rank()
     
     @classproperty
     def mp_rank(self):
+        if not dist.is_initialized():
+            return 0
         return parallel_state.get_model_parallel_group().rank()
     
     @classproperty
@@ -192,20 +201,30 @@ class env:
     
     @classproperty
     def dp_size(self):
+        if not dist.is_initialized():
+            return 1
         return parallel_state.get_data_parallel_world_size()
     
     @classproperty
     def tp_size(self):
+        if not dist.is_initialized():
+            return 1
         return parallel_state.get_tensor_model_parallel_world_size()
     
     @classproperty
     def pp_size(self):
+        if not dist.is_initialized():
+            return 1
         return parallel_state.get_pipeline_model_parallel_world_size()
     
     @classproperty
     def is_last_stage(self):
+        if not dist.is_initialized():
+            return True
         return parallel_state.is_pipeline_last_stage()
     
     @classproperty
     def is_first_stage(self):
+        if not dist.is_initialized():
+            return True
         return parallel_state.is_pipeline_first_stage()
