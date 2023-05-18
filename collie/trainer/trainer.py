@@ -192,8 +192,8 @@ class Trainer:
             loss = trainer.engine.train_batch(data_iter=iter([batch]))
         else:
             input_ids, labels = batch
-            logits = trainer.engine(input_ids.cuda())
-            loss = trainer.loss_fn(logits, labels)
+            output = trainer.engine(input_ids.cuda())
+            loss = trainer.loss_fn(output.logits, labels)
             trainer.engine.backward(loss)
             trainer.engine.step()
         return loss.item()

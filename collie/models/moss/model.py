@@ -10,6 +10,7 @@ import torch
 from torch import nn
 from torch import distributed as dist
 from transformers.activations import NewGELUActivation
+from transformers.modeling_outputs import CausalLMOutputWithPast
 from deepspeed.pipe import LayerSpec
 
 from collie.log import logger
@@ -267,13 +268,17 @@ class MossBlock(nn.Module):
         if not self.training:
             self.hidden_states = hidden_states
         use_cache = not self.training and self.use_cache
+        end_pos = hidden_states.shape[1]
+        if end_pos != 1:
+            self.past_key_values = None
+        if not use_cache and self.past_key_values is not None:
+            self.past_key_values = None
 
         if self.past_key_values is None or self.training:
             past_length = 0
         else:
             past_length = self.past_key_values[0].size(1)
 
-        end_pos = hidden_states.shape[1]
         position_ids = torch.arange(
             past_length, end_pos + past_length, dtype=torch.long).cuda()
         position_ids = position_ids.unsqueeze(0).view(-1, end_pos)
@@ -335,7 +340,13 @@ class MossForCausalLM(BaseModel):
 
         hidden_states = self.ln_f(hidden_states)
         logits = self.lm_head(hidden_states)
-        return logits
+        return CausalLMOutputWithPast(
+            loss=None,
+            logits=logits,
+            past_key_values=self._get_past_key_values(self.h),
+            hidden_states=self._get_hidden_states([*self.h, self.lm_head]),
+            attentions=None
+        )
     
     def prepare_inputs_for_generation(self, 
                                       input_ids: torch.Tensor,
@@ -346,8 +357,13 @@ class MossForCausalLM(BaseModel):
         if past_key_values is None:
             self._clean_past_key_values(self.h)
         else:
+            input_ids = input_ids[:, -1].unsqueeze(-1)
             self._set_past_key_values(self.h, past_key_values)
         return {"input_ids": input_ids}
+    
+    def clean(self):
+        self._clean_hidden_states([*self.h, self.lm_head])
+        self._clean_past_key_values(self.h)
     
     @classmethod
     def pipeline_layers(cls, config):
