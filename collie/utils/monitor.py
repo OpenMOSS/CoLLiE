@@ -1,6 +1,6 @@
 from deepspeed.monitor.monitor import MonitorMaster, Monitor
 
-from collie.trainer.arguments import CollieConfig
+from collie.config import CollieConfig
 from collie.log.print import print
 
 import time

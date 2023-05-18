@@ -21,7 +21,7 @@ from collie.driver.io.file import FileIODriver
 from collie.driver.io.petrel import PetrelIODriver
 from collie.models.base import BaseModel
 from collie.utils import env, progress
-from collie.trainer.arguments import CollieConfig
+from collie.config import CollieConfig
 from .utils import (apply_rotary_pos_emb, create_sinusoidal_positions,
                     set_index_dict, _state_dict_to_save, _state_dict_to_load,
                     _weight_name_in_current_rank)

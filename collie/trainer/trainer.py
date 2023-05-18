@@ -2,7 +2,7 @@ import os
 import json
 from typing import Optional, Callable, Union, Tuple, Iterable, Any, Dict, Sequence
 
-from collie.trainer.arguments import CollieConfig, load_config
+from collie.config import CollieConfig, load_config
 from collie.module import PipelineGenerationMixin, GPTLMLoss, PipelineModel
 from collie.driver.io.file import FileIODriver
 from collie.driver.io.petrel import PetrelIODriver

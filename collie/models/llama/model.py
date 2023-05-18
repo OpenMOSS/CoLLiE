@@ -24,10 +24,10 @@ except ModuleNotFoundError:
     FlashAttention = None
 
 from collie.log.logger import logger
-from collie.trainer.arguments import CollieConfig
+from collie.config import CollieConfig
 from collie.models.base import BaseModel
 from collie.driver.io.file import FileIODriver
-from collie.trainer.arguments import load_config
+from collie.config import load_config
 from collie.driver.io.petrel import PetrelIODriver
 from collie.module import ColumnParallelLinearWithoutBias, RowParallelLinearWithoutBias, ColumnParallelLMHead
 from collie.utils import progress, env

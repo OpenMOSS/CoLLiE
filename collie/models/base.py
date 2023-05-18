@@ -12,7 +12,7 @@ from deepspeed.runtime.pipe.topology import PipeModelDataParallelTopology
 from transformers.generation.utils import GenerationMixin
 from transformers.generation.utils import GenerationConfig
 from collie.module import PipelineModel, GPTLMLoss
-from collie.trainer.arguments import CollieConfig, load_config
+from collie.config import CollieConfig, load_config
 from collie.log import logger
 from collie.utils import setup_distributation
 
