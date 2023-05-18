@@ -6,6 +6,7 @@ from abc import abstractmethod
 from typing import Union, Optional, Sequence, List
 from huggingface_hub import snapshot_download
 
+import deepspeed
 from torch import nn
 from torch import distributed as dist
 from deepspeed.runtime.pipe.topology import PipeModelDataParallelTopology
@@ -14,7 +15,7 @@ from transformers.generation.utils import GenerationConfig
 from collie.module import PipelineModel, GPTLMLoss
 from collie.trainer.arguments import Arguments, load_config
 from collie.log import logger
-from collie.utils import setup_distributation
+from collie.utils import setup_distributation, zero3_init
 
 class BaseModel(nn.Module, GenerationMixin):
     """
@@ -80,14 +81,17 @@ class BaseModel(nn.Module, GenerationMixin):
         """
         if isinstance(args, str) and os.path.exists(args):
             args = Arguments.from_pretrained(args)
+        if isinstance(args.ds_config, str) and os.path.exists(args.ds_config):
+            args.ds_config = load_config(args.ds_config)
         args.update(**kwargs)
         setup_distributation(args)
         model_cls = cls._get_model_cls(args)
         if args.pp_size == 1:
-            model = super().__new__(model_cls)
-            model.__init__(args)
-            dist.barrier()
-            return model
+            with zero3_init(args):
+                model = super().__new__(model_cls)
+                model.__init__(args)
+                dist.barrier()
+                return model
         else:
             pipeline_model =  PipelineModel(
                 layers=model_cls.pipeline_layers(args), base_seed=args.seed,

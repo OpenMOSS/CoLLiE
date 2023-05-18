@@ -7,19 +7,18 @@ from collie.module import PipelineGenerationMixin, GPTLMLoss, PipelineModel
 from collie.driver.io.file import FileIODriver
 from collie.driver.io.petrel import PetrelIODriver
 from collie.log import logger, print
-from collie.utils import progress, env
+from collie.utils import progress, env, setup_ds_engine
 
 import os
 import torch
-import deepspeed
 import torch.distributed as dist
 from torch.utils.data import DistributedSampler
-from megatron.core import parallel_state
-from deepspeed.runtime.constants import ROUTE_EVAL
+from torch.optim.lr_scheduler import _LRScheduler
 from deepspeed.accelerator import get_accelerator
+from deepspeed.runtime.constants import ROUTE_EVAL
 from deepspeed.runtime.pipe.engine import PipelineEngine
-from deepspeed.runtime.zero.utils import ZeRORuntimeException
 from transformers.generation.utils import GenerationConfig
+from deepspeed.runtime.engine import DeepSpeedSchedulerCallable
 
 class Trainer:
     def __init__(self, 
@@ -29,6 +28,7 @@ class Trainer:
                  train_fn: Optional[Callable] = None,
                  eval_fn: Optional[Callable] = None,
                  optimizer: Optional[torch.optim.Optimizer] = None,
+                 lr_schedule: Optional[Union[_LRScheduler, DeepSpeedSchedulerCallable]] = None,
                  train_dataset: Optional[torch.utils.data.Dataset] = None,
                  eval_dataset: Optional[torch.utils.data.Dataset] = None,
                  train_dataset_collate_fn: Optional[Callable] = None,
@@ -37,6 +37,7 @@ class Trainer:
                  metrics: Sequence = []) -> None:
         self.model = model
         self.optimizer = optimizer
+        self.lr_schedule = lr_schedule
         self.train_dataset = train_dataset
         self.eval_dataset = eval_dataset
         self.loss_fn = loss_fn
@@ -50,7 +51,6 @@ class Trainer:
         self.metrics = metrics
         self.args = args
         self.communicate_buffer_shape = None
-        self.set_ds_config()
         self.setup_parallel_model()
         self.init_metrics()
         get_accelerator().empty_cache()
@@ -62,17 +62,6 @@ class Trainer:
             env.dp_rank, env.pp_rank, env.tp_rank
         )
         
-    def set_ds_config(self):
-        if isinstance(self.args, str):
-            self.args = load_config(self.args)
-        if isinstance(self.args.ds_config, str):
-            self.args.ds_config = load_config(self.args.ds_config)
-        if "train_micro_batch_size_per_gpu" not in self.args.ds_config.keys():
-            self.args.ds_config["train_micro_batch_size_per_gpu"] = self.args.train_micro_batch_size
-        if "gradient_accumulation_steps" not in self.args.ds_config.keys():
-            self.args.ds_config["gradient_accumulation_steps"] = self.args.gradient_accumulation_steps
-        print(self.args)
-        
     def setup_parallel_model(self):
         """Setup parallel model.
         """
@@ -83,12 +72,11 @@ class Trainer:
             logger.rank_zero_warning(f"Set dp_size to {self.args.dp_size}.")
         if self.args.pp_size > 1:
             self.model.loss_fn = self.loss_fn
-        self.engine, self.optimizer, _, _ = deepspeed.initialize(
+        self.engine, self.optimizer, _, self.lr_schedule = setup_ds_engine(
             model=self.model,
-            model_parameters=[p for p in self.model.parameters() if p.requires_grad],
             optimizer=self.optimizer,
-            mpu=parallel_state if self.args.pp_size == 1 else None,
-            config=self.args.ds_config
+            lr_schedule=self.lr_schedule,
+            args=self.args
         )
         self.args.train_micro_batch_size = self.engine.train_micro_batch_size_per_gpu()
         self.args.gradient_accumulation_steps = self.engine.gradient_accumulation_steps()

@@ -1,22 +1,21 @@
 import sys
 sys.path.append("/mnt/lustre/zhangshuo/projects/collie/")
-from collie.models.llama.model import LlamaModel, LlamaArguments
+from collie.models.llama.model import LlamaForCasualLM, LlamaArguments
 from collie.trainer.trainer import Trainer
 from collie.metrics.decode import DecodeMetric
 from collie.optim.inplace_sgd import InplaceSGD
 
 from transformers import LlamaTokenizer
 from transformers.generation.utils import GenerationConfig
-from torch.utils.data import Dataset
-import torch
 
 tokenizer = LlamaTokenizer.from_pretrained("decapoda-research/llama-7b-hf", 
                                            padding_side="left", 
                                            add_eos_token=True)
 tokenizer.bos_token_id = 1
 tokenizer.eos_token_id = 2
+tokenizer.pad_token_id = 0
 args = LlamaArguments.from_pretrained("decapoda-research/llama-7b-hf")
-args.tp_size = 8
+args.dp_size = 8
 args.train_epochs = 10
 args.train_micro_batch_size = 1
 args.eval_batch_size = 1
@@ -28,10 +27,13 @@ args.ds_config = {
         "params": {
             "lr": 2e-5
         }
+    },
+    "zero_optimization": {
+        "stage": 3,
     }
 }
-model = LlamaModel(args)
-state_dict = LlamaModel.load_parallel_state_dict(
+model = LlamaForCasualLM(args)
+state_dict = LlamaForCasualLM.load_parallel_state_dict(
     path="hdd:s3://opennlplab_hdd/models/llama/llama-7b-hf",
     args=args,
     protocol="petrel",

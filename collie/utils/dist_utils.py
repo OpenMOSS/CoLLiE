@@ -8,10 +8,52 @@ import torch
 import deepspeed
 from deepspeed.runtime.utils import set_random_seed
 from deepspeed.runtime.zero.stage_1_and_2 import DeepSpeedZeroOptimizer
+from deepspeed.runtime.engine import DeepSpeedOptimizerCallable, DeepSpeedSchedulerCallable
 from deepspeed.accelerator import get_accelerator
 from megatron.core import parallel_state, tensor_parallel
 
+from typing import Union, Optional
+
 from .utils import classproperty
+from collie.trainer.arguments import load_config
+from collie.log.print import print
+
+def zero3_init(args):
+    if isinstance(args.ds_config, str) and os.path.exists(args.ds_config):
+        args.ds_config = load_config(args.ds_config)
+    if isinstance(args.ds_config, dict) \
+        and "zero_optimization" in args.ds_config.keys() \
+            and "stage" in args.ds_config["zero_optimization"].keys() \
+                and args.ds_config["zero_optimization"]["stage"] == 3:
+                    with deepspeed.zero.Init(data_parallel_group=parallel_state.get_data_parallel_group()):
+                        yield
+    else:
+        yield
+
+def setup_ds_engine(
+    args,
+    model: torch.nn.Module,
+    optimizer: Optional[Union[torch.optim.Optimizer, DeepSpeedOptimizerCallable]] = None,
+    lr_schedule: Optional[Union[torch.optim.lr_scheduler._LRScheduler, DeepSpeedSchedulerCallable]] = None
+):
+    if isinstance(args, str):
+        args = load_config(args)
+    if isinstance(args.ds_config, str):
+        args.ds_config = load_config(args.ds_config)
+    if "train_micro_batch_size_per_gpu" not in args.ds_config.keys():
+        args.ds_config["train_micro_batch_size_per_gpu"] = args.train_micro_batch_size
+    if "gradient_accumulation_steps" not in args.ds_config.keys():
+        args.ds_config["gradient_accumulation_steps"] = args.gradient_accumulation_steps
+    print(args)
+    engine, optimizer, _, lr_scheduler = deepspeed.initialize(
+        model=model,
+        optimizer=optimizer,
+        lr_scheduler=lr_schedule,
+        model_parameters=[p for p in model.parameters() if p.requires_grad],
+        mpu=parallel_state if args.pp_size == 1 else None,
+        config=args.ds_config
+    )
+    return engine, optimizer, _, lr_scheduler
 
 def setup_distributation(args) -> None:
     """Setup the distributed training environment.
