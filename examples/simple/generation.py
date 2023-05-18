@@ -2,7 +2,7 @@ import sys
 sys.path.append("/mnt/lustre/zhangshuo/projects/collie/")
 from collie.models.llama.model import LlamaForCasualLM
 from collie.trainer.trainer import Trainer
-from collie.trainer.arguments import CollieConfig
+from collie.config import CollieConfig
 from collie.metrics.decode import DecodeMetric
 
 from transformers import LlamaTokenizer
