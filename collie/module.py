@@ -35,6 +35,8 @@ class ColumnParallelLMHead(ColumnParallelLinearWithoutBias):
     def forward(self, input_):
         if not self.training:
             self.hidden_states = input_
+        else:
+            self.hidden_states = None
         return super().forward(input_)
 
 class RowParallelLinearWithoutBias(RowParallelLinear):

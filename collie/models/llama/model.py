@@ -107,7 +107,7 @@ class LlamaLayer(nn.Module):
         )
         self.input_layernorm = FusedRMSNorm(
             normalized_shape=config.hidden_size,
-            eps=config.layer_norm_epsilon
+            eps=config.rms_norm_eps
         )
         self.mlp = nn.ModuleDict({
             "gate_proj": ColumnParallelLinearWithoutBias(
@@ -134,7 +134,7 @@ class LlamaLayer(nn.Module):
         })
         self.post_attention_layernorm = FusedRMSNorm(
             normalized_shape=config.hidden_size,
-            eps=config.layer_norm_epsilon
+            eps=config.rms_norm_eps
         )
         # 务必保持变量名一致
         self.use_cache = True
@@ -144,6 +144,8 @@ class LlamaLayer(nn.Module):
     def _forward(self, hidden_states: torch.Tensor):
         if not self.training:
             self.hidden_states = hidden_states
+        else:
+            self.hidden_states = None
         assert hidden_states.ndim == 3, f"hidden_states.shape must be (B, N, H), but got {hidden_states.shape}"
         batch_size, seq_len, _ = hidden_states.shape
         head_dim = self.config.hidden_size // self.config.num_attention_heads
@@ -217,7 +219,7 @@ class LlamaForCasualLM(BaseModel):
             *[LlamaLayer(self.config) for _ in range(self.config.num_hidden_layers)])
         self.norm = FusedRMSNorm(
             normalized_shape=self.config.hidden_size,
-            eps=self.config.layer_norm_epsilon
+            eps=self.config.rms_norm_eps
         )
         self.lm_head = ColumnParallelLMHead(
             self.config.hidden_size,
@@ -231,7 +233,7 @@ class LlamaForCasualLM(BaseModel):
 
     def forward(self, input_ids: torch.Tensor, **kwargs):
         past_key_values=self._get_past_key_values(self.layers)
-        if past_key_values is not None:
+        if past_key_values is not None and not self.training:
             input_ids = input_ids[:, -1:]
         assert input_ids.ndim == 2, f"input_ids.shape must be (B, N), but got {input_ids.shape}"
         hidden_states = self.embed_tokens(input_ids)
@@ -283,7 +285,7 @@ class LlamaForCasualLM(BaseModel):
               for _ in range(config.num_hidden_layers)],
             LayerSpec(FusedRMSNorm,
                       normalized_shape=config.hidden_size,
-                      eps=config.layer_norm_epsilon),
+                      eps=config.rms_norm_eps),
             TiedLayerSpec(
             "embed_tokens",
             ColumnParallelLMHead,
@@ -345,7 +347,7 @@ class LlamaForCasualLM(BaseModel):
                             "intermediate_size": new_config["intermediate_size"],
                             "num_hidden_layers": new_config["num_hidden_layers"],
                             "num_attention_heads": new_config["num_attention_heads"],
-                            "layer_norm_epsilon": new_config["rms_norm_eps"]
+                            "rms_norm_eps": new_config["rms_norm_eps"]
                         }.items():
                             setattr(config, key, value)
                     # 如果存在 pytorch_model.bin.index.json 文件的话，此时不同的 pp 进程可以按需加载自己需要的权重
@@ -398,7 +400,7 @@ class LlamaForCasualLM(BaseModel):
                             "intermediate_size": params["multiple_of"] * ((int(2 * 4 * config.hidden_size / 3) + params["multiple_of"] - 1) // params["multiple_of"]),
                             "num_hidden_layers": params["n_layers"],
                             "num_attention_heads": params["n_heads"],
-                            "layer_norm_epsilon": params["norm_eps"]
+                            "rms_norm_eps": params["norm_eps"]
                         }.items():
                             setattr(config, key, value)
                     # 权重全部加载
