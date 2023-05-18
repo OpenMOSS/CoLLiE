@@ -108,8 +108,11 @@ class CollieConfig:
     def __getattr__(self, name):
         return getattr(self.model_config, name)
     
-    def __setattr__(self,name: str, value: Any) -> None:
-        setattr(self.model_config, name, value)
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in self.__annotations__.keys():
+            super().__setattr__(name, value)
+        else:
+            setattr(self.model_config, name, value)
 
     def __post_init__(self):
         if isinstance(self.ds_config, str):
