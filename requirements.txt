@@ -1,6 +1,7 @@
 rich
 tqdm
 torch
+einops
 deepspeed
 apex
 transformers
