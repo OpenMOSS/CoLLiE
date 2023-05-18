@@ -27,6 +27,18 @@ class ColumnParallelLinearWithoutBias(ColumnParallelLinear):
     def forward(self, input_):
         return super().forward(input_)[0]
     
+    def __new__(cls, *args, **kwargs):
+        if env.tp_size == 1:
+            naive_kwargs = {}
+            if "output_size" in kwargs:
+                naive_kwargs["output_size"] = kwargs["output_size"]
+            if "input_size" in kwargs:
+                naive_kwargs["input_size"] = kwargs["input_size"]
+            if "bias" in kwargs:
+                naive_kwargs["bias"] = kwargs["bias"]
+            return nn.Linear(*args, **naive_kwargs)
+        return super().__new__(cls)
+    
 class ColumnParallelLMHead(ColumnParallelLinearWithoutBias):
     def __init__(self, *args, **kwargs):
         super(ColumnParallelLMHead, self).__init__(*args, **kwargs)
@@ -42,6 +54,18 @@ class ColumnParallelLMHead(ColumnParallelLinearWithoutBias):
 class RowParallelLinearWithoutBias(RowParallelLinear):
     def forward(self, input_):
         return super().forward(input_)[0]
+    
+    def __new__(cls, *args, **kwargs):
+        if env.tp_size == 1:
+            naive_kwargs = {}
+            if "output_size" in kwargs:
+                naive_kwargs["output_size"] = kwargs["output_size"]
+            if "input_size" in kwargs:
+                naive_kwargs["input_size"] = kwargs["input_size"]
+            if "bias" in kwargs:
+                naive_kwargs["bias"] = kwargs["bias"]
+            return nn.Linear(*args, **naive_kwargs)
+        return super().__new__(cls)
 
 class GPTLMLoss(torch.nn.Module):
     def __init__(self, ignore_index=0):

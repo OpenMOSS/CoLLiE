@@ -13,17 +13,17 @@ from collie.config import CollieConfig
 from collie.trainer.trainer import Trainer
 from collie.metrics.decode import DecodeMetric
 
-model_path = "/home/ubuntu/projects/collie/cache/llama-7b"
-args = CollieConfig.from_pretrained(model_path)
-print("Args loaded")
-args.pp_size = 1
-args.tp_size = 1
-# args.dp_size = 8
-args.train_epochs = 1000
-args.train_micro_batch_size = 1
-args.eval_batch_size = 1
-args.eval_per_n_steps = 0
-args.ds_config = {
+model_path = "/mnt/petrelfs/zhangshuo/model/llama-7b-hf/"
+config = CollieConfig.from_pretrained(model_path)
+print("config loaded")
+config.pp_size = 1
+config.tp_size = 1
+config.dp_size = 8
+config.train_epochs = 1000
+config.train_micro_batch_size = 1
+config.eval_batch_size = 1
+config.eval_per_n_steps = 10
+config.ds_config = {
     "fp16": {"enabled": True},
     "optimizer": {
         "type": "Adam",
@@ -38,11 +38,8 @@ args.ds_config = {
     "zero_allow_untested_optimizer": True,
     "zero_force_ds_cpu_optimizer": False,
 }
-setup_distributation(args)
-dschf = HfDeepSpeedConfig(args.ds_config)  # keep this object alive
-
-# config = AutoConfig.from_pretrained(model_path)
-# model = AutoModelForCausalLM.from_config(config)
+setup_distributation(config)
+dschf = HfDeepSpeedConfig(config.ds_config)  # keep this object alive
 model = AutoModelForCausalLM.from_pretrained(model_path)
 model.gradient_checkpointing_enable()
 model.enable_input_require_grads()
@@ -81,6 +78,6 @@ trainer = Trainer(
                                  bos_token_id=1,
                                  use_cache=False),
     metrics=[DecodeMetric(tokenizer=tokenizer)],
-    config=args
+    config=config
 )
 trainer.train()
