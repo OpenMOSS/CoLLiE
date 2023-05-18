@@ -8,7 +8,7 @@ from transformers.deepspeed import HfDeepSpeedConfig
 from transformers.generation.utils import GenerationConfig
 from peft import get_peft_model, LoraConfig, TaskType
 
-from collie.utils import setup_distributation
+from collie.utils import setup_distribution
 from collie.config import CollieConfig
 from collie.trainer.trainer import Trainer
 from collie.metrics.decode import DecodeMetric
@@ -38,7 +38,7 @@ config.ds_config = {
     "zero_allow_untested_optimizer": True,
     "zero_force_ds_cpu_optimizer": False,
 }
-setup_distributation(config)
+setup_distribution(config)
 dschf = HfDeepSpeedConfig(config.ds_config)  # keep this object alive
 model = AutoModelForCausalLM.from_pretrained(model_path)
 model.gradient_checkpointing_enable()

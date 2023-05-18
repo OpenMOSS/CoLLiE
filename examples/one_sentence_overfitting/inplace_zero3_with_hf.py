@@ -7,7 +7,7 @@ from transformers import LlamaTokenizer, AutoModelForCausalLM
 from transformers.deepspeed import HfDeepSpeedConfig
 from transformers.generation.utils import GenerationConfig
 
-from collie.utils import setup_distributation
+from collie.utils import setup_distribution
 from collie.config import CollieConfig
 from collie.trainer.trainer import Trainer
 from collie.metrics.decode import DecodeMetric
@@ -39,7 +39,7 @@ config.ds_config = {
 ###############################
 #     setup distribution      #
 ###############################
-setup_distributation(config)
+setup_distribution(config)
 
 ###############################
 #         init model          #

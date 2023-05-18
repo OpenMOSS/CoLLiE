@@ -29,7 +29,7 @@ class Trainer:
                  train_fn: Optional[Callable] = None,
                  eval_fn: Optional[Callable] = None,
                  optimizer: Optional[torch.optim.Optimizer] = None,
-                 lr_schedule: Optional[Union[_LRScheduler, DeepSpeedSchedulerCallable]] = None,
+                 lr_scheduler: Optional[Union[_LRScheduler, DeepSpeedSchedulerCallable]] = None,
                  train_dataset: Optional[torch.utils.data.Dataset] = None,
                  eval_dataset: Optional[torch.utils.data.Dataset] = None,
                  train_dataset_collate_fn: Optional[Callable] = None,
@@ -42,7 +42,7 @@ class Trainer:
 
         self.model = model
         self.optimizer = optimizer
-        self.lr_schedule = lr_schedule
+        self.lr_scheduler = lr_scheduler
         self.train_dataset = train_dataset
         self.eval_dataset = eval_dataset
         self.loss_fn = loss_fn
@@ -90,10 +90,10 @@ class Trainer:
                 config=self.config,
             )
         else:
-            self.engine, self.optimizer, _, self.lr_schedule = setup_ds_engine(
+            self.engine, self.optimizer, _, self.lr_scheduler = setup_ds_engine(
                 model=self.model,
                 optimizer=self.optimizer,
-                lr_schedule=self.lr_schedule,
+                lr_scheduler=self.lr_scheduler,
                 config=self.config
             )
         self.config.train_micro_batch_size = self.engine.train_micro_batch_size_per_gpu()
@@ -212,8 +212,8 @@ class Trainer:
                         # zero-3 doesn't support backward twice, so need an additional forward here
                         logits = trainer.engine(input_ids=input_ids.cuda()).logits
                         loss = trainer.loss_fn(logits, labels)
-                if trainer.lr_schedule:
-                    lr = trainer.lr_schedule.step(global_step)
+                if trainer.lr_scheduler:
+                    lr = trainer.lr_scheduler.step(global_step)
                 else:
                     lr = trainer.optimizer.lr
                 trainer.optimizer.backward_step(loss, lr)

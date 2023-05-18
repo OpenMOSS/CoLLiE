@@ -4,7 +4,7 @@ sys.path.append("/mnt/lustre/zhangshuo/projects/collie/")
 from collie.trainer.trainer import Trainer
 from collie.metrics.decode import DecodeMetric
 from collie.config import CollieConfig
-from collie.utils import setup_distributation
+from collie.utils import setup_distribution
 
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from transformers.generation.utils import GenerationConfig
@@ -33,7 +33,7 @@ config.ds_config = {
         "stage": 3,
     }
 }
-setup_distributation(config)
+setup_distribution(config)
 model = AutoModelForCausalLM.from_pretrained("gpt2")
 train_sample = tokenizer("Collie is a python package for finetuning large language models.", return_tensors="pt").input_ids.squeeze(0)
 eval_sample = tokenizer("Collie is", return_tensors="pt").input_ids.squeeze(0)[:-1,]
