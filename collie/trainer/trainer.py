@@ -8,6 +8,7 @@ from collie.driver.io.file import FileIODriver
 from collie.driver.io.petrel import PetrelIODriver
 from collie.log import logger, print
 from collie.utils import progress, env, setup_ds_engine
+from collie.optim import InplaceSGD
 
 import os
 import torch
@@ -35,6 +36,10 @@ class Trainer:
                  eval_dataset_collate_fn: Optional[Callable] = None,
                  eval_config: GenerationConfig = GenerationConfig(),
                  metrics: Sequence = []) -> None:
+        if isinstance(optimizer, InplaceSGD):
+            if config.pp_size > 1:
+                raise ValueError("InplaceSGD is incompatible with pipeline parallelism.")
+
         self.model = model
         self.optimizer = optimizer
         self.lr_schedule = lr_schedule
@@ -61,6 +66,13 @@ class Trainer:
         self.zero_checkpoint_file = "collie_zero_dp{}_pp{}_tp{}.pt".format(
             env.dp_rank, env.pp_rank, env.tp_rank
         )
+
+        if isinstance(self.optimizer, InplaceSGD) and self.config.gradient_accumulation_steps > 1:
+            logger.rank_zero_warning(
+                f"InplaceSGD is incompatible with gradient accumulation, "
+                f"set gradient_accumulation_steps from {self.config.gradient_accumulation_steps} to 1."
+            )
+            self.config.gradient_accumulation_steps = 1
         
     def setup_parallel_model(self):
         """Setup parallel model.
@@ -72,12 +84,18 @@ class Trainer:
             logger.rank_zero_warning(f"Set dp_size to {self.config.dp_size}.")
         if self.config.pp_size > 1:
             self.model.loss_fn = self.loss_fn
-        self.engine, self.optimizer, _, self.lr_schedule = setup_ds_engine(
-            model=self.model,
-            optimizer=self.optimizer,
-            lr_schedule=self.lr_schedule,
-            config=self.config
-        )
+        if isinstance(self.optimizer, InplaceSGD):
+            self.engine, _, _, _ = setup_ds_engine(
+                model=self.model,
+                config=self.config,
+            )
+        else:
+            self.engine, self.optimizer, _, self.lr_schedule = setup_ds_engine(
+                model=self.model,
+                optimizer=self.optimizer,
+                lr_schedule=self.lr_schedule,
+                config=self.config
+            )
         self.config.train_micro_batch_size = self.engine.train_micro_batch_size_per_gpu()
         self.config.gradient_accumulation_steps = self.engine.gradient_accumulation_steps()
 
@@ -132,7 +150,7 @@ class Trainer:
                                     self.engine.reset_activation_shape()
                                     self.communicate_buffer_shape = batch[0].shape
                         self.engine.train()
-                        loss = self.train_fn(self, batch)
+                        loss = self.train_fn(self, batch, epoch_idx * len(self.train_dataloader) + batch_idx)
                         tqbar_batch.set_postfix(
                             loss=round(loss, 4), 
                             batch=f"{batch_idx + 1}/{len(self.train_dataloader)}")
@@ -175,17 +193,34 @@ class Trainer:
             self.communicate_buffer_shape = None
                 
     @staticmethod
-    def train_fn(trainer, batch: Tuple) -> float:
+    def train_fn(trainer, batch: Tuple, global_step) -> float:
         if trainer.config.pp_size > 1:
             loss = trainer.engine.train_batch(data_iter=iter([batch]))
         else:
             input_ids, labels = batch
             logits = trainer.engine(input_ids=input_ids.cuda()).logits
             loss = trainer.loss_fn(logits, labels)
-            trainer.engine.backward(loss)
-            trainer.engine.step()
+            if not isinstance(trainer.optimizer, InplaceSGD):
+                trainer.engine.backward(loss)
+                trainer.engine.step()
+            else:
+                # for inplace_sgd only
+                if trainer.optimizer.clip_grad_norm is not None:
+                    trainer.optimizer.grad_norm(loss)
+                    if trainer.optimizer.zero_enabled:
+                        trainer.engine.optimizer.get_param_coordinator(training=True).reset_step()
+                        # zero-3 doesn't support backward twice, so need an additional forward here
+                        logits = trainer.engine(input_ids=input_ids.cuda()).logits
+                        loss = trainer.loss_fn(logits, labels)
+                if trainer.lr_schedule:
+                    lr = trainer.lr_schedule.step(global_step)
+                else:
+                    lr = trainer.optimizer.lr
+                trainer.optimizer.backward_step(loss, lr)
+                if trainer.optimizer.zero_enabled:  # TODO: should tp do this too?
+                    trainer.engine.optimizer.get_param_coordinator(training=True).reset_step()
         return loss.item()
-        
+
     @staticmethod
     def eval_fn(trainer, 
                 batch: Tuple, 

@@ -1,7 +1,8 @@
 import os
 import torch
+from torch.optim import Optimizer
 import torch.distributed as dist
-from torch.optim.optimizer import Optimizer
+
 
 class InplaceSGD(Optimizer):
     def __init__(self, model, lr=1e-3, zero_enabled=False, clip_grad_norm=None, clip_grad_value=None):
@@ -9,17 +10,19 @@ class InplaceSGD(Optimizer):
         self.lr = lr
         self.local_rank = int(os.environ["LOCAL_RANK"])
         self.world_size = dist.get_world_size()
-        self.zero_enbaled = zero_enabled
+        self.zero_enabled = zero_enabled
         self.clip_grad_norm = clip_grad_norm
         self.clip_grad_value = clip_grad_value
 
         # for grad norm
+        if self.clip_grad_norm is not None and self.clip_grad_norm <= 0:
+            raise ValueError(f"clip_grad_norm should be positive, got {self.clip_grad_norm}.")
         self.gather_norm = False
         self.grad_norms = []
         self.clip_coef = None
 
         # register hook
-        self.grad_func = self.inplace_sgd() if not self.zero_enbaled else self.inplace_sgd_zero3()
+        self.grad_func = self.inplace_sgd() if not self.zero_enabled else self.inplace_sgd_zero3()
         for n, p in self.model.named_parameters():
             if p.requires_grad:
                 p.register_hook(self.grad_func)
@@ -44,6 +47,7 @@ class InplaceSGD(Optimizer):
                             p.data -= (self.lr * p.grad.data)
                             p.grad = None
             return x
+
         return func
 
     def inplace_sgd_zero3(self):
@@ -83,22 +87,22 @@ class InplaceSGD(Optimizer):
                                 p.ds_tensor -= (self.lr * partitioned_grad)
                             p.grad = None
             return x
+
         return func
 
     def backward_step(self, loss, lr):
         self.lr = lr
         # User need call grad_norm themselves and then call backward_step
         # if self.clip_grad_norm is not None and self.clip_grad_norm > 0:
-        #     self.grad_norm(loss)  # TODO: hack ds for double backward
+        #     self.grad_norm(loss)
         if self.clip_grad_norm is not None and self.clip_grad_norm > 0 and self.clip_coef is None:
             raise ValueError(
-                "clip_grad_norm is not None, but clip_coef is None. Please call grad_norm before backward_step."
+                "clip_grad_norm is not None, but clip_coef is None. "
+                "Please call optimizer.grad_norm() before backward_step."
             )
         loss.backward()
         # update the last one since the hook function will not be called for the last parameter
         self.grad_func(0)
-        if self.zero_enbaled:
-            self.model.optimizer.get_param_coordinator(training=True).reset_step()
 
     def grad_norm(self, loss):
         self.gather_norm = True
@@ -121,6 +125,3 @@ class InplaceSGD(Optimizer):
             self.clip_coef = float(self.clip_grad_norm) / (total_norm + 1e-6)
             self.clip_coef = torch.clamp(self.clip_coef, max=1.0)
         self.gather_norm = False
-
-    def step(self, closure=None):
-        pass
