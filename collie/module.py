@@ -39,6 +39,18 @@ class ColumnParallelLinearWithoutBias(ColumnParallelLinear):
             return nn.Linear(*args, **naive_kwargs)
         return super().__new__(cls)
     
+class LinearWithHiddenStates(nn.Linear):
+    def __init__(self, in_features: int, out_features: int, bias: bool = True, device=None, dtype=None) -> None:
+        super().__init__(in_features, out_features, bias, device, dtype)
+        self.hidden_states = None
+        
+    def forward(self, input_):
+        if not self.training:
+            self.hidden_states = input_
+        else:
+            self.hidden_states = None
+        return super().forward(input_)
+    
 class ColumnParallelLMHead(ColumnParallelLinearWithoutBias):
     def __init__(self, *args, **kwargs):
         super(ColumnParallelLMHead, self).__init__(*args, **kwargs)
@@ -50,6 +62,18 @@ class ColumnParallelLMHead(ColumnParallelLinearWithoutBias):
         else:
             self.hidden_states = None
         return super().forward(input_)
+    
+    def __new__(cls, *args, **kwargs):
+        if env.tp_size == 1:
+            naive_kwargs = {}
+            if "output_size" in kwargs:
+                naive_kwargs["output_size"] = kwargs["output_size"]
+            if "input_size" in kwargs:
+                naive_kwargs["input_size"] = kwargs["input_size"]
+            if "bias" in kwargs:
+                naive_kwargs["bias"] = kwargs["bias"]
+            return LinearWithHiddenStates(*args, **naive_kwargs)
+        return super().__new__(cls)
 
 class RowParallelLinearWithoutBias(RowParallelLinear):
     def forward(self, input_):
