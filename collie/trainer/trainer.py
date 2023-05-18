@@ -180,7 +180,7 @@ class Trainer:
             loss = trainer.engine.train_batch(data_iter=iter([batch]))
         else:
             input_ids, labels = batch
-            logits = trainer.engine(input_ids.cuda()).logits
+            logits = trainer.engine(input_ids=input_ids.cuda()).logits
             loss = trainer.loss_fn(logits, labels)
             trainer.engine.backward(loss)
             trainer.engine.step()
