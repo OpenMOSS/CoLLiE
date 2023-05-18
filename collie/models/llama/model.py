@@ -259,8 +259,13 @@ class LlamaForCasualLM(BaseModel):
         if past_key_values is None:
             self._clean_past_key_values(self.layers)
         else:
+            input_ids = input_ids[:, -1].unsqueeze(-1)
             self._set_past_key_values(self.layers, past_key_values)
         return {"input_ids": input_ids}
+    
+    def clean(self):
+        self._clean_hidden_states([*self.layers, self.lm_head])
+        self._clean_past_key_values(self.layers)
 
     @classmethod
     def pipeline_layers(cls, config: CollieConfig):

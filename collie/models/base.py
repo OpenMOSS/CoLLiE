@@ -75,6 +75,11 @@ class BaseModel(nn.Module, GenerationMixin):
     def can_generate(self) -> bool:
         return True
 
+    def generate(self, *args, **kwargs):
+        res = super().generate(*args, **kwargs)
+        self.clean()
+        return res
+
     @classmethod
     def from_config(cls, config: Union[CollieConfig, str], **kwargs):
         """
@@ -108,6 +113,12 @@ class BaseModel(nn.Module, GenerationMixin):
             
     def __new__(cls, config: CollieConfig, **kwargs):
         return cls.from_config(config, **kwargs)
+    
+    @abstractmethod
+    def clean(self):
+        raise NotImplementedError(
+            "`clean` should be implemented to clear caches for generation."
+        )
 
     @classmethod
     def from_pretrained(cls, model_path_or_name: str, config: Optional[Union[CollieConfig, str]] = None, **kwargs):
