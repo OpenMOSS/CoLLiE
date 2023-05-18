@@ -13,9 +13,9 @@ from deepspeed.runtime.pipe.topology import PipeModelDataParallelTopology
 from transformers.generation.utils import GenerationMixin
 from transformers.generation.utils import GenerationConfig
 from collie.module import PipelineModel, GPTLMLoss
-from collie.trainer.arguments import Arguments, load_config
+from collie.config import CollieConfig, load_config
 from collie.log import logger
-from collie.utils import setup_distributation, zero3_init
+from collie.utils import setup_distributation, Zero3_Init, zero3_load_state_dict, is_zero3_enabled
 
 class BaseModel(nn.Module, GenerationMixin):
     """
@@ -23,6 +23,7 @@ class BaseModel(nn.Module, GenerationMixin):
 
     Every new model should inherit this class.
     """
+    main_input_name = "input_ids"
     def __init__(self) -> None:
         super().__init__()
         self.device = torch.device("cuda")
@@ -73,53 +74,51 @@ class BaseModel(nn.Module, GenerationMixin):
     
     def can_generate(self) -> bool:
         return True
-    
+
     @classmethod
-    def from_config(cls, args: Union[Arguments, str], **kwargs):
+    def from_config(cls, config: Union[CollieConfig, str], **kwargs):
         """
         Load arguments from config.
         """
-        if isinstance(args, str) and os.path.exists(args):
-            args = Arguments.from_pretrained(args)
-        if isinstance(args.ds_config, str) and os.path.exists(args.ds_config):
-            args.ds_config = load_config(args.ds_config)
-        args.update(**kwargs)
-        setup_distributation(args)
-        model_cls = cls._get_model_cls(args)
-        if args.pp_size == 1:
-            with zero3_init(args):
+        if isinstance(config, str):
+            config = CollieConfig.from_pretrained(config, **kwargs)
+        setup_distributation(config)
+        model_cls = cls._get_model_cls(config)
+        if config.pp_size == 1:
+            with Zero3_Init(config):
                 model = super().__new__(model_cls)
-                model.__init__(args)
+                model.__init__(config)
                 dist.barrier()
                 return model
         else:
             pipeline_model =  PipelineModel(
-                layers=model_cls.pipeline_layers(args), base_seed=args.seed,
-                partition_method=args.pp_partition_method,
+                layers=model_cls.pipeline_layers(config),
+                base_seed=config.seed,
+                partition_method=config.pp_partition_method,
                 topology=PipeModelDataParallelTopology(
-                    num_pp=args.pp_size,
-                    num_dp=args.dp_size,
-                    num_mp=args.tp_size
+                    num_pp=config.pp_size,
+                    num_dp=config.dp_size,
+                    num_mp=config.tp_size
                 ), loss_fn=GPTLMLoss()
             )
-            setattr(pipeline_model, "args", args)
+            setattr(pipeline_model, "config", config)
             setattr(pipeline_model, "save_parallel_state_dict", cls.save_parallel_state_dict)
             setattr(pipeline_model, "load_parallel_state_dict", cls.load_parallel_state_dict)
             return pipeline_model
             
-    def __new__(cls, args: Arguments, **kwargs):
-        return cls.from_config(args, **kwargs)
+    def __new__(cls, config: CollieConfig, **kwargs):
+        return cls.from_config(config, **kwargs)
 
     @classmethod
-    def from_pretrained(cls, model_path_or_name: str, args:Optional[Union[Arguments, str]] = None, **kwargs):
+    def from_pretrained(cls, model_path_or_name: str, config: Optional[Union[CollieConfig, str]] = None, **kwargs):
         """
         :param model_path_or_name: str
-        :param args: str, Arguments or None. If None, we will load arguments
-            from `model_path_or_name`.
+        :param config: str, CollieConfig or None. If None, we will load
+            arguments from `model_path_or_name`.
         :param kwargs:
             - process_exclusion: Whether to load checkpoints one by one to 
               save memory.
-            parameters to be set at Arguments.
+            parameters to be set at CollieConfig.
         """
         process_exclusion = kwargs.pop("process_exclusion", False)
         if dist.is_initialized() and process_exclusion:
@@ -129,21 +128,24 @@ class BaseModel(nn.Module, GenerationMixin):
             )
         if not os.path.exists(model_path_or_name):
             model_path_or_name = snapshot_download(model_path_or_name)
-        if args is None:
-            args = model_path_or_name
-        if isinstance(args, str):
+        if config is None:
+            config = model_path_or_name
+        if isinstance(config, str):
             # prevent duplicate `from_pretrained`` in load_parallel
-            args = Arguments.from_pretrained(args)
-        model = cls.from_config(args, **kwargs)
+            config = CollieConfig.from_pretrained(config, **kwargs)
+        model = cls.from_config(config)
         state_dict = cls.load_parallel_state_dict(
-            path=model_path_or_name, args=args,
+            path=model_path_or_name, config=config,
             process_exclusion=process_exclusion,
         )
-        model.load_state_dict(state_dict)
+        if is_zero3_enabled(config):
+            zero3_load_state_dict(model, state_dict)
+        else:
+            model.load_state_dict(state_dict)
         return model
 
     @classmethod
-    def pipline_layers(cls, args: Union[Arguments, str]):
+    def pipline_layers(cls, config: Union[CollieConfig, str]):
         """
         Get layers of pipeline.
 
@@ -156,7 +158,7 @@ class BaseModel(nn.Module, GenerationMixin):
 
     @staticmethod
     @abstractmethod
-    def load_parallel_state_dict(path: str, args: Union[Arguments, str],
+    def load_parallel_state_dict(path: str, config: Union[CollieConfig, str],
                                  process_exclusion: bool = False):
         """
         Load state_dict from ``path``.
@@ -165,7 +167,7 @@ class BaseModel(nn.Module, GenerationMixin):
         `huggingface`.
 
         :param path:
-        :param args:
+        :param config:
         :param process_exclusion: Whether to load checkpoints one by one to 
             save memory.
         :return: state_dict. Note that the state_dict should be processed
@@ -179,7 +181,7 @@ class BaseModel(nn.Module, GenerationMixin):
     @staticmethod
     @abstractmethod
     def save_parallel_state_dict(state_dict: dict, path: str,
-                                 args: Arguments,
+                                 config: CollieConfig,
                                  process_exclusion: bool = False):
         """
         Save ``state_dict`` to ``path``.
@@ -193,28 +195,28 @@ class BaseModel(nn.Module, GenerationMixin):
         )
     
     @classmethod
-    def _get_model_cls(cls, args: Union[Arguments, str]):
+    def _get_model_cls(cls, config: Union[CollieConfig, str]):
         model_cls = cls
-        if isinstance(args, str) and os.path.exists(args):
-            args = load_config(args)
+        if isinstance(config, str):
+            config = load_config(config)
         if cls.__name__ == "BaseModel":
             mod = importlib.import_module(
-                ".model", f"collie.models.{args.model_type}")
+                ".model", f"collie.models.{config.model_type}")
             classes = inspect.getmembers(mod, inspect.isclass)
             for name, _cls in classes:
                 if not issubclass(_cls, BaseModel):
                     continue
-                if name.lower().startswith(args.model_type):
+                if name.lower().startswith(config.model_type):
                     model_cls = _cls
                     break
             if model_cls.__name__ == cls.__name__:
                 raise ValueError(
-                    f"Unexpected model type `{args.model_type}`"
+                    f"Unexpected model type `{config.model_type}`"
                 )
         else:
-            if not cls.__name__.lower().startswith(args.model_type):
+            if not cls.__name__.lower().startswith(config.model_type):
                 logger.rank_zero_warning(
-                    f"The pretrained model's type {args.model_type} does not "
-                    f"match the current model {cls.__name__}."
+                    f"The pretrained model's type {config.model_type} does "
+                    f"not match the current model {cls.__name__}."
                 )
         return model_cls

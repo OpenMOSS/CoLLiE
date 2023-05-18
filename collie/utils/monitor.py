@@ -1,6 +1,6 @@
 from deepspeed.monitor.monitor import MonitorMaster, Monitor
 
-from collie.trainer.arguments import Arguments
+from collie.config import CollieConfig
 from collie.log.print import print
 
 import time
@@ -12,11 +12,11 @@ class DummyMonitor(Monitor):
     def write_events(self, event_list):
         pass
 
-def get_monitor(args: Arguments):
-    if "monitor_config" in args.ds_config.keys():
-        return MonitorMaster(args.ds_config["monitor_config"])
+def get_monitor(config: CollieConfig):
+    if "monitor_config" in config.ds_config.keys():
+        return MonitorMaster(config.ds_config["monitor_config"])
     else:
-        return DummyMonitor(args.ds_config["monitor_config"])
+        return DummyMonitor(config.ds_config["monitor_config"])
     
 def monitor_step_time(monitor: Monitor, name: str = "time per step", step_idx: int = 0):
     start = time.time()

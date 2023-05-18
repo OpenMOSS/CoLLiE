@@ -36,6 +36,6 @@ class DecodeMetric(BaseMetric):
             sentences.append(self.tokenizer.decode(ids))
         if self.verbose:
             print(sentences)
-        if self.save_to_file and self.trainer.args.local_rank == 0:
+        if self.save_to_file and self.trainer.config.local_rank == 0:
             with open(self.save_path, 'a+') as f:
                 f.write('\n'.join(sentences) + '\n')

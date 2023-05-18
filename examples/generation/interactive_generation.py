@@ -1,7 +1,8 @@
 # 使用 collie 模型进行张量并行模型推理
 import sys
 sys.path.append("/mnt/lustre/zhangshuo/projects/collie/")
-from collie.models.llama.model import LlamaForCasualLM, LlamaArguments
+from collie.models.llama.model import LlamaForCasualLM
+from collie.config import CollieConfig
 
 from transformers import LlamaTokenizer
 from transformers.generation.utils import GenerationConfig
@@ -12,7 +13,7 @@ tokenizer.pad_token_id = 0
 tokenizer.bos_token_id = 1
 tokenizer.eos_token_id = 2
 
-args = LlamaArguments.from_pretrained("decapoda-research/llama-7b-hf")
+args = CollieConfig.from_pretrained("decapoda-research/llama-7b-hf")
 args.dp_size = 1
 args.pp_size = 1
 args.tp_size = 4

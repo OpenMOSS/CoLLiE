@@ -24,11 +24,11 @@ except ModuleNotFoundError:
     FlashAttention = None
 
 from collie.log.logger import logger
+from collie.config import CollieConfig
 from collie.models.base import BaseModel
 from collie.driver.io.file import FileIODriver
-from collie.trainer.arguments import load_config
+from collie.config import load_config
 from collie.driver.io.petrel import PetrelIODriver
-from collie.models.llama.arguments import LlamaArguments
 from collie.module import ColumnParallelLinearWithoutBias, RowParallelLinearWithoutBias, ColumnParallelLMHead
 from collie.utils import progress, env
 
@@ -68,73 +68,73 @@ class RotaryPositionEmbedding(nn.Module):
 
 
 class LlamaLayer(nn.Module):
-    def __init__(self, args: LlamaArguments) -> None:
+    def __init__(self, config: CollieConfig) -> None:
         super().__init__()
-        self.args = args
+        self.config = config
         self.self_attn = nn.ModuleDict(
             {
                 "q_proj": ColumnParallelLinearWithoutBias(
-                    args.hidden_size,
-                    args.hidden_size,
+                    config.hidden_size,
+                    config.hidden_size,
                     bias=False,
                     gather_output=False,
                     init_method=lambda x: x
                 ),
                 "k_proj": ColumnParallelLinearWithoutBias(
-                    args.hidden_size,
-                    args.hidden_size,
+                    config.hidden_size,
+                    config.hidden_size,
                     bias=False,
                     gather_output=False,
                     init_method=lambda x: x
                 ),
                 "v_proj": ColumnParallelLinearWithoutBias(
-                    args.hidden_size,
-                    args.hidden_size,
+                    config.hidden_size,
+                    config.hidden_size,
                     bias=False,
                     gather_output=False,
                     init_method=lambda x: x
                 ),
                 "o_proj": RowParallelLinearWithoutBias(
-                    args.hidden_size,
-                    args.hidden_size,
+                    config.hidden_size,
+                    config.hidden_size,
                     bias=False,
                     input_is_parallel=True,
                     init_method=lambda x: x
                 ),
                 "rotary_emb": RotaryPositionEmbedding(
-                    self.args.hidden_size // self.args.num_attention_heads)
+                    self.config.hidden_size // self.config.num_attention_heads)
             }
         )
         self.input_layernorm = FusedRMSNorm(
-            normalized_shape=args.hidden_size,
-            eps=args.layer_norm_epsilon
+            normalized_shape=config.hidden_size,
+            eps=config.rms_norm_eps
         )
         self.mlp = nn.ModuleDict({
             "gate_proj": ColumnParallelLinearWithoutBias(
-                args.hidden_size,
-                args.intermediate_size,
+                config.hidden_size,
+                config.intermediate_size,
                 bias=False,
                 gather_output=False,
                 init_method=lambda x: x
             ),
             "up_proj": ColumnParallelLinearWithoutBias(
-                args.hidden_size,
-                args.intermediate_size,
+                config.hidden_size,
+                config.intermediate_size,
                 bias=False,
                 gather_output=False,
                 init_method=lambda x: x
             ),
             "down_proj": RowParallelLinearWithoutBias(
-                args.intermediate_size,
-                args.hidden_size,
+                config.intermediate_size,
+                config.hidden_size,
                 bias=False,
                 input_is_parallel=True,
                 init_method=lambda x: x
             )
         })
         self.post_attention_layernorm = FusedRMSNorm(
-            normalized_shape=args.hidden_size,
-            eps=args.layer_norm_epsilon
+            normalized_shape=config.hidden_size,
+            eps=config.rms_norm_eps
         )
         # 务必保持变量名一致
         self.use_cache = True
@@ -144,9 +144,11 @@ class LlamaLayer(nn.Module):
     def _forward(self, hidden_states: torch.Tensor):
         if not self.training:
             self.hidden_states = hidden_states
+        else:
+            self.hidden_states = None
         assert hidden_states.ndim == 3, f"hidden_states.shape must be (B, N, H), but got {hidden_states.shape}"
         batch_size, seq_len, _ = hidden_states.shape
-        head_dim = self.args.hidden_size // self.args.num_attention_heads
+        head_dim = self.config.hidden_size // self.config.num_attention_heads
         _hidden_states = self.input_layernorm(hidden_states)
         query, key, value = self.self_attn["q_proj"](_hidden_states), self.self_attn["k_proj"](
             _hidden_states), self.self_attn["v_proj"](_hidden_states)
@@ -166,13 +168,13 @@ class LlamaLayer(nn.Module):
                 value = torch.cat([self.past_key_values[1], value], dim=1)
             self.past_key_values = [key, value]
 
-        if self.args.use_flash:
+        if self.config.use_flash:
             assert FlashAttention is not None, \
                 "Detected flash_attn is not installed. See https://github.com/HazyResearch/flash-attention"
             qkv = torch.stack([query, key, value], dim=2)
             output, _ = FlashAttention()(qkv, causal=True)
             output = rearrange(output, "b n h d -> b n (h d)")
-            output = F.dropout(output, p=self.args.dropout,
+            output = F.dropout(output, p=self.config.dropout,
                                training=self.training)
         else:
             query, key, value = query.permute(0, 2, 1, 3), key.permute(
@@ -189,41 +191,39 @@ class LlamaLayer(nn.Module):
             output = torch.matmul(attention_score, value)
             output = output.transpose(1, 2).contiguous().view(
                 batch_size, seq_len + start_pos, -1)
-            output = F.dropout(output, p=self.args.dropout,
+            output = F.dropout(output, p=self.config.dropout,
                                training=self.training)
         output = output[:, start_pos:, :]
         hidden_states = hidden_states + self.self_attn["o_proj"](output)
         _hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = hidden_states + F.dropout(self.mlp["down_proj"](F.silu(self.mlp["gate_proj"](
-            _hidden_states)) * self.mlp["up_proj"](_hidden_states)), p=self.args.dropout, training=self.training)
+            _hidden_states)) * self.mlp["up_proj"](_hidden_states)), p=self.config.dropout, training=self.training)
         return hidden_states
 
     def forward(self, hidden_states: torch.Tensor):
-        if self.args.checkpointing:
+        if self.config.checkpointing:
             return checkpoint(self._forward, hidden_states)
         else:
             return self._forward(hidden_states)
 
 
 class LlamaForCasualLM(BaseModel):
-    def __init__(self, args: Union[LlamaArguments, str]) -> None:
+    def __init__(self, config: CollieConfig) -> None:
         super().__init__()
-        if isinstance(args, str):
-            args = load_config(args)
-        self.args = args
+        self.config = config
         self.embed_tokens = tensor_parallel.VocabParallelEmbedding(
-            self.args.vocab_size,
-            self.args.hidden_size
+            self.config.vocab_size,
+            self.config.hidden_size
         )
         self.layers = nn.Sequential(
-            *[LlamaLayer(self.args) for _ in range(self.args.num_hidden_layers)])
+            *[LlamaLayer(self.config) for _ in range(self.config.num_hidden_layers)])
         self.norm = FusedRMSNorm(
-            normalized_shape=self.args.hidden_size,
-            eps=self.args.layer_norm_epsilon
+            normalized_shape=self.config.hidden_size,
+            eps=self.config.rms_norm_eps
         )
         self.lm_head = ColumnParallelLMHead(
-            self.args.hidden_size,
-            self.args.vocab_size,
+            self.config.hidden_size,
+            self.config.vocab_size,
             bias=False
         )
         # GenerationMixin 需要的额外参数
@@ -233,7 +233,7 @@ class LlamaForCasualLM(BaseModel):
 
     def forward(self, input_ids: torch.Tensor, **kwargs):
         past_key_values=self._get_past_key_values(self.layers)
-        if past_key_values is not None:
+        if past_key_values is not None and not self.training:
             input_ids = input_ids[:, -1:]
         assert input_ids.ndim == 2, f"input_ids.shape must be (B, N), but got {input_ids.shape}"
         hidden_states = self.embed_tokens(input_ids)
@@ -263,38 +263,38 @@ class LlamaForCasualLM(BaseModel):
         return {"input_ids": input_ids}
 
     @classmethod
-    def pipeline_layers(cls, args: Union[LlamaArguments, str]):
+    def pipeline_layers(cls, config: CollieConfig):
         """
         Get layers of pipeline.
 
         :return: list
         """
-        if isinstance(args, str) and os.path.exists(args):
-            args = load_config(args)
+        if isinstance(config, str):
+            config = CollieConfig.from_pretrained(config)
         return [TiedLayerSpec(
             "embed_tokens",
             tensor_parallel.VocabParallelEmbedding,
-            args.vocab_size,
-            args.hidden_size),
-            *[LayerSpec(LlamaLayer, args)
-              for _ in range(args.num_hidden_layers)],
+            config.vocab_size,
+            config.hidden_size),
+            *[LayerSpec(LlamaLayer, config)
+              for _ in range(config.num_hidden_layers)],
             LayerSpec(FusedRMSNorm,
-                      normalized_shape=args.hidden_size,
-                      eps=args.layer_norm_epsilon),
+                      normalized_shape=config.hidden_size,
+                      eps=config.rms_norm_eps),
             TiedLayerSpec(
             "embed_tokens",
             ColumnParallelLMHead,
-            args.hidden_size,
-            args.vocab_size,
+            config.hidden_size,
+            config.vocab_size,
             bias=False)
         ]
 
     @staticmethod
-    def load_parallel_state_dict(path: str, args: Union[LlamaArguments, str],
+    def load_parallel_state_dict(path: str, config: Union[CollieConfig, str],
                                  process_exclusion: bool = False):...
     @staticmethod
     def load_parallel_state_dict(path: str, 
-                                 args: Union[LlamaArguments, str],
+                                 config: Union[CollieConfig, str],
                                  process_exclusion: bool = False,
                                  protocol: str = 'file', 
                                  format: str = 'hf'):
@@ -309,8 +309,8 @@ class LlamaForCasualLM(BaseModel):
         """
         assert format in ["hf", "meta"], "Only support hf and meta format"
         assert protocol in ["file", "petrel"], "Only support file and petrel protocol"
-        if isinstance(args, str) and os.path.exists(args):
-            args = load_config(args)
+        if isinstance(config, str):
+            config = CollieConfig.from_pretrained(config)
         IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
         if not IODriver.exists(path):
             raise FileNotFoundError(f"folder {path} not found.")
@@ -335,16 +335,16 @@ class LlamaForCasualLM(BaseModel):
                 if format == "hf":
                     # 根据 huggingface 中的 config.json 更新一下用户配置
                     if IODriver.exists(os.path.join(path, "config.json")):
-                        config = json.loads(IODriver.load(os.path.join(path, "config.json"), mode="r"))
+                        new_config = json.loads(IODriver.load(os.path.join(path, "config.json"), mode="r"))
                         for key, value in {
-                            "vocab_size": config["vocab_size"],
-                            "hidden_size": config["hidden_size"],
-                            "intermediate_size": config["intermediate_size"],
-                            "num_hidden_layers": config["num_hidden_layers"],
-                            "num_attention_heads": config["num_attention_heads"],
-                            "layer_norm_epsilon": config["rms_norm_eps"]
+                            "vocab_size": new_config["vocab_size"],
+                            "hidden_size": new_config["hidden_size"],
+                            "intermediate_size": new_config["intermediate_size"],
+                            "num_hidden_layers": new_config["num_hidden_layers"],
+                            "num_attention_heads": new_config["num_attention_heads"],
+                            "rms_norm_eps": new_config["rms_norm_eps"]
                         }.items():
-                            setattr(args, key, value)
+                            setattr(config, key, value)
                     # 如果存在 pytorch_model.bin.index.json 文件的话，此时不同的 pp 进程可以按需加载自己需要的权重
                     if IODriver.exists(os.path.join(path, "pytorch_model.bin.index.json")) and "COLLIE_PP_PARTS" in os.environ.keys():
                         weight_map = json.loads(IODriver.load(os.path.join(path, "pytorch_model.bin.index.json"), mode="r"))["weight_map"]
@@ -376,28 +376,28 @@ class LlamaForCasualLM(BaseModel):
                                     part_state_dict[key] = rearrange(
                                         part_state_dict[key],
                                         "(h two t) d -> h two t d",
-                                        h=args.num_attention_heads,
+                                        h=config.num_attention_heads,
                                         two=2).transpose(1, 2).reshape(
-                                            args.hidden_size,
-                                            args.hidden_size)
+                                            config.hidden_size,
+                                            config.hidden_size)
                                 part_state_dict[key.replace("model.", "")] = part_state_dict.pop(key)
                             state_dict.update(part_state_dict)
                             del part_state_dict
                 elif format == "meta":
                     # meta 权重的格式，需要补充 inv_freq 的权重
-                    inv_freq = 1.0 / (10000.0 ** (torch.arange(0, (args.hidden_size // args.num_attention_heads),
-                                2).float() / (args.hidden_size // args.num_attention_heads)))
+                    inv_freq = 1.0 / (10000.0 ** (torch.arange(0, (config.hidden_size // config.num_attention_heads),
+                                2).float() / (config.hidden_size // config.num_attention_heads)))
                     # 根据 meta 中的 params.json 更新一下用户配置
                     if IODriver.exists(os.path.join(path, "params.json")):
                         params = json.loads(IODriver.load(os.path.join(path, "params.json"), mode="r"))
                         for key, value in {
                             "hidden_size": params["dim"],
-                            "intermediate_size": params["multiple_of"] * ((int(2 * 4 * args.hidden_size / 3) + params["multiple_of"] - 1) // params["multiple_of"]),
+                            "intermediate_size": params["multiple_of"] * ((int(2 * 4 * config.hidden_size / 3) + params["multiple_of"] - 1) // params["multiple_of"]),
                             "num_hidden_layers": params["n_layers"],
                             "num_attention_heads": params["n_heads"],
-                            "layer_norm_epsilon": params["norm_eps"]
+                            "rms_norm_eps": params["norm_eps"]
                         }.items():
-                            setattr(args, key, value)
+                            setattr(config, key, value)
                     # 权重全部加载
                     weights = [weight for weight in IODriver.list(path) if (weight.endswith(".pt") or weight.endswith(".pth"))]
                     # 因为 meta 的权重默认 按照张量并行分割，cat 的时候存在顺序问题，所以先排序一下
@@ -479,7 +479,7 @@ class LlamaForCasualLM(BaseModel):
                                     or key.endswith("up_proj.weight") \
                                         or key.endswith("embed_tokens.weight") \
                                             or key.endswith("lm_head.weight"):
-                                                tensor = list(torch.chunk(state_dict[key], args.tp_size, dim=0))[int(os.environ.get("COLLIE_TP_RANK", "0"))].detach().clone()
+                                                tensor = list(torch.chunk(state_dict[key], config.tp_size, dim=0))[int(os.environ.get("COLLIE_TP_RANK", "0"))].detach().clone()
                                                 del state_dict[key]
                                                 if process_exclusion:
                                                     # CPU 内存回收（速度很慢）
@@ -487,7 +487,7 @@ class LlamaForCasualLM(BaseModel):
                                                 state_dict[key] = tensor
                     elif key.endswith("o_proj.weight") \
                         or key.endswith("down_proj.weight"):
-                            tensor = list(torch.chunk(state_dict[key], args.tp_size, dim=1))[int(os.environ.get("COLLIE_TP_RANK", "0"))].detach().clone()
+                            tensor = list(torch.chunk(state_dict[key], config.tp_size, dim=1))[int(os.environ.get("COLLIE_TP_RANK", "0"))].detach().clone()
                             del state_dict[key]
                             if process_exclusion:
                                 # CPU 内存回收（速度很慢）
@@ -500,12 +500,12 @@ class LlamaForCasualLM(BaseModel):
                 
     @staticmethod
     def save_parallel_state_dict(state_dict: dict, path: str,
-                                 args: LlamaArguments,
+                                 config: CollieConfig,
                                  process_exclusion: bool = False):...
     @staticmethod
     def save_parallel_state_dict(state_dict: dict,
                                  path: str, 
-                                 args: LlamaArguments,
+                                 config: CollieConfig,
                                  process_exclusion: bool = False,
                                  protocol: str = 'file'):
         """
@@ -517,11 +517,11 @@ class LlamaForCasualLM(BaseModel):
         assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
         IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
         def reshape_wq_wk(w: torch.Tensor):
-            return w.view(args.num_attention_heads, 
-                          args.hidden_size // args.num_attention_heads // 2, 
+            return w.view(config.num_attention_heads, 
+                          config.hidden_size // config.num_attention_heads // 2, 
                           2, 
-                          args.hidden_size).transpose(1, 2).reshape(args.hidden_size, 
-                                                                    args.hidden_size)
+                          config.hidden_size).transpose(1, 2).reshape(config.hidden_size, 
+                                                                    config.hidden_size)
         # gather to tp rank 0
         if env.is_pipeline:
             layers = env.pipline_layers_idx
@@ -540,7 +540,7 @@ class LlamaForCasualLM(BaseModel):
                         state_dict[key.replace(f"{layer}.", f"model.layers.{layer - 1}.")] = state_dict.pop(key)
         if dist.is_initialized() and process_exclusion:
             # 如果启动了进程互斥，则要进行 pp_size 次循环
-            rank_order = range(args.pp_size)
+            rank_order = range(config.pp_size)
         else:
             # 不开启只进行一次循环
             rank_order = range(1)
@@ -554,7 +554,7 @@ class LlamaForCasualLM(BaseModel):
                         device = state_dict[key].device
                         tensor_list = None
                         if env.tp_rank == 0:
-                            tensor_list = [torch.zeros_like(state_dict[key]).to(state_dict[key].dtype).cuda() for _ in range(args.tp_size)]
+                            tensor_list = [torch.zeros_like(state_dict[key]).to(state_dict[key].dtype).cuda() for _ in range(config.tp_size)]
                         dist.gather(state_dict[key].cuda(), dst=dst, gather_list=tensor_list, group=env.tp_group)
                         if env.tp_rank == 0:
                             if key.endswith("q_proj.weight") \
@@ -581,7 +581,7 @@ class LlamaForCasualLM(BaseModel):
                     if env.tp_rank == 0:
                         # Save gathered weights
                         if env.is_pipeline:
-                            ckpt_name = f"pytorch_model-{env.pp_rank+1:05d}-of-{args.pp_size:05d}.bin"
+                            ckpt_name = f"pytorch_model-{env.pp_rank+1:05d}-of-{config.pp_size:05d}.bin"
                             total_size = 0
                             weight_map = {}
                             for name, weight in state_dict.items():
@@ -599,28 +599,11 @@ class LlamaForCasualLM(BaseModel):
                         IODriver.save(state_dict, ckpt_path)
                 if dist.is_initialized() and process_exclusion:
                     dist.barrier()
-        if dist.get_rank() == 0:
-            config = {"architectures": ["LlamaForCausalLM"], 
-                      "bos_token_id": 0, 
-                      "eos_token_id": 1, 
-                      "hidden_act": "silu", 
-                      "hidden_size": args.hidden_size, 
-                      "intermediate_size": args.intermediate_size, 
-                      "initializer_range": 0.02, 
-                      "max_sequence_length": 2048, 
-                      "model_type": "llama", 
-                      "num_attention_heads": args.num_attention_heads, 
-                      "num_hidden_layers": args.num_hidden_layers, 
-                      "pad_token_id": -1, 
-                      "rms_norm_eps": args.layer_norm_epsilon, 
-                      "torch_dtype": "float16" if args.fp16 else "float32", 
-                      "transformers_version": "4.27.0.dev0", 
-                      "use_cache": True, 
-                      "vocab_size": args.vocab_size}
-            IODriver.save(json.dumps(config, indent=4, sort_keys=True), os.path.join(path, "config.json"))
+        if env.rank == 0:
+            config.save_pretrained(path)
         if env.rank == 0 and env.is_pipeline:
             # merge
-            tmp_index_files = [tmp_index_file.format(i) for i in range(args.pp_size)]
+            tmp_index_files = [tmp_index_file.format(i) for i in range(config.pp_size)]
             total_size = 0
             weight_map = {}
             for _file in tmp_index_files:

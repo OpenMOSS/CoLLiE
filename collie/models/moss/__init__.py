@@ -1,2 +1,1 @@
-from .arguments import MossArguments
-from .model import MossModel
+from .model import MossForCausalLM
