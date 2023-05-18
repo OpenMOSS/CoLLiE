@@ -6,8 +6,8 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 import torch.distributed as dist
+import torch.utils.checkpoint
 
-from deepspeed.runtime.activation_checkpointing.checkpointing import checkpoint
 from deepspeed.pipe import LayerSpec, TiedLayerSpec
 
 from megatron.core import tensor_parallel
@@ -202,7 +202,14 @@ class LlamaLayer(nn.Module):
 
     def forward(self, hidden_states: torch.Tensor):
         if self.config.checkpointing:
-            return checkpoint(self._forward, hidden_states)
+            def create_custom_forward(module):
+                def custom_forward(*inputs):
+                    return module._forward(*inputs)
+                return custom_forward
+            return torch.utils.checkpoint.checkpoint(
+                create_custom_forward(self),
+                hidden_states
+            )
         else:
             return self._forward(hidden_states)
 
