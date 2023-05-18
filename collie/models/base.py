@@ -6,6 +6,7 @@ from abc import abstractmethod
 from typing import Union, Optional, Sequence, List
 from huggingface_hub import snapshot_download
 
+import deepspeed
 from torch import nn
 from torch import distributed as dist
 from deepspeed.runtime.pipe.topology import PipeModelDataParallelTopology
@@ -14,7 +15,7 @@ from transformers.generation.utils import GenerationConfig
 from collie.module import PipelineModel, GPTLMLoss
 from collie.config import CollieConfig, load_config
 from collie.log import logger
-from collie.utils import setup_distributation
+from collie.utils import setup_distributation, Zero3_Init, zero3_load_state_dict, is_zero3_enabled
 
 class BaseModel(nn.Module, GenerationMixin):
     """
@@ -73,12 +74,6 @@ class BaseModel(nn.Module, GenerationMixin):
     
     def can_generate(self) -> bool:
         return True
-    
-    def generate(self, *args, **kwargs):
-        res = super().generate(*args, **kwargs)
-        self._clean_past_key_values()
-        self._clean_hidden_states()
-        return res
 
     @classmethod
     def from_config(cls, config: Union[CollieConfig, str], **kwargs):
@@ -90,10 +85,11 @@ class BaseModel(nn.Module, GenerationMixin):
         setup_distributation(config)
         model_cls = cls._get_model_cls(config)
         if config.pp_size == 1:
-            model = super().__new__(model_cls)
-            model.__init__(config)
-            dist.barrier()
-            return model
+            with Zero3_Init(config):
+                model = super().__new__(model_cls)
+                model.__init__(config)
+                dist.barrier()
+                return model
         else:
             pipeline_model =  PipelineModel(
                 layers=model_cls.pipeline_layers(config),
@@ -142,7 +138,10 @@ class BaseModel(nn.Module, GenerationMixin):
             path=model_path_or_name, config=config,
             process_exclusion=process_exclusion,
         )
-        model.load_state_dict(state_dict)
+        if is_zero3_enabled(config):
+            zero3_load_state_dict(model, state_dict)
+        else:
+            model.load_state_dict(state_dict)
         return model
 
     @classmethod

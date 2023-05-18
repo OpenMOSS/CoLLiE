@@ -71,6 +71,24 @@ class CollieConfig:
             "help": "Batch size for evaluation."
         }
     )
+    checkpointing: bool = field(
+        default=True,
+        metadata={
+            "help": "Whether to use activation checkpointing."
+        }
+    )
+    use_flash: bool = field(
+        default=True,
+        metadata={
+            "help": "Whether to use flash attention."
+        }
+    )
+    dropout: float = field(
+        default=0.0,
+        metadata={
+            "help": "Dropout probability."
+        }
+    )
     ds_config: Union[str, dict] = field(
         default="",
         metadata={

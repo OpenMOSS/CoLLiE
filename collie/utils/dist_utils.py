@@ -9,10 +9,65 @@ from torch import distributed as dist
 import deepspeed
 from deepspeed.runtime.utils import set_random_seed
 from deepspeed.runtime.zero.stage_1_and_2 import DeepSpeedZeroOptimizer
+from deepspeed.runtime.engine import DeepSpeedOptimizerCallable, DeepSpeedSchedulerCallable
 from deepspeed.accelerator import get_accelerator
 from megatron.core import parallel_state, tensor_parallel
+from transformers.deepspeed import HfDeepSpeedConfig
+
+from typing import Union, Optional
 
 from .utils import classproperty
+from collie.config import load_config, CollieConfig
+from collie.log.print import print
+
+class Zero3_Init:
+    def __init__(self, config: CollieConfig):
+        self.config = config
+
+    def __enter__(self):
+        if is_zero3_enabled(self.config):
+            self.ds_context_manager = deepspeed.zero.Init(
+                data_parallel_group=parallel_state.get_data_parallel_group())
+            self.ds_context_manager.__enter__()  # enter deepspeed context
+            return self
+        else:
+            return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if hasattr(self, 'ds_context_manager'):
+            self.ds_context_manager.__exit__(exc_type, exc_val, exc_tb)  # exit deepspeed context
+            
+def zero3_load_state_dict(model: torch.nn.Module, state_dict: dict):
+    for name, param in model.named_parameters():
+        with deepspeed.zero.GatheredParameters(param, modifier_rank=0):
+            param.data = state_dict[name].data.to(param.device).to(param.dtype)
+            
+def is_zero3_enabled(config: CollieConfig):
+    if isinstance(config.ds_config, str) and os.path.exists(config.ds_config):
+        config.ds_config = load_config(config.ds_config)
+    if isinstance(config.ds_config, dict) \
+            and "zero_optimization" in config.ds_config.keys() \
+                and "stage" in config.ds_config["zero_optimization"].keys() \
+                    and config.ds_config["zero_optimization"]["stage"] == 3:
+                        return True
+    else:
+        return False
+
+def setup_ds_engine(
+    config: CollieConfig,
+    model: torch.nn.Module,
+    optimizer: Optional[Union[torch.optim.Optimizer, DeepSpeedOptimizerCallable]] = None,
+    lr_schedule: Optional[Union[torch.optim.lr_scheduler._LRScheduler, DeepSpeedSchedulerCallable]] = None
+):
+    engine, optimizer, _, lr_scheduler = deepspeed.initialize(
+        model=model,
+        optimizer=optimizer,
+        lr_scheduler=lr_schedule,
+        model_parameters=[p for p in model.parameters() if p.requires_grad],
+        mpu=parallel_state if config.pp_size == 1 else None,
+        config=config.ds_config
+    )
+    return engine, optimizer, _, lr_scheduler
 
 def setup_distributation(config) -> None:
     """Setup the distributed training environment.
@@ -24,6 +79,16 @@ def setup_distributation(config) -> None:
     """
     if torch.distributed.is_initialized():
         return
+    if isinstance(config, str):
+        config = load_config(config)
+    if isinstance(config.ds_config, str):
+        config.ds_config = load_config(config.ds_config)
+    if "train_micro_batch_size_per_gpu" not in config.ds_config.keys():
+        config.ds_config["train_micro_batch_size_per_gpu"] = config.train_micro_batch_size
+    if "gradient_accumulation_steps" not in config.ds_config.keys():
+        config.ds_config["gradient_accumulation_steps"] = config.gradient_accumulation_steps
+    print(config)
+    hf_ds_config = HfDeepSpeedConfig(config.ds_config)
     patch_deepspeed(config);patch_megatron()
     if "WORLD_SIZE" in os.environ.keys():
         # launch from pytorch

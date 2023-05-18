@@ -1,3 +1,4 @@
+# 使用 collie 模型进行批量并行模型推理
 import sys
 sys.path.append("/mnt/lustre/zhangshuo/projects/collie/")
 from collie.models.llama.model import LlamaForCasualLM
@@ -6,9 +7,8 @@ from collie.config import CollieConfig
 from collie.metrics.decode import DecodeMetric
 
 from transformers import LlamaTokenizer
-from transformers.generation.utils import GenerationConfig
 from torch.utils.data import Dataset
-import torch
+from transformers.generation.utils import GenerationConfig
 
 tokenizer = LlamaTokenizer.from_pretrained("decapoda-research/llama-7b-hf", 
                                            padding_side="left")
@@ -55,10 +55,8 @@ model = LlamaForCasualLM.from_pretrained("/mnt/lustre/zhangshuo/model/test/", co
 
 trainer = Trainer(model=model,
                   config=config,
-                  train_dataset=dataset,
                   eval_dataset=dataset,
                   eval_config=GenerationConfig(max_new_tokens=100),
                   metrics=[DecodeMetric(tokenizer=tokenizer)],
-                  eval_dataset_collate_fn=collate_fn,
-                  train_dataset_collate_fn=collate_fn)
+                  eval_dataset_collate_fn=collate_fn)
 trainer.eval()
