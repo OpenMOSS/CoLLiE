@@ -1,10 +1,6 @@
-import os
-import importlib
-import inspect
 from dataclasses import dataclass, field
-from typing import Union
+from typing import Any, Union
 
-from collie.log import logger
 from transformers import PretrainedConfig, AutoConfig
 
 @dataclass
@@ -111,6 +107,9 @@ class CollieConfig:
 
     def __getattr__(self, name):
         return getattr(self.model_config, name)
+    
+    def __setattr__(self,name: str, value: Any) -> None:
+        setattr(self.model_config, name, value)
 
     def __post_init__(self):
         if isinstance(self.ds_config, str):

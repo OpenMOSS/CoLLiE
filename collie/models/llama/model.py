@@ -333,14 +333,14 @@ class LlamaForCasualLM(BaseModel):
                 if format == "hf":
                     # 根据 huggingface 中的 config.json 更新一下用户配置
                     if IODriver.exists(os.path.join(path, "config.json")):
-                        config = json.loads(IODriver.load(os.path.join(path, "config.json"), mode="r"))
+                        new_config = json.loads(IODriver.load(os.path.join(path, "config.json"), mode="r"))
                         for key, value in {
-                            "vocab_size": config["vocab_size"],
-                            "hidden_size": config["hidden_size"],
-                            "intermediate_size": config["intermediate_size"],
-                            "num_hidden_layers": config["num_hidden_layers"],
-                            "num_attention_heads": config["num_attention_heads"],
-                            "layer_norm_epsilon": config["rms_norm_eps"]
+                            "vocab_size": new_config["vocab_size"],
+                            "hidden_size": new_config["hidden_size"],
+                            "intermediate_size": new_config["intermediate_size"],
+                            "num_hidden_layers": new_config["num_hidden_layers"],
+                            "num_attention_heads": new_config["num_attention_heads"],
+                            "layer_norm_epsilon": new_config["rms_norm_eps"]
                         }.items():
                             setattr(config, key, value)
                     # 如果存在 pytorch_model.bin.index.json 文件的话，此时不同的 pp 进程可以按需加载自己需要的权重

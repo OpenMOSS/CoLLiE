@@ -174,8 +174,8 @@ class Trainer:
                 result = self.eval_fn(self, batch, train_meta)
                 if isinstance(self.engine, PipelineEngine):
                     self.engine.total_loss = total_loss
-                if (self.args.pp_size == 1 or env.pp_rank == self.args.pp_size - 1) \
-                    and (self.args.tp_size == 1 or env.tp_rank == self.args.tp_size - 1):
+                if (self.config.pp_size == 1 or env.pp_rank == self.config.pp_size - 1) \
+                    and (self.config.tp_size == 1 or env.tp_rank == self.config.tp_size - 1):
                     for metric in self.metrics:
                         if metric.gather_result:
                             result = metric.gather(result)
@@ -184,6 +184,7 @@ class Trainer:
                     batch=f"{batch_idx + 1}/{num_eval_batches}")
         if isinstance(self.engine, PipelineEngine):
             self.engine.reset_activation_shape()
+            self.communicate_buffer_shape = None
                 
     @staticmethod
     def train_fn(trainer, batch: Tuple) -> float:
@@ -207,7 +208,7 @@ class Trainer:
                 engine=trainer.engine
             )
         else:
-            generation_model = trainer.engine
+            generation_model = trainer.model
         input_ids = generation_model.generate(input_ids=input_ids.cuda(), attention_mask=torch.ones_like(input_ids).cuda(), generation_config=trainer.eval_config)
         return {
             "input_ids": input_ids,

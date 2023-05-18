@@ -45,6 +45,7 @@ train_dataset = [(train_sample, train_sample) for _ in range(100)]
 eval_dataset = [(eval_sample, eval_sample)]
 trainer = Trainer(
     model = model,
+    config=args,
     optimizer=optimizer,
     train_dataset=train_dataset,
     eval_dataset=eval_dataset,
@@ -54,6 +55,5 @@ trainer = Trainer(
                                  bos_token_id=1,
                                  use_cache=False),
     metrics=[DecodeMetric(tokenizer=tokenizer)],
-    args=args
 )
 trainer.train()

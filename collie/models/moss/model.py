@@ -11,7 +11,6 @@ from torch import nn
 from torch import distributed as dist
 from transformers.activations import NewGELUActivation
 from deepspeed.pipe import LayerSpec
-from megatron.core import parallel_state
 
 from collie.log import logger
 from collie.module import (ColumnParallelLinearWithoutBias,
@@ -327,7 +326,7 @@ class MossForCausalLM(BaseModel):
         self.ln_f = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_epsilon)
         self.lm_head = ColumnParallelLMHead(config.n_embd, config.vocab_size)
 
-    def forward(self, input_ids):
+    def forward(self, input_ids, **kwargs):
         inputs_embed = self.wte(input_ids)
         hidden_states = self.drop(inputs_embed)
 
@@ -335,9 +334,20 @@ class MossForCausalLM(BaseModel):
             hidden_states = l(hidden_states)
 
         hidden_states = self.ln_f(hidden_states)
-        self.last_hidden_states += (hidden_states, )
         logits = self.lm_head(hidden_states)
         return logits
+    
+    def prepare_inputs_for_generation(self, 
+                                      input_ids: torch.Tensor,
+                                      past_key_values: Optional[list] = None,
+                                      attention_mask: Optional[torch.Tensor] = None,
+                                      **kwargs):
+        self._set_use_cache(self.h, self.generation_config.use_cache)
+        if past_key_values is None:
+            self._clean_past_key_values(self.h)
+        else:
+            self._set_past_key_values(self.h, past_key_values)
+        return {"input_ids": input_ids}
     
     @classmethod
     def pipeline_layers(cls, config):
@@ -390,7 +400,8 @@ class MossForCausalLM(BaseModel):
                 continue
             if IODriver.exists(os.path.join(path, "config.json")):
                 # update config from config.json
-                config = CollieConfig.from_pretrained(path)
+                new_config = json.loads(IODriver.load(os.path.join(path, "config.json"), mode="r"))
+                config.model_config.update(new_config)
             # 如果存在 pytorch_model.bin.index.json 文件的话，此时不同的 pp 进程可以按需加载自己需要的权重
             index_file = os.path.join(path, "pytorch_model.bin.index.json")
             # start load

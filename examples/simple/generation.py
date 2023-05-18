@@ -1,7 +1,8 @@
 import sys
 sys.path.append("/mnt/lustre/zhangshuo/projects/collie/")
-from collie.models.llama.model import LlamaForCasualLM, LlamaArguments
+from collie.models.llama.model import LlamaForCasualLM
 from collie.trainer.trainer import Trainer
+from collie.trainer.arguments import CollieConfig
 from collie.metrics.decode import DecodeMetric
 
 from transformers import LlamaTokenizer
@@ -15,12 +16,12 @@ tokenizer.pad_token_id = 0
 tokenizer.bos_token_id = 1
 tokenizer.eos_token_id = 2
 
-args = LlamaArguments.from_pretrained("decapoda-research/llama-7b-hf")
-args.dp_size = 2
-args.pp_size = 2
-args.tp_size = 2
-args.eval_batch_size = 4
-args.ds_config = {
+config = CollieConfig.from_pretrained("decapoda-research/llama-7b-hf")
+config.dp_size = 2
+config.pp_size = 2
+config.tp_size = 2
+config.eval_batch_size = 4
+config.ds_config = {
     "fp16": {"enabled": True}
 }
 
@@ -50,14 +51,14 @@ dataset = GenerationDataset([
     "So this is the reason why",
     "We have to"
 ])
-model = LlamaForCasualLM.from_pretrained("/mnt/lustre/zhangshuo/model/test/", args=args)
+model = LlamaForCasualLM.from_pretrained("/mnt/lustre/zhangshuo/model/test/", config=config)
 
 trainer = Trainer(model=model,
+                  config=config,
                   train_dataset=dataset,
                   eval_dataset=dataset,
                   eval_config=GenerationConfig(max_new_tokens=100),
                   metrics=[DecodeMetric(tokenizer=tokenizer)],
                   eval_dataset_collate_fn=collate_fn,
-                  train_dataset_collate_fn=collate_fn,
-                  args=args)
+                  train_dataset_collate_fn=collate_fn)
 trainer.eval()

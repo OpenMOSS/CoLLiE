@@ -17,9 +17,9 @@ class BaseMetric(ABC):
         raise NotImplementedError
     
     def gather(self, result: Any):
-        if self.trainer.args.dp_size == 1:
+        if self.trainer.config.dp_size == 1:
             return [result]
         group = self.trainer.engine.mpu.get_data_parallel_group()
-        result_list = [None for _ in range(self.trainer.args.dp_size)]
+        result_list = [None for _ in range(self.trainer.config.dp_size)]
         dist.all_gather_object(result_list, result, group=group)
         return result_list

@@ -1,10 +1,11 @@
 import os
 import json
 import torch
-from typing import Optional, List
+from typing import Callable, Optional, List, Union
 
 from torch import nn
 from torch import distributed as dist
+from transformers.generation.configuration_utils import GenerationConfig
 from megatron.core.tensor_parallel import (ColumnParallelLinear,
                                            RowParallelLinear,
                                            VocabParallelEmbedding)
@@ -13,7 +14,6 @@ from deepspeed.runtime.pipe.module import PipelineModule
 from deepspeed.runtime.pipe.topology import (PipeModelDataParallelTopology,
                                              PipelineParallelGrid)
 from deepspeed.runtime.engine import DeepSpeedEngine
-from deepspeed.runtime.pipe.engine import PipelineEngine
 from deepspeed.runtime.activation_checkpointing import checkpointing
 from deepspeed.accelerator import get_accelerator
 from transformers.generation.utils import GenerationConfig, GenerationMixin
@@ -21,7 +21,6 @@ from transformers.modeling_utils import PretrainedConfig
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from collie.log import logger
-from collie.trainer.arguments import CollieConfig
 from collie.utils import env
 
 class ColumnParallelLinearWithoutBias(ColumnParallelLinear):
@@ -50,7 +49,6 @@ class GPTLMLoss(torch.nn.Module):
     def forward(self, logits, labels):
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous().to(logits.device)
-        print(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1), shift_logits.shape, shift_labels.shape, self.loss.ignore_index)
         # Flatten the tokens
         return self.loss(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
 
@@ -153,10 +151,16 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
         self.main_input_name = "input_ids"
         self.device = torch.device("cuda")
         self.engine = engine
-        self.config: CollieConfig = self.engine.module.config
+        self.model_config = self.engine.module.config
         self.layers = None
         self.communicate_buffer_shape = None
         self._find_layers()
+
+    def generate(self, *args, **kwargs):
+        res = super().generate(*args, **kwargs)
+        self._clean_past_key_values()
+        self._clean_hidden_states()
+        return res
         
     def forward(self, input_ids: torch.Tensor, **kwargs) -> torch.Tensor:
         past_key_values=self._get_past_key_values()
@@ -190,12 +194,12 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
         dist.broadcast(tensor=shape, src=src_rank, group=self.engine.mpu.get_pipe_parallel_group())
         dtype = torch.float32
         try:
-            if self.config.ds_config["fp16"]["enabled"]:
+            if self.model_config.ds_config["fp16"]["enabled"]:
                 dtype = torch.float16
         except KeyError:
             pass
         try:
-            if self.config.ds_config["bf16"]["enabled"]:
+            if self.model_config.ds_config["bf16"]["enabled"]:
                 dtype = torch.bfloat16
         except KeyError:
             pass
