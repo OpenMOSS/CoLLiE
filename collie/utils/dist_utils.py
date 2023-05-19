@@ -111,16 +111,20 @@ def setup_distributation(config) -> None:
                 node_list = list(map(lambda x: re.sub(r"\[(.*?)\]", x, node_list_str), node_list))
                 node_list = sorted(node_list)
                 master_addr = node_list[0]
+                os.environ["MASTER_PORT"] = f"{master_addr}"
                 result = subprocess.run(["scontrol", "show", "node", master_addr], capture_output=True)
                 result = re.search(r"NodeAddr=(.*?)\s", result.stdout.decode())
                 if result:
                     master_addr = result.groups(1)[0]
+                    os.environ["MASTER_PORT"] = f"{master_addr}"
         else:
             master_addr = "localhost"
+            os.environ["MASTER_PORT"] = f"{master_addr}"
         if "MASTER_PORT" in os.environ.keys():
             master_port = os.environ["MASTER_PORT"]
         else:
             master_port = 27002
+            os.environ["MASTER_PORT"] = f"{master_port}"
         os.environ["LOCAL_RANK"] = os.environ["SLURM_LOCALID"]
         os.environ["RANK"] = os.environ["SLURM_PROCID"]
         os.environ["WORLD_SIZE"] = os.environ["SLURM_NTASKS"]

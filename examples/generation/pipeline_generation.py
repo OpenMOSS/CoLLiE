@@ -1,6 +1,6 @@
 import sys
 sys.path.append("/mnt/lustre/zhangshuo/projects/collie/")
-from collie.models.llama.model import LlamaForCasualLM, LlamaArguments
+from collie.models.llama.model import LlamaForCausalLM, LlamaArguments
 from collie.module import PipelineGenerationMixin
 from collie.utils import setup_ds_engine
 
@@ -22,7 +22,7 @@ args.ds_config = {
         "enabled": True
     }
 }
-model = LlamaForCasualLM.from_pretrained("/mnt/lustre/zhangshuo/model/test/", args=args).cuda()
+model = LlamaForCausalLM.from_pretrained("/mnt/lustre/zhangshuo/model/test/", args=args).cuda()
 engine, _, _, _ = setup_ds_engine(args, model)
 generation_model = PipelineGenerationMixin(engine)
 input_ids = tokenizer("It's a beautiful day to", return_tensors="pt").input_ids.cuda()

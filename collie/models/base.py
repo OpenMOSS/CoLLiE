@@ -17,7 +17,7 @@ from collie.config import CollieConfig, load_config
 from collie.log import logger
 from collie.utils import setup_distributation, Zero3_Init, zero3_load_state_dict, is_zero3_enabled
 
-class BaseModel(nn.Module, GenerationMixin):
+class CollieModelForCausalLM(nn.Module, GenerationMixin):
     """
     Base model of CoLLiE.
 
@@ -210,12 +210,12 @@ class BaseModel(nn.Module, GenerationMixin):
         model_cls = cls
         if isinstance(config, str):
             config = load_config(config)
-        if cls.__name__ == "BaseModel":
+        if cls.__name__ == "CollieModelForCausalLM":
             mod = importlib.import_module(
                 ".model", f"collie.models.{config.model_type}")
             classes = inspect.getmembers(mod, inspect.isclass)
             for name, _cls in classes:
-                if not issubclass(_cls, BaseModel):
+                if not issubclass(_cls, CollieModelForCausalLM):
                     continue
                 if name.lower().startswith(config.model_type):
                     model_cls = _cls

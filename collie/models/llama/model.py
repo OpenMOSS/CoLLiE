@@ -25,7 +25,7 @@ except ModuleNotFoundError:
 
 from collie.log.logger import logger
 from collie.config import CollieConfig
-from collie.models.base import BaseModel
+from collie.models.base import CollieModelForCausalLM
 from collie.driver.io.file import FileIODriver
 from collie.config import load_config
 from collie.driver.io.petrel import PetrelIODriver
@@ -207,7 +207,7 @@ class LlamaLayer(nn.Module):
             return self._forward(hidden_states)
 
 
-class LlamaForCasualLM(BaseModel):
+class LlamaForCausalLM(CollieModelForCausalLM):
     def __init__(self, config: CollieConfig) -> None:
         super().__init__()
         self.config = config

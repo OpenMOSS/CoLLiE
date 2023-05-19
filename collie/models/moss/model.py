@@ -20,7 +20,7 @@ from collie.module import (ColumnParallelLinearWithoutBias,
                            ColumnParallelLMHead)
 from collie.driver.io.file import FileIODriver
 from collie.driver.io.petrel import PetrelIODriver
-from collie.models.base import BaseModel
+from collie.models.base import CollieModelForCausalLM
 from collie.utils import env, progress
 from collie.config import CollieConfig
 from .utils import (apply_rotary_pos_emb, create_sinusoidal_positions,
@@ -316,7 +316,7 @@ class MossBlock(nn.Module):
         return outputs[0]
 
 
-class MossForCausalLM(BaseModel):
+class MossForCausalLM(CollieModelForCausalLM):
     # MossForCausalLM
     def __init__(self, config):
         super().__init__()

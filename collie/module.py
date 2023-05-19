@@ -39,17 +39,18 @@ class ColumnParallelLinearWithoutBias(ColumnParallelLinear):
             return nn.Linear(*args, **naive_kwargs)
         return super().__new__(cls)
     
-class LinearWithHiddenStates(nn.Linear):
+class LinearWithHiddenStates(nn.Module):
     def __init__(self, in_features: int, out_features: int, bias: bool = True, device=None, dtype=None) -> None:
         super().__init__(in_features, out_features, bias, device, dtype)
         self.hidden_states = None
+        self.linear = nn.Linear(in_features, out_features, bias, device, dtype)
         
     def forward(self, input_):
         if not self.training:
             self.hidden_states = input_
         else:
             self.hidden_states = None
-        return super().forward(input_)
+        return self.linear(input_)
     
 class ColumnParallelLMHead(ColumnParallelLinearWithoutBias):
     def __init__(self, *args, **kwargs):

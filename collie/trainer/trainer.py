@@ -7,7 +7,8 @@ from collie.module import PipelineGenerationMixin, GPTLMLoss, PipelineModel
 from collie.driver.io.file import FileIODriver
 from collie.driver.io.petrel import PetrelIODriver
 from collie.log import logger, print
-from collie.utils import progress, env, setup_ds_engine
+from collie.utils import progress, env, setup_ds_engine, HttpTokenizerServer
+from collie.metrics.decode import DecodeMetric
 
 import os
 import torch
@@ -34,6 +35,7 @@ class Trainer:
                  train_dataset_collate_fn: Optional[Callable] = None,
                  eval_dataset_collate_fn: Optional[Callable] = None,
                  eval_config: GenerationConfig = GenerationConfig(),
+                 server: Optional[HttpTokenizerServer] = None,
                  metrics: Sequence = []) -> None:
         self.model = model
         self.optimizer = optimizer
@@ -54,13 +56,44 @@ class Trainer:
         self.setup_parallel_model()
         self.init_metrics()
         get_accelerator().empty_cache()
-
+        self.server = server
+        if self.server is not None and dist.get_global_rank() == 0:
+            self.server.start_worker()
+            self.server.start_listener()
         self.checkpoint_file = "collie_dp{}_pp{}_tp{}.pt".format(
             env.dp_rank, env.pp_rank, env.tp_rank
         )
         self.zero_checkpoint_file = "collie_zero_dp{}_pp{}_tp{}.pt".format(
             env.dp_rank, env.pp_rank, env.tp_rank
         )
+        
+    # def eval_batch_from_server(self):
+    #     if self.server is None:
+    #         return None
+    #     ndim = torch.zeros(1, dtype=torch.int64).cuda()
+    #     if dist.get_rank() == 0:
+    #         input_ids = self.server.get()
+    #         if input_ids is not None:
+    #             input_ids = torch.tensor(input_ids).cuda()
+    #             ndim[0] = input_ids.dim()
+    #     dist.broadcast(ndim, 0)
+    #     if ndim[0] == 0:
+    #         return None
+    #     shape = torch.zeros(ndim[0], dtype=torch.int64).cuda()
+    #     if dist.get_rank() == 0 and input_ids is not None:
+    #         shape[:] = torch.tensor(input_ids.shape, dtype=torch.int64).cuda()
+    #     dist.broadcast(shape, 0)
+    #     input_ids = torch.zeros(tuple(shape), dtype=torch.int64).cuda()
+    #     if dist.get_rank() == 0:
+    #         input_ids[:] = self.server.get()
+    #     dist.broadcast(input_ids, 0)
+    #     if torch.sum(input_ids) == 0:
+    #         return None
+    #     batch = (input_ids, input_ids)
+    #     tokenizer = self.server.tokenizer
+    #     decode_metric = DecodeMetric(tokenizer)
+    #     result = self.eval_fn(self, batch)
+            
         
     def setup_parallel_model(self):
         """Setup parallel model.
