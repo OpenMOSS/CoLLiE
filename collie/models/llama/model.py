@@ -236,7 +236,6 @@ class LlamaForCasualLM(BaseModel):
         # GenerationMixin 需要的额外参数
         self.config = PretrainedConfig(is_decoder=True)
         self.main_input_name = "input_ids"
-        
 
     def forward(self, input_ids: torch.Tensor, **kwargs):
         past_key_values=self._get_past_key_values(self.layers)
@@ -244,20 +243,22 @@ class LlamaForCasualLM(BaseModel):
             input_ids = input_ids[:, -1:]
         assert input_ids.ndim == 2, f"input_ids.shape must be (B, N), but got {input_ids.shape}"
         hidden_states = self.embed_tokens(input_ids)
+        all_hidden_states = ()
         for layer in self.layers:
+            all_hidden_states += (hidden_states,)
             hidden_states = layer(hidden_states)
         hidden_states = self.norm(hidden_states)
         logits = self.lm_head(hidden_states)
-        
+
         return CausalLMOutputWithPast(
             loss=None,
             logits=logits,
             past_key_values=self._get_past_key_values(self.layers),
-            hidden_states=self._get_hidden_states([*self.layers, self.lm_head]),
+            hidden_states=all_hidden_states,
             attentions=None
         )
-        
-    def prepare_inputs_for_generation(self, 
+
+    def prepare_inputs_for_generation(self,
                                       input_ids: torch.Tensor,
                                       past_key_values: Optional[list] = None,
                                       attention_mask: Optional[torch.Tensor] = None,
@@ -269,7 +270,7 @@ class LlamaForCasualLM(BaseModel):
             input_ids = input_ids[:, -1].unsqueeze(-1)
             self._set_past_key_values(self.layers, past_key_values)
         return {"input_ids": input_ids}
-    
+
     def clean(self):
         self._clean_hidden_states([*self.layers, self.lm_head])
         self._clean_past_key_values(self.layers)
@@ -305,10 +306,10 @@ class LlamaForCasualLM(BaseModel):
     def load_parallel_state_dict(path: str, config: Union[CollieConfig, str],
                                  process_exclusion: bool = False):...
     @staticmethod
-    def load_parallel_state_dict(path: str, 
+    def load_parallel_state_dict(path: str,
                                  config: Union[CollieConfig, str],
                                  process_exclusion: bool = False,
-                                 protocol: str = 'file', 
+                                 protocol: str = 'file',
                                  format: str = 'hf'):
         """
         Load state_dict from ``path``.
@@ -509,14 +510,14 @@ class LlamaForCasualLM(BaseModel):
                 # 如果选择了进程互斥，那么本次循环中不需要加载权重的进程需等待
                 dist.barrier()
         return state_dict
-                
+
     @staticmethod
     def save_parallel_state_dict(state_dict: dict, path: str,
                                  config: CollieConfig,
                                  process_exclusion: bool = False):...
     @staticmethod
     def save_parallel_state_dict(state_dict: dict,
-                                 path: str, 
+                                 path: str,
                                  config: CollieConfig,
                                  process_exclusion: bool = False,
                                  protocol: str = 'file'):
@@ -529,10 +530,10 @@ class LlamaForCasualLM(BaseModel):
         assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
         IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
         def reshape_wq_wk(w: torch.Tensor):
-            return w.view(config.num_attention_heads, 
-                          config.hidden_size // config.num_attention_heads // 2, 
-                          2, 
-                          config.hidden_size).transpose(1, 2).reshape(config.hidden_size, 
+            return w.view(config.num_attention_heads,
+                          config.hidden_size // config.num_attention_heads // 2,
+                          2,
+                          config.hidden_size).transpose(1, 2).reshape(config.hidden_size,
                                                                     config.hidden_size)
         # gather to tp rank 0
         if env.is_pipeline:
@@ -560,7 +561,7 @@ class LlamaForCasualLM(BaseModel):
         with progress(rank_order, desc="Saving model", disable=int(os.environ.get("RANK", "0")) != 0) as pbar:
             for rank in pbar:
                 if env.dp_rank == 0 \
-                    and (env.pp_rank == rank 
+                    and (env.pp_rank == rank
                          or not process_exclusion):
                     for key in sorted(list(state_dict.keys())):
                         device = state_dict[key].device
