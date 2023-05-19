@@ -3,17 +3,20 @@ import sys
 sys.path.append("../..")
 print(sys.path)
 
-from transformers import LlamaTokenizer, AutoConfig, AutoModelForCausalLM
+from transformers import LlamaTokenizer, AutoModelForCausalLM
 from transformers.deepspeed import HfDeepSpeedConfig
 from transformers.generation.utils import GenerationConfig
-from peft import get_peft_model, LoraConfig, TaskType
 
 from collie.utils import setup_distribution
 from collie.config import CollieConfig
 from collie.trainer.trainer import Trainer
 from collie.metrics.decode import DecodeMetric
+from collie.optim import InplaceSGD
 
-model_path = "/mnt/petrelfs/zhangshuo/model/llama-7b-hf/"
+###############################
+#         init config         #
+###############################
+model_path = "/home/ubuntu/projects/collie/cache/llama-7b"
 config = CollieConfig.from_pretrained(model_path)
 print("config loaded")
 config.pp_size = 1
@@ -25,12 +28,6 @@ config.eval_batch_size = 1
 config.eval_per_n_steps = 10
 config.ds_config = {
     "fp16": {"enabled": True},
-    "optimizer": {
-        "type": "Adam",
-        "params": {
-            "lr": 2e-5
-        }
-    },
     "zero_optimization": {
         "stage": 3,
     },
@@ -38,22 +35,34 @@ config.ds_config = {
     "zero_allow_untested_optimizer": True,
     "zero_force_ds_cpu_optimizer": False,
 }
+
+###############################
+#     setup distribution      #
+###############################
 setup_distribution(config)
+
+###############################
+#         init model          #
+###############################
 dschf = HfDeepSpeedConfig(config.ds_config)  # keep this object alive
 model = AutoModelForCausalLM.from_pretrained(model_path)
 model.gradient_checkpointing_enable()
-model.enable_input_require_grads()
-peft_config = LoraConfig(
-    r=8,
-    lora_alpha=32,
-    target_modules=["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "down_proj", "up_proj"],
-    lora_dropout=0.1,
-    bias="none",
-    task_type=TaskType.CAUSAL_LM
-)
-model = get_peft_model(model, peft_config)
-model.print_trainable_parameters()
 print("Model loaded")
+
+###############################
+#        init optim           #
+###############################
+optimizer = InplaceSGD(
+    model,
+    lr=0.001,
+    zero_enabled=True,
+    clip_grad_value=1.0,
+    # clip_grad_norm=5.0,
+)
+
+###############################
+#        init dataset         #
+###############################
 tokenizer = LlamaTokenizer.from_pretrained(
     model_path,
     local_files_only=True,
@@ -68,8 +77,13 @@ train_sample = tokenizer("Collie is a python package for finetuning large langua
 eval_sample = tokenizer("Collie is", return_tensors="pt").input_ids.squeeze(0)[:-1, ]
 train_dataset = [(train_sample, train_sample) for _ in range(100)]
 eval_dataset = [(eval_sample, eval_sample)]
+
+###############################
+#        init trainer         #
+###############################
 trainer = Trainer(
     model=model,
+    optimizer=optimizer,
     train_dataset=train_dataset,
     eval_dataset=eval_dataset,
     eval_config=GenerationConfig(max_new_tokens=128,

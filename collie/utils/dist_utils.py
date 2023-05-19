@@ -20,6 +20,7 @@ from .utils import classproperty
 from collie.config import load_config, CollieConfig
 from collie.log.print import print
 
+
 class Zero3_Init:
     def __init__(self, config: CollieConfig):
         self.config = config
@@ -36,41 +37,45 @@ class Zero3_Init:
     def __exit__(self, exc_type, exc_val, exc_tb):
         if hasattr(self, 'ds_context_manager'):
             self.ds_context_manager.__exit__(exc_type, exc_val, exc_tb)  # exit deepspeed context
-            
+
+
 def zero3_load_state_dict(model: torch.nn.Module, state_dict: dict):
     for name, param in model.named_parameters():
         with deepspeed.zero.GatheredParameters(param, modifier_rank=0):
             param.data = state_dict[name].data.to(param.device).to(param.dtype)
-            
+
+
 def is_zero3_enabled(config: CollieConfig):
     if isinstance(config.ds_config, str) and os.path.exists(config.ds_config):
         config.ds_config = load_config(config.ds_config)
     if isinstance(config.ds_config, dict) \
             and "zero_optimization" in config.ds_config.keys() \
-                and "stage" in config.ds_config["zero_optimization"].keys() \
-                    and config.ds_config["zero_optimization"]["stage"] == 3:
-                        return True
+            and "stage" in config.ds_config["zero_optimization"].keys() \
+            and config.ds_config["zero_optimization"]["stage"] == 3:
+        return True
     else:
         return False
 
+
 def setup_ds_engine(
-    config: CollieConfig,
-    model: torch.nn.Module,
-    optimizer: Optional[Union[torch.optim.Optimizer, DeepSpeedOptimizerCallable]] = None,
-    lr_schedule: Optional[Union[torch.optim.lr_scheduler._LRScheduler, DeepSpeedSchedulerCallable]] = None
+        config: CollieConfig,
+        model: torch.nn.Module,
+        optimizer: Optional[Union[torch.optim.Optimizer, DeepSpeedOptimizerCallable]] = None,
+        lr_scheduler: Optional[Union[torch.optim.lr_scheduler._LRScheduler, DeepSpeedSchedulerCallable]] = None
 ):
     engine, optimizer, _, lr_scheduler = deepspeed.initialize(
         model=model,
         optimizer=optimizer,
-        lr_scheduler=lr_schedule,
+        lr_scheduler=lr_scheduler,
         model_parameters=[p for p in model.parameters() if p.requires_grad],
         mpu=parallel_state if config.pp_size == 1 else None,
         config=config.ds_config
     )
     return engine, optimizer, _, lr_scheduler
 
-def setup_distributation(config) -> None:
-    """Setup the distributed training environment.
+
+def setup_distribution(config) -> None:
+    """Set up the distributed training environment.
     Support two kinds of distributed training:
     1. launch from torchrun
         eg: torchrun --standalone --nproc_per_node=8 train.py
@@ -89,7 +94,8 @@ def setup_distributation(config) -> None:
         config.ds_config["gradient_accumulation_steps"] = config.gradient_accumulation_steps
     print(config)
     hf_ds_config = HfDeepSpeedConfig(config.ds_config)
-    patch_deepspeed(config);patch_megatron()
+    patch_deepspeed(config);
+    patch_megatron()
     if "WORLD_SIZE" in os.environ.keys():
         # launch from pytorch
         master_addr = os.environ.get("MASTER_ADDR", "localhost")
@@ -106,7 +112,8 @@ def setup_distributation(config) -> None:
                 node_list.extend([item for item in result.groups(1)[0].split(",")])
                 for i in node_list:
                     if "-" in i:
-                        node_list.extend(list(map(lambda x: f"{x}", range(int(i.split("-")[0]), int(i.split("-")[1]) + 1))))
+                        node_list.extend(
+                            list(map(lambda x: f"{x}", range(int(i.split("-")[0]), int(i.split("-")[1]) + 1))))
                         node_list.remove(i)
                 node_list = list(map(lambda x: re.sub(r"\[(.*?)\]", x, node_list_str), node_list))
                 node_list = sorted(node_list)
@@ -124,10 +131,10 @@ def setup_distributation(config) -> None:
         os.environ["LOCAL_RANK"] = os.environ["SLURM_LOCALID"]
         os.environ["RANK"] = os.environ["SLURM_PROCID"]
         os.environ["WORLD_SIZE"] = os.environ["SLURM_NTASKS"]
-    deepspeed.init_distributed(dist_backend='nccl', 
+    deepspeed.init_distributed(dist_backend='nccl',
                                auto_mpi_discovery=False,
                                init_method="tcp://{}:{}".format(
-                                   master_addr, 
+                                   master_addr,
                                    master_port),
                                world_size=int(os.environ["WORLD_SIZE"]),
                                rank=int(os.environ["RANK"]))
@@ -142,26 +149,29 @@ def setup_distributation(config) -> None:
     os.environ["COLLIE_TP_RANK"] = str(parallel_state.get_tensor_model_parallel_rank())
     os.environ["COLLIE_DP_RANK"] = str(parallel_state.get_data_parallel_rank())
 
+
 def set_seed(config):
     """Set random seed for reproducibility.
     """
     tensor_parallel.model_parallel_cuda_manual_seed(config.seed)
     set_random_seed(config.seed)
 
+
 def patch_deepspeed(config):
     if hasattr(config, "ds_config") \
-        and "zero_optimization" in config.ds_config.keys() \
+            and "zero_optimization" in config.ds_config.keys() \
             and "offload_optimizer" in config.ds_config["zero_optimization"].keys() \
-                and "pin_memory" in config.ds_config["zero_optimization"]["offload_optimizer"].keys() \
-                    and not config.ds_config["zero_optimization"]["offload_optimizer"]["pin_memory"]:
+            and "pin_memory" in config.ds_config["zero_optimization"]["offload_optimizer"].keys() \
+            and not config.ds_config["zero_optimization"]["offload_optimizer"]["pin_memory"]:
         get_accelerator().pin_memory = lambda x: x
     if hasattr(config, "ds_config") \
-        and "zero_optimization" in config.ds_config.keys() \
+            and "zero_optimization" in config.ds_config.keys() \
             and "offload_param" in config.ds_config["zero_optimization"].keys() \
-                and "pin_memory" in config.ds_config["zero_optimization"]["offload_param"].keys() \
-                    and not config.ds_config["zero_optimization"]["offload_param"]["pin_memory"]:
+            and "pin_memory" in config.ds_config["zero_optimization"]["offload_param"].keys() \
+            and not config.ds_config["zero_optimization"]["offload_param"]["pin_memory"]:
         get_accelerator().pin_memory = lambda x: x
     raw_init = copy.deepcopy(DeepSpeedZeroOptimizer.__init__)
+
     def safe_init(self, *args, **kwargs):
         while True:
             try:
@@ -169,17 +179,21 @@ def patch_deepspeed(config):
                 break
             except RuntimeError as e:
                 continue
+
     DeepSpeedZeroOptimizer.__init__ = safe_init
     raw_initialize_optimizer_states = copy.deepcopy(DeepSpeedZeroOptimizer.initialize_optimizer_states)
+
     def safe_initialize_optimizer_states(self, *args, **kwargs):
-            while True:
-                try:
-                    raw_initialize_optimizer_states(self, *args, **kwargs)
-                    break
-                except RuntimeError as e:
-                    continue
+        while True:
+            try:
+                raw_initialize_optimizer_states(self, *args, **kwargs)
+                break
+            except RuntimeError as e:
+                continue
+
     DeepSpeedZeroOptimizer.initialize_optimizer_states = safe_initialize_optimizer_states
-    
+
+
 def patch_megatron():
     parallel_state.get_model_parallel_world_size = lambda: parallel_state.get_tensor_model_parallel_world_size()
     parallel_state.get_model_parallel_rank = lambda: parallel_state.get_tensor_model_parallel_rank()
@@ -190,7 +204,7 @@ class env:
     @classproperty
     def rank(self):
         return int(os.getenv("RANK", "0"))
-    
+
     @classproperty
     def local_rank(self):
         return int(os.getenv("LOCAL_RANK", "0"))
@@ -198,7 +212,7 @@ class env:
     @staticmethod
     def barrier(group=None):
         torch.distributed.barrier(group)
-    
+
     @classproperty
     def world_size(self):
         return int(os.getenv("WORLD_SIZE", "1"))
@@ -208,29 +222,29 @@ class env:
         if not dist.is_initialized():
             return 0
         return parallel_state.get_pipeline_model_parallel_rank()
-    
+
     @classproperty
     def dp_rank(self):
         if not dist.is_initialized():
             return 0
         return parallel_state.get_data_parallel_rank()
-    
+
     @classproperty
     def tp_rank(self):
         if not dist.is_initialized():
             return 0
         return parallel_state.get_tensor_model_parallel_rank()
-    
+
     @classproperty
     def mp_rank(self):
         if not dist.is_initialized():
             return 0
         return parallel_state.get_model_parallel_group().rank()
-    
+
     @classproperty
     def is_pipeline(self):
         return "COLLIE_PP_PARTS" in os.environ.keys()
-    
+
     @classproperty
     def pipline_parts(self):
         if "COLLIE_PP_PARTS" in os.environ.keys():
@@ -251,43 +265,43 @@ class env:
         else:
             stage = self.pp_rank
             return list(range(parts[stage], parts[stage + 1]))
-        
+
     @classproperty
     def tp_group(self):
         return parallel_state.get_tensor_model_parallel_group()
-    
+
     @classproperty
     def pp_group(self):
         return parallel_state.get_pipeline_model_parallel_group()
-    
+
     @classproperty
     def dp_group(self):
         return parallel_state.get_data_parallel_group()
-    
+
     @classproperty
     def dp_size(self):
         if not dist.is_initialized():
             return 1
         return parallel_state.get_data_parallel_world_size()
-    
+
     @classproperty
     def tp_size(self):
         if not dist.is_initialized():
             return 1
         return parallel_state.get_tensor_model_parallel_world_size()
-    
+
     @classproperty
     def pp_size(self):
         if not dist.is_initialized():
             return 1
         return parallel_state.get_pipeline_model_parallel_world_size()
-    
+
     @classproperty
     def is_last_stage(self):
         if not dist.is_initialized():
             return True
         return parallel_state.is_pipeline_last_stage()
-    
+
     @classproperty
     def is_first_stage(self):
         if not dist.is_initialized():

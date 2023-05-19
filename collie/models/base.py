@@ -15,7 +15,7 @@ from transformers.generation.utils import GenerationConfig
 from collie.module import PipelineModel, GPTLMLoss
 from collie.config import CollieConfig, load_config
 from collie.log import logger
-from collie.utils import setup_distributation, Zero3_Init, zero3_load_state_dict, is_zero3_enabled
+from collie.utils import setup_distribution, Zero3_Init, zero3_load_state_dict, is_zero3_enabled
 
 class BaseModel(nn.Module, GenerationMixin):
     """
@@ -87,7 +87,7 @@ class BaseModel(nn.Module, GenerationMixin):
         """
         if isinstance(config, str):
             config = CollieConfig.from_pretrained(config, **kwargs)
-        setup_distributation(config)
+        setup_distribution(config)
         model_cls = cls._get_model_cls(config)
         if config.pp_size == 1:
             with Zero3_Init(config):
