@@ -61,12 +61,12 @@ def setup_ds_engine(
         config: CollieConfig,
         model: torch.nn.Module,
         optimizer: Optional[Union[torch.optim.Optimizer, DeepSpeedOptimizerCallable]] = None,
-        lr_schedule: Optional[Union[torch.optim.lr_scheduler._LRScheduler, DeepSpeedSchedulerCallable]] = None
+        lr_scheduler: Optional[Union[torch.optim.lr_scheduler._LRScheduler, DeepSpeedSchedulerCallable]] = None
 ):
     engine, optimizer, _, lr_scheduler = deepspeed.initialize(
         model=model,
         optimizer=optimizer,
-        lr_scheduler=lr_schedule,
+        lr_scheduler=lr_scheduler,
         model_parameters=[p for p in model.parameters() if p.requires_grad],
         mpu=parallel_state if config.pp_size == 1 else None,
         config=config.ds_config
