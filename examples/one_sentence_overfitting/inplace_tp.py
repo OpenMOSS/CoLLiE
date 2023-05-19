@@ -5,7 +5,7 @@ print(sys.path)
 
 from transformers import LlamaTokenizer, AutoModelForCausalLM
 from transformers.deepspeed import HfDeepSpeedConfig
-from collie.models.llama.model import LlamaForCasualLM
+from collie.models.llama.model import LlamaForCausalLM
 from transformers.generation.utils import GenerationConfig
 
 from collie.utils import setup_distribution
@@ -43,7 +43,7 @@ setup_distribution(config)
 ###############################
 #         init model          #
 ###############################
-model = LlamaForCasualLM.from_pretrained(model_path, config)
+model = LlamaForCausalLM.from_pretrained(model_path, config)
 print("Model loaded")
 
 ###############################

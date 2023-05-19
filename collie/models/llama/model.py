@@ -214,7 +214,7 @@ class LlamaLayer(nn.Module):
             return self._forward(hidden_states)
 
 
-class LlamaForCasualLM(BaseModel):
+class LlamaForCausalLM(BaseModel):
     def __init__(self, config: CollieConfig) -> None:
         super().__init__()
         self.config = config

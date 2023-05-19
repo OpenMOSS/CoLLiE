@@ -1,7 +1,7 @@
 # 使用 collie 模型进行批量并行模型推理
 import sys
 sys.path.append("/mnt/lustre/zhangshuo/projects/collie/")
-from collie.models.llama.model import LlamaForCasualLM
+from collie.models.llama.model import LlamaForCausalLM
 from collie.trainer.trainer import Trainer
 from collie.config import CollieConfig
 from collie.metrics.decode import DecodeMetric
@@ -51,7 +51,7 @@ dataset = GenerationDataset([
     "So this is the reason why",
     "We have to"
 ])
-model = LlamaForCasualLM.from_pretrained("/mnt/lustre/zhangshuo/model/test/", config=config)
+model = LlamaForCausalLM.from_pretrained("/mnt/lustre/zhangshuo/model/test/", config=config)
 
 trainer = Trainer(model=model,
                   config=config,

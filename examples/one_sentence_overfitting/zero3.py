@@ -1,7 +1,7 @@
 import sys
 import torch
 sys.path.append("/mnt/lustre/zhangshuo/projects/collie/")
-from collie.models.llama.model import LlamaForCasualLM
+from collie.models.llama.model import LlamaForCausalLM
 from collie.trainer.trainer import Trainer
 from collie.metrics.decode import DecodeMetric
 from collie.config import CollieConfig
@@ -34,8 +34,8 @@ config.ds_config = {
         "stage": 3,
     }
 }
-model = LlamaForCasualLM.from_config(config)
-state_dict = LlamaForCasualLM.load_parallel_state_dict(
+model = LlamaForCausalLM.from_config(config)
+state_dict = LlamaForCausalLM.load_parallel_state_dict(
     path="hdd:s3://opennlplab_hdd/models/llama/llama-7b-hf",
     config=config,
     protocol="petrel",
