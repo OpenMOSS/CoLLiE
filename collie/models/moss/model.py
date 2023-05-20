@@ -335,7 +335,9 @@ class MossForCausalLM(CollieModelForCausalLM):
         inputs_embed = self.wte(input_ids)
         hidden_states = self.drop(inputs_embed)
 
+        all_hidden_states = ()
         for l in self.h:
+            all_hidden_states += (hidden_states,)
             hidden_states = l(hidden_states)
 
         hidden_states = self.ln_f(hidden_states)
@@ -344,7 +346,7 @@ class MossForCausalLM(CollieModelForCausalLM):
             loss=None,
             logits=logits,
             past_key_values=self._get_past_key_values(self.h),
-            hidden_states=self._get_hidden_states([*self.h, self.lm_head]),
+            hidden_states=all_hidden_states,
             attentions=None
         )
     

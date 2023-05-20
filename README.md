@@ -1,2 +1,8 @@
 # CoLLiE
-Full Parameter Fine-tuning of Large Language Models on Consumer Hardware.
+<div align="center">
+ <img src="docs/assets/images/collie_icon.svg" width="400px">
+
+**CoLLiE**: **Co**llaborative Tuning of **L**arge **L**anguage models **i**n an **E**fficient way
+
+</div>
+
