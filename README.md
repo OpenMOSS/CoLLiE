@@ -14,6 +14,9 @@
 
 
 ## Features
+<div align="center">
+    <img src="docs/assets/images/features.svg" width="800px">
+</div>
 CoLLiE provides 
 
 model with flash-attn
@@ -30,7 +33,7 @@ in-place sgd, peft
 
 - Parallelism Strategies
   - Data Parallelism
-  - [Pipeline Parallelism]()
+  - [Pipeline Parallelism](https://arxiv.org/pdf/1811.06965.pdf)
   - [Tensor Parallelism](https://github.com/NVIDIA/Megatron-LM)
   - [Zero Redundancy Optimizer (ZeRO)](https://arxiv.org/pdf/1910.02054.pdf)
 - Models
