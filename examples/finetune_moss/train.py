@@ -53,13 +53,13 @@ pretrained_model = "fnlp/moss-moon-003-sft"
 data_dir = "moss_002_sft_data"
 generate_dir = "generate_res"
 data_num = -1
-test_size = 12
+test_size = 64
 
 # Collie Configuration
 config = CollieConfig.from_pretrained(
     pretrained_model, tp_size=2, dp_size=2, pp_size=2, train_epochs=10,
     eval_per_n_steps=0, eval_per_n_epochs=1, train_micro_batch_size=2,
-    gradient_accumulation_steps=2, eval_batch_size=1, ds_config=DS_CONFIG,
+    gradient_accumulation_steps=64, eval_batch_size=1, ds_config=DS_CONFIG,
     trust_remote_code=True
 )
 
