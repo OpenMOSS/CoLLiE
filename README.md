@@ -12,55 +12,42 @@
 - [Usage](#usage)
 - [Installation](#installation)
 
+## Benchmark
+### Throughput
+WIP
 
 ## Features
 <div align="center">
     <img src="docs/assets/images/features.svg" width="800px">
 </div>
-CoLLiE provides 
 
-model with flash-attn
-implementations with megatron and suitable for pp
-支持hf格式的权重
-
-上面的features可以通过config设置直接使用
-
-memory-efficient fine-tuning
-in-place sgd, peft
-与model，trainer和config解耦
-
-提供了trainer，通过改变config可以直接使用
-
+CoLLiE provides collaborative and efficient tuning methods for large language models based on *DeepSpeed* and *PyTorch*. 
+It primarily includes the following four features:
 - Parallelism Strategies
   - Data Parallelism
   - [Pipeline Parallelism](https://arxiv.org/pdf/1811.06965.pdf)
   - [Tensor Parallelism](https://github.com/NVIDIA/Megatron-LM)
   - [Zero Redundancy Optimizer (ZeRO)](https://arxiv.org/pdf/1910.02054.pdf)
 - Models
-  - [FlashAttention](https://github.com/HazyResearch/flash-attention)
+  - [Flash Attention](https://github.com/HazyResearch/flash-attention)
 - Memory-efficient Fine-tuning Methods
   - Inplace SGD
   - [LoRA](https://arxiv.org/pdf/2106.09685.pdf)
 - Friendly Usage
 
-## Benchmark
-### Throughput
-WIP
+CoLLiE has rewritten models using *Megatron-LM* and *Flash Attention*, allowing you to enjoy 3D parallelism simply 
+by modifying ```config.dp_size```, ```config.pp_size```, and ```config.tp_size``` (note that the product of these three parallelism sizes should equal # of GPUs). 
+Moreover, you can choose whether to use Flash Attention by changing ``config.use_flash``. 
+To facilitate user convenience, CoLLiE's models also support methods similar to Huggingface's, where you can load weights from HF using ```model.from_pretrained()```.
+
+If you don't want to write a training loop yourself, CoLLiE provides a [trainer](collie/trainer/trainer.py).
+All you need to do is provide the config and dataset to conduct your custom training process.
 
 ## Usage
-collie try to be user-friendly
-### Config
 
-3d parallel
-DP、TP、PP
-ZeRO
-可以通过config设置直接切换并行方法without any other change
-
-enjoy your 3d parallel just with config modification
-
-并行模式通过config控制，只需要改变config
 ### Examples
 More examples are available at [examples](examples).
+
 ### Launch Scripts
 CoLLiE offers integration with [torchrun](https://pytorch.org/docs/stable/elastic/run.html) and [slurm](https://github.com/SchedMD/slurm) to enable easy launching of jobs on a single or multiple nodes.
 
