@@ -20,7 +20,7 @@ from collie.module import (ColumnParallelLinearWithoutBias,
                            ColumnParallelLMHead)
 from collie.driver.io.file import FileIODriver
 from collie.driver.io.petrel import PetrelIODriver
-from collie.models.base import BaseModel
+from collie.models.base import CollieModelForCausalLM
 from collie.utils import env, progress
 from collie.config import CollieConfig
 from .utils import (apply_rotary_pos_emb, create_sinusoidal_positions,
@@ -316,7 +316,7 @@ class MossBlock(nn.Module):
         return outputs[0]
 
 
-class MossForCausalLM(BaseModel):
+class MossForCausalLM(CollieModelForCausalLM):
     # MossForCausalLM
     def __init__(self, config):
         super().__init__()
@@ -335,7 +335,9 @@ class MossForCausalLM(BaseModel):
         inputs_embed = self.wte(input_ids)
         hidden_states = self.drop(inputs_embed)
 
+        all_hidden_states = ()
         for l in self.h:
+            all_hidden_states += (hidden_states,)
             hidden_states = l(hidden_states)
 
         hidden_states = self.ln_f(hidden_states)
@@ -344,7 +346,7 @@ class MossForCausalLM(BaseModel):
             loss=None,
             logits=logits,
             past_key_values=self._get_past_key_values(self.h),
-            hidden_states=self._get_hidden_states([*self.h, self.lm_head]),
+            hidden_states=all_hidden_states,
             attentions=None
         )
     

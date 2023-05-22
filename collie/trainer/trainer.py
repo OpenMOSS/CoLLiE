@@ -7,11 +7,14 @@ from collie.module import PipelineGenerationMixin, GPTLMLoss, PipelineModel
 from collie.driver.io.file import FileIODriver
 from collie.driver.io.petrel import PetrelIODriver
 from collie.log import logger
-from collie.utils import progress, env, setup_ds_engine
+from collie.utils import progress, env, setup_ds_engine, BaseServer, GenerationStreamer
+from collie.optim import InplaceSGD
 
 import os
 import torch
+from threading import Thread
 import torch.distributed as dist
+from transformers import TextIteratorStreamer
 from torch.utils.data import DistributedSampler
 from torch.optim.lr_scheduler import _LRScheduler
 from deepspeed.accelerator import get_accelerator
@@ -28,16 +31,21 @@ class Trainer:
                  train_fn: Optional[Callable] = None,
                  eval_fn: Optional[Callable] = None,
                  optimizer: Optional[torch.optim.Optimizer] = None,
-                 lr_schedule: Optional[Union[_LRScheduler, DeepSpeedSchedulerCallable]] = None,
+                 lr_scheduler: Optional[Union[_LRScheduler, DeepSpeedSchedulerCallable]] = None,
                  train_dataset: Optional[torch.utils.data.Dataset] = None,
                  eval_dataset: Optional[torch.utils.data.Dataset] = None,
                  train_dataset_collate_fn: Optional[Callable] = None,
                  eval_dataset_collate_fn: Optional[Callable] = None,
                  eval_config: GenerationConfig = GenerationConfig(),
+                 generation_server: Optional[BaseServer] = None,
                  metrics: Sequence = []) -> None:
+        if isinstance(optimizer, InplaceSGD):
+            if config.pp_size > 1:
+                raise ValueError("InplaceSGD is incompatible with pipeline parallelism.")
+
         self.model = model
         self.optimizer = optimizer
-        self.lr_schedule = lr_schedule
+        self.lr_scheduler = lr_scheduler
         self.train_dataset = train_dataset
         self.eval_dataset = eval_dataset
         self.loss_fn = loss_fn
@@ -54,13 +62,80 @@ class Trainer:
         self.setup_parallel_model()
         self.init_metrics()
         get_accelerator().empty_cache()
-
+        self.generation_server = generation_server
+        if self.generation_server is not None and dist.get_rank() == 0:
+            self.generation_server.start_provider()
         self.checkpoint_file = "collie_dp{}_pp{}_tp{}.pt".format(
             env.dp_rank, env.pp_rank, env.tp_rank
         )
         self.zero_checkpoint_file = "collie_zero_dp{}_pp{}_tp{}.pt".format(
             env.dp_rank, env.pp_rank, env.tp_rank
         )
+
+        if isinstance(self.optimizer, InplaceSGD) and self.config.gradient_accumulation_steps > 1:
+            logger.rank_zero_warning(
+                f"InplaceSGD is incompatible with gradient accumulation, "
+                f"set gradient_accumulation_steps from {self.config.gradient_accumulation_steps} to 1."
+            )
+            self.config.gradient_accumulation_steps = 1
+        
+    def generation_server_handler(self):
+        if self.generation_server is None:
+            return None
+        has_data = torch.tensor(False).cuda()
+        input_ids = None
+        if dist.get_rank() == 0:
+            input_ids = self.generation_server.get_data()
+            if input_ids is not None:
+                has_data = ~has_data
+                input_ids = input_ids.cuda()
+        dist.broadcast(has_data, 0)
+        if not has_data:
+            return
+        ndim = torch.zeros(1, dtype=torch.int64).cuda()
+        if dist.get_rank() == 0 and input_ids is not None:
+            ndim[0] = input_ids.dim()
+        dist.broadcast(ndim, 0)
+        if ndim[0] == 0:
+            return
+        shape = torch.zeros(ndim[0], dtype=torch.int64).cuda()
+        if dist.get_rank() == 0 and input_ids is not None:
+            shape[:] = torch.tensor(input_ids.shape, dtype=torch.int64)
+        dist.broadcast(shape, 0)
+        if input_ids is None:
+            input_ids = torch.zeros(tuple(shape), dtype=torch.int64).cuda()
+        dist.broadcast(input_ids, 0)
+        if isinstance(self.engine, PipelineEngine):
+            generation_model = PipelineGenerationMixin(
+                engine=self.engine
+            )
+        else:
+            generation_model = self.engine.module
+        if not generation_model.can_generate():
+            return
+        if isinstance(self.engine, PipelineEngine):
+            self.engine.reset_activation_shape()
+            if self.engine.total_loss is not None:
+                total_loss = self.engine.total_loss.detach().clone()
+            else:
+                total_loss = None
+            self.engine.total_loss = None
+        use_stream = self.generation_server.stream
+        streamer = GenerationStreamer(server=self.generation_server)
+        input_ids = generation_model.generate(
+            input_ids=input_ids.cuda(), 
+            attention_mask=torch.ones_like(input_ids).cuda(), 
+            generation_config=self.eval_config,
+            streamer=streamer if use_stream else None
+        )
+        if not use_stream:
+            self.generation_server.put_feedback(input_ids[0].cpu())
+        if isinstance(self.engine, PipelineEngine):
+            self.engine.reset_activation_shape()
+            self.engine.total_loss = total_loss
+        get_accelerator().empty_cache()
+            
+            
         
     def setup_parallel_model(self):
         """Setup parallel model.
@@ -72,12 +147,18 @@ class Trainer:
             logger.rank_zero_warning(f"Set dp_size to {self.config.dp_size}.")
         if self.config.pp_size > 1:
             self.model.loss_fn = self.loss_fn
-        self.engine, self.optimizer, _, self.lr_schedule = setup_ds_engine(
-            model=self.model,
-            optimizer=self.optimizer,
-            lr_schedule=self.lr_schedule,
-            config=self.config
-        )
+        if isinstance(self.optimizer, InplaceSGD):
+            self.engine, _, _, _ = setup_ds_engine(
+                model=self.model,
+                config=self.config,
+            )
+        else:
+            self.engine, self.optimizer, _, self.lr_scheduler = setup_ds_engine(
+                model=self.model,
+                optimizer=self.optimizer,
+                lr_scheduler=self.lr_scheduler,
+                config=self.config
+            )
         self.config.train_micro_batch_size = self.engine.train_micro_batch_size_per_gpu()
         self.config.gradient_accumulation_steps = self.engine.gradient_accumulation_steps()
 
@@ -139,8 +220,10 @@ class Trainer:
                                 if self.communicate_buffer_shape != batch[0].shape:
                                     self.engine.reset_activation_shape()
                                     self.communicate_buffer_shape = batch[0].shape
+                        self.generation_server_handler()
                         self.engine.train()
-                        loss = self.train_fn(self, batch)
+                        get_accelerator().empty_cache()
+                        loss = self.train_fn(self, batch, epoch_idx * len(self.train_dataloader) + batch_idx)
                         tqbar_batch.set_postfix(
                             loss=round(loss, 4), 
                             batch=f"{batch_idx + 1}/{len(self.train_dataloader)}")
@@ -166,8 +249,10 @@ class Trainer:
                     else:
                         total_loss = None
                     self.engine.total_loss = None
+                self.generation_server_handler()
                 self.engine.eval()
                 result = self.eval_fn(self, batch, train_meta)
+                get_accelerator().empty_cache()
                 if isinstance(self.engine, PipelineEngine):
                     self.engine.total_loss = total_loss
                 if (self.config.pp_size == 1 or env.pp_rank == self.config.pp_size - 1) \
@@ -183,17 +268,34 @@ class Trainer:
             self.communicate_buffer_shape = None
                 
     @staticmethod
-    def train_fn(trainer, batch: Tuple) -> float:
+    def train_fn(trainer, batch: Tuple, global_step) -> float:
         if trainer.config.pp_size > 1:
             loss = trainer.engine.train_batch(batch)
         else:
             input_ids, labels = batch
             logits = trainer.engine(input_ids=input_ids.cuda()).logits
             loss = trainer.loss_fn(logits, labels)
-            trainer.engine.backward(loss)
-            trainer.engine.step()
+            if not isinstance(trainer.optimizer, InplaceSGD):
+                trainer.engine.backward(loss)
+                trainer.engine.step()
+            else:
+                # for inplace_sgd only
+                if trainer.optimizer.clip_grad_norm is not None:
+                    trainer.optimizer.grad_norm(loss)
+                    if trainer.optimizer.zero_enabled:
+                        trainer.engine.optimizer.get_param_coordinator(training=True).reset_step()
+                        # zero-3 doesn't support backward twice, so need an additional forward here
+                        logits = trainer.engine(input_ids=input_ids.cuda()).logits
+                        loss = trainer.loss_fn(logits, labels)
+                if trainer.lr_scheduler:
+                    lr = trainer.lr_scheduler.step(global_step)
+                else:
+                    lr = trainer.optimizer.lr
+                trainer.optimizer.backward_step(loss, lr)
+                if trainer.optimizer.zero_enabled:  # TODO: should tp do this too?
+                    trainer.engine.optimizer.get_param_coordinator(training=True).reset_step()
         return loss.item()
-        
+
     @staticmethod
     def eval_fn(trainer, 
                 batch: Tuple, 

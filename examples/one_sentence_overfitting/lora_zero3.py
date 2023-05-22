@@ -1,10 +1,10 @@
 import sys
 
+
 sys.path.append("../..")
 print(sys.path)
 
 from transformers import LlamaTokenizer, AutoConfig, AutoModelForCausalLM
-from transformers.deepspeed import HfDeepSpeedConfig
 from transformers.generation.utils import GenerationConfig
 from peft import get_peft_model, LoraConfig, TaskType
 
@@ -12,17 +12,20 @@ from collie.utils import setup_distribution
 from collie.config import CollieConfig
 from collie.trainer.trainer import Trainer
 from collie.metrics.decode import DecodeMetric
+from collie.models.llama.model import LlamaForCausalLM
 
-model_path = "/mnt/petrelfs/zhangshuo/model/llama-7b-hf/"
+model_path = "/home/ubuntu/projects/collie/cache/llama-7b"
 config = CollieConfig.from_pretrained(model_path)
 print("config loaded")
 config.pp_size = 1
 config.tp_size = 1
-config.dp_size = 8
+config.dp_size = 2
 config.train_epochs = 1000
+config.checkpointing = False
 config.train_micro_batch_size = 1
 config.eval_batch_size = 1
 config.eval_per_n_steps = 10
+config.use_flash = False
 config.ds_config = {
     "fp16": {"enabled": True},
     "optimizer": {
@@ -39,10 +42,7 @@ config.ds_config = {
     "zero_force_ds_cpu_optimizer": False,
 }
 setup_distribution(config)
-dschf = HfDeepSpeedConfig(config.ds_config)  # keep this object alive
-model = AutoModelForCausalLM.from_pretrained(model_path)
-model.gradient_checkpointing_enable()
-model.enable_input_require_grads()
+model = LlamaForCausalLM.from_pretrained(model_path, config)
 peft_config = LoraConfig(
     r=8,
     lora_alpha=32,
