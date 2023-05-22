@@ -406,7 +406,7 @@ class MossForCausalLM(CollieModelForCausalLM):
         if isinstance(config, str):
             config = CollieConfig.from_pretrained(config)
         IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
-        if not IODriver.exists(path):
+        if not IODriver.exists(path) and protocol == "file":
             raise FileNotFoundError(f"folder {path} not found.")
 
         # 如果开启了进程互斥，那么每个进程都会显示进度条，否则只显示 RANK0 的
