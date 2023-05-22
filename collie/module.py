@@ -21,7 +21,7 @@ from transformers.modeling_utils import PretrainedConfig
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from collie.log import logger
-from collie.utils import env
+from collie.utils import env, broadcast_tensor
 
 class ColumnParallelLinearWithoutBias(ColumnParallelLinear):
     def forward(self, input_):
@@ -224,38 +224,7 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
                 self.engine.reset_activation_shape()
                 self.engine.total_loss = None
                 self.communicate_buffer_shape = batch[0].shape
-        _, logits = self.engine.eval_batch(
-            data_iter=iter([batch]),
-            return_logits=True,
-            compute_loss=False,
-            reduce_output=None
-        )
-        src_rank = self.engine.grid.stage_to_global(self.engine.num_stages - 1)
-        if logits is not None:
-            logits = logits.detach().clone()
-            ndim = torch.tensor([logits.ndim]).int().cuda()
-        else:
-            ndim = torch.tensor([3]).int().cuda()
-        dist.broadcast(tensor=ndim, src=src_rank, group=self.engine.mpu.get_pipe_parallel_group())
-        if logits is not None:
-            shape = torch.tensor(list(logits.shape)).int().cuda()
-        else:
-            shape = torch.tensor([0] * int(ndim.data)).int().cuda()
-        dist.broadcast(tensor=shape, src=src_rank, group=self.engine.mpu.get_pipe_parallel_group())
-        dtype = torch.float32
-        try:
-            if self.model_config.ds_config["fp16"]["enabled"]:
-                dtype = torch.float16
-        except KeyError:
-            pass
-        try:
-            if self.model_config.ds_config["bf16"]["enabled"]:
-                dtype = torch.bfloat16
-        except KeyError:
-            pass
-        if logits is None:
-            logits = torch.zeros(tuple(shape.cpu().numpy().tolist())).to(dtype).cuda()
-        dist.broadcast(tensor=logits, src=src_rank, group=self.engine.mpu.get_pipe_parallel_group())
+        logits = self.engine.eval_batch(batch)
         return CausalLMOutputWithPast(
             loss=None,
             logits=logits,

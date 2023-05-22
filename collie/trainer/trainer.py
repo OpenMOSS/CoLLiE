@@ -6,7 +6,7 @@ from collie.config import CollieConfig, load_config
 from collie.module import PipelineGenerationMixin, GPTLMLoss, PipelineModel
 from collie.driver.io.file import FileIODriver
 from collie.driver.io.petrel import PetrelIODriver
-from collie.log import logger, print
+from collie.log import logger
 from collie.utils import progress, env, setup_ds_engine
 
 import os
@@ -90,18 +90,26 @@ class Trainer:
             )
         else:
             # PipelineModule._build_data_iter
+            # For accumulation step. Batch will be splitted in train()
+            pipe_batch_size = self.config.train_micro_batch_size * self.config.gradient_accumulation_steps
             sampler = DistributedSampler(
                 self.train_dataset, num_replicas=self.engine.dp_world_size,
-                rank=self.engine.mpu.get_data_parallel_rank(), shuffle=False
+                rank=env.dp_rank, shuffle=False
             )
             self.train_dataloader = self.engine.deepspeed_io(
                 self.train_dataset, data_sampler=sampler,
-                collate_fn=self.train_dataset_collate_fn
+                collate_fn=self.train_dataset_collate_fn,
+                batch_size=pipe_batch_size
             )
         if self.eval_dataset is not None:
+            eval_batch_size = self.config.eval_batch_size
+            if env.pp_size > 1:
+                # For accumulation step
+                # Batch will be splitted in patched train_batch/eval_batch
+                eval_batch_size *= self.config.gradient_accumulation_steps
             self.eval_dataloader = self.engine.deepspeed_io(
                 self.eval_dataset,
-                batch_size=self.config.eval_batch_size,
+                batch_size=eval_batch_size,
                 route=ROUTE_EVAL,
                 pin_memory=True,
                 data_sampler=None,
@@ -120,9 +128,9 @@ class Trainer:
         loss = 0.0
         if dataloader is not None:
             train_dataloader = dataloader
-        with progress(range(self.config.train_epochs), desc="Training Epoch: ", disable=dist.get_rank() != 0) as tqbar_epoch:
+        with progress(range(self.config.train_epochs), desc="Training Epoch: ", disable=env.rank != 0) as tqbar_epoch:
             for epoch_idx in tqbar_epoch:
-                with progress(train_dataloader, desc="Training Batch: ", disable=dist.get_rank() != 0) as tqbar_batch:
+                with progress(train_dataloader, desc="Training Batch: ", disable=env.rank != 0) as tqbar_batch:
                     for batch_idx, batch in enumerate(tqbar_batch):
                         if isinstance(self.engine, PipelineEngine):
                             if self.communicate_buffer_shape is None:
@@ -177,7 +185,7 @@ class Trainer:
     @staticmethod
     def train_fn(trainer, batch: Tuple) -> float:
         if trainer.config.pp_size > 1:
-            loss = trainer.engine.train_batch(data_iter=iter([batch]))
+            loss = trainer.engine.train_batch(batch)
         else:
             input_ids, labels = batch
             logits = trainer.engine(input_ids=input_ids.cuda()).logits

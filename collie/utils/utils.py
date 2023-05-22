@@ -1,6 +1,8 @@
 from typing import Optional
 from operator import length_hint
 
+import torch
+
 from .rich_progress import f_rich_progress
 
 class classproperty:
@@ -81,3 +83,38 @@ class progress:
             self.bar.update(self.task_id, total=total, completed=completed,
                         advance=advance, description=desc, visible=visible,
                         refresh=refresh, post_desc=post_desc)
+            
+def _split_batch(batch, micro_batch_size, micro_batch_num):
+    """
+    Split batch to ``micro_batch_num`` micro batches of batch_size
+    ``micro_batch_size``
+
+    Only used in Pipeline to hack train_batch
+
+    :param batch: tuple from dataloader
+    :param micro_batch_size:
+    :param micro_batch_num:
+    """
+    # Assume batch first.
+    assert len(batch) == 2, len(batch)
+    inputs, label = batch
+    label_split = torch.split(label, micro_batch_size)
+    if isinstance(inputs, torch.Tensor):
+        inputs_split = torch.split(inputs, micro_batch_size)
+        assert len(inputs_split) == micro_batch_num, len(inputs_split)
+    else:
+        # tuple of tensor
+        assert isinstance(inputs, (tuple, list))
+        inputs_split = [() for _ in range(micro_batch_num)]
+        for tensor in inputs:
+            assert isinstance(tensor, torch.Tensor), type(tensor)
+            tensor_split = torch.split(inputs, micro_batch_size)
+            assert len(tensor_split) == micro_batch_num, len(tensor_split)
+            for i in range(micro_batch_num):
+                inputs_split[i] += (tensor_split[i], )
+    
+    batch_split = ()
+    for input_split, label_split in zip(inputs_split, label_split):
+        batch_split += ((input_split, label_split), )
+
+    return batch_split

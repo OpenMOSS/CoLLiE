@@ -10,15 +10,16 @@ import deepspeed
 from deepspeed.runtime.utils import set_random_seed
 from deepspeed.runtime.zero.stage_1_and_2 import DeepSpeedZeroOptimizer
 from deepspeed.runtime.engine import DeepSpeedOptimizerCallable, DeepSpeedSchedulerCallable
+from deepspeed.runtime.pipe.engine import PipelineEngine
 from deepspeed.accelerator import get_accelerator
 from megatron.core import parallel_state, tensor_parallel
 from transformers.deepspeed import HfDeepSpeedConfig
 
 from typing import Union, Optional
 
-from .utils import classproperty
+from .utils import classproperty, _split_batch
 from collie.config import load_config, CollieConfig
-from collie.log.print import print
+   
 
 class Zero3_Init:
     def __init__(self, config: CollieConfig):
@@ -87,7 +88,6 @@ def setup_distributation(config) -> None:
         config.ds_config["train_micro_batch_size_per_gpu"] = config.train_micro_batch_size
     if "gradient_accumulation_steps" not in config.ds_config.keys():
         config.ds_config["gradient_accumulation_steps"] = config.gradient_accumulation_steps
-    print(config)
     hf_ds_config = HfDeepSpeedConfig(config.ds_config)
     patch_deepspeed(config);patch_megatron()
     if "WORLD_SIZE" in os.environ.keys():
@@ -148,6 +148,40 @@ def set_seed(config):
     tensor_parallel.model_parallel_cuda_manual_seed(config.seed)
     set_random_seed(config.seed)
 
+def patch_pipeline_engine(config):
+    """
+    Replace train_batch and eval_batch to fit our Trainer and GenerationMixin.
+    """
+    raw_train_batch = copy.deepcopy(PipelineEngine.train_batch)
+    raw_eval_batch = copy.deepcopy(PipelineEngine.eval_batch)
+    def train_batch(self, batch):
+        # batch tuple, batch_size is micro_batch * accumulate_steps
+        batch = _split_batch(batch, self.train_micro_batch_size_per_gpu(),
+                             self.gradient_accumulation_steps())
+        data_iter = iter(batch)
+        return raw_train_batch(self, data_iter)
+    
+    def eval_batch(self, batch):
+        batch = _split_batch(batch, config.eval_batch_size,
+                             self.gradient_accumulation_steps())
+        data_iter = iter(batch)
+        logits = raw_eval_batch(self, data_iter, return_logits=False,
+                                    compute_loss=False, reduce_output=None)
+        # logits: list
+        # len(logits) = micro_batch_nums
+        # Assume batch first
+        if logits is not None:
+            assert isinstance(logits, list), type(logits)
+            logits = torch.cat(logits, dim=0)
+        src_rank = self.grid.stage_to_global(self.num_stages - 1)
+        dtype, _ = self.get_data_types()
+        logits = broadcast_tensor(logits, dtype=dtype, src=src_rank,
+                                  group=env.pp_group)
+        return logits
+    
+    PipelineEngine.train_batch = train_batch
+    PipelineEngine.eval_batch = eval_batch
+
 def patch_deepspeed(config):
     if hasattr(config, "ds_config") \
         and "zero_optimization" in config.ds_config.keys() \
@@ -179,12 +213,44 @@ def patch_deepspeed(config):
                 except RuntimeError as e:
                     continue
     DeepSpeedZeroOptimizer.initialize_optimizer_states = safe_initialize_optimizer_states
+    patch_pipeline_engine(config)
     
 def patch_megatron():
     parallel_state.get_model_parallel_world_size = lambda: parallel_state.get_tensor_model_parallel_world_size()
     parallel_state.get_model_parallel_rank = lambda: parallel_state.get_tensor_model_parallel_rank()
     parallel_state.get_pipe_parallel_rank = lambda: parallel_state.get_pipeline_model_parallel_rank()
 
+def broadcast_tensor(tensor, dtype=None, src=0, shape=None,
+                     ndim=None, group=None):
+    """
+    Broadcast ``tensor`` from ``src``.
+
+    if ``ndim`` and ``shape`` is None, we will broadcast ``tensor``'s
+    shape first.
+    :param tensor: Tensor to broadcast. In source rank ``tensor`` must
+        be a ``torch.Tensor``.
+    """
+    ndim = ndim if shape is None else len(shape)
+    if ndim is None:
+        if src == env.rank:
+            ndim_tensor = torch.tensor(len(tensor.shape), dtype=torch.int).cuda()
+        else:
+            ndim_tensor = torch.tensor(0, dtype=torch.int).cuda()
+        dist.broadcast(ndim_tensor, src, group)
+        ndim = ndim_tensor.item()
+    if shape is None:
+        if src == env.rank:
+            shape_tensor = torch.tensor(tensor.shape, dtype=torch.int).cuda()
+        else:
+            shape_tensor = torch.zeros(ndim, dtype=torch.int).cuda()
+        dist.broadcast(shape_tensor.cuda(), src, group)
+        shape = shape_tensor.tolist()
+    if dtype is None:
+        dtype = torch.get_default_dtype()
+    if src != env.rank:
+        tensor = torch.zeros(shape, dtype=dtype).cuda()
+    dist.broadcast(tensor, src, group)
+    return tensor
 
 class env:
     @classproperty
@@ -197,7 +263,8 @@ class env:
 
     @staticmethod
     def barrier(group=None):
-        torch.distributed.barrier(group)
+        if dist.is_initialized():
+            torch.distributed.barrier(group)
     
     @classproperty
     def world_size(self):
