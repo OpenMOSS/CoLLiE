@@ -107,14 +107,14 @@ def load_data(save_dir, tokenizer, max_len, num=-1) -> HFDataset:
 
     moss_sft = HFDataset.load_from_disk(save_dir)
     if num != -1:
-        moss_sft_data = moss_sft_data.select(range(num))
+        moss_sft = moss_sft.select(range(num))
     logger.info(
         f"Load successfully, total {len(moss_sft)} samples.")
     
     return moss_sft
 
 def get_dataset(tokenizer, save_dir, max_len=2048, num=-1, test_size=0.1):
-    moss_sft_data = load_data(save_dir, tokenizer, max_len)
+    moss_sft_data = load_data(save_dir, tokenizer, max_len, num)
     moss_sft_split = moss_sft_data.train_test_split(test_size=test_size)
     train_dataset = SFTDataset(moss_sft_split["train"])
     val_dataset = SFTDataset(moss_sft_split["test"])
