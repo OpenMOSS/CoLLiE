@@ -11,7 +11,11 @@ class BaseMetric(ABC):
         
     def construct(self, trainer: Trainer):
         self.trainer = trainer
-        
+    
+    @abstractmethod
+    def get_metric(self, *args, **kwargs) -> dict:
+        raise NotImplementedError()
+
     @abstractmethod
     def update(self, result: Any):
         raise NotImplementedError
