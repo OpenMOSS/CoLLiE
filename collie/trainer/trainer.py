@@ -2,26 +2,24 @@ import os
 import json
 from typing import Optional, Callable, Union, Tuple, Iterable, Any, Dict, Sequence
 
-from collie.config import CollieConfig, load_config
-from collie.module import PipelineGenerationMixin, GPTLMLoss, PipelineModel
+import torch
+import torch.distributed as dist
+from torch.utils.data import DistributedSampler
+from torch.optim.lr_scheduler import _LRScheduler
+from deepspeed.accelerator import get_accelerator
+from deepspeed.runtime.constants import ROUTE_EVAL
+from deepspeed.runtime.pipe.engine import PipelineEngine
+from deepspeed.runtime.engine import DeepSpeedSchedulerCallable
+from transformers.generation.utils import GenerationConfig
+
+from collie.config import CollieConfig
+from collie.module import PipelineGenerationMixin, GPTLMLoss
 from collie.driver.io.file import FileIODriver
 from collie.driver.io.petrel import PetrelIODriver
 from collie.log import logger
 from collie.utils import progress, env, setup_ds_engine, BaseServer, GenerationStreamer
 from collie.optim import InplaceSGD
 
-import os
-import torch
-from threading import Thread
-import torch.distributed as dist
-from transformers import TextIteratorStreamer
-from torch.utils.data import DistributedSampler
-from torch.optim.lr_scheduler import _LRScheduler
-from deepspeed.accelerator import get_accelerator
-from deepspeed.runtime.constants import ROUTE_EVAL
-from deepspeed.runtime.pipe.engine import PipelineEngine
-from transformers.generation.utils import GenerationConfig
-from deepspeed.runtime.engine import DeepSpeedSchedulerCallable
 
 class Trainer:
     def __init__(self, 
