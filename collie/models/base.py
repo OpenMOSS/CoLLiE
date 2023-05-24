@@ -24,10 +24,11 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
     Every new model should inherit this class.
     """
     main_input_name = "input_ids"
-    def __init__(self) -> None:
+    def __init__(self, config: CollieConfig) -> None:
         super().__init__()
         self.device = torch.device("cuda")
         self.generation_config = GenerationConfig()
+        self.config = config
             
     def _get_past_key_values(self, layers: Sequence[nn.Module], attr_name: str="past_key_values"):
         past_key_values = []
@@ -154,6 +155,17 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         else:
             model.load_state_dict(state_dict)
         return model
+    
+    # def save_pretrained(self, **kwargs):
+    #     path = kwargs.get("path", kwargs.get("save_directory", None))
+    #     assert path is not None, "Please specify `path` or `save_directory`."
+    #     self.save_parallel_state_dict(
+    #         self.state_dict(),
+    #         path=path,
+    #         config=self.config,
+    #         protocol=kwargs.get("protocol", "file"),
+    #         process_exclusion=kwargs.get("process_exclusion", False)
+    #     )
 
     @classmethod
     def pipline_layers(cls, config: Union[CollieConfig, str]):
@@ -170,7 +182,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
     @staticmethod
     @abstractmethod
     def load_parallel_state_dict(path: str, config: Union[CollieConfig, str],
-                                 process_exclusion: bool = False):
+                                 process_exclusion: bool = False, **kwargs):
         """
         Load state_dict from ``path``.
 
@@ -193,7 +205,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
     @abstractmethod
     def save_parallel_state_dict(state_dict: dict, path: str,
                                  config: CollieConfig,
-                                 process_exclusion: bool = False):
+                                 process_exclusion: bool = False, **kwargs):
         """
         Save ``state_dict`` to ``path``.
 

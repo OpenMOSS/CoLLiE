@@ -201,7 +201,7 @@ class LlamaLayer(nn.Module):
         return hidden_states
 
     def forward(self, hidden_states: torch.Tensor):
-        if self.config.checkpointing:
+        if self.config.checkpointing and self.training:
             def create_custom_forward(module):
                 def custom_forward(*inputs):
                     return module._forward(*inputs)
@@ -216,8 +216,7 @@ class LlamaLayer(nn.Module):
 
 class LlamaForCausalLM(CollieModelForCausalLM):
     def __init__(self, config: CollieConfig) -> None:
-        super().__init__()
-        self.config = config
+        super().__init__(config)
         self.embed_tokens = tensor_parallel.VocabParallelEmbedding(
             self.config.vocab_size,
             self.config.hidden_size
@@ -304,7 +303,7 @@ class LlamaForCausalLM(CollieModelForCausalLM):
 
     @staticmethod
     def load_parallel_state_dict(path: str, config: Union[CollieConfig, str],
-                                 process_exclusion: bool = False):...
+                                 process_exclusion: bool = False, **kwargs):...
     @staticmethod
     def load_parallel_state_dict(path: str,
                                  config: Union[CollieConfig, str],
@@ -514,7 +513,7 @@ class LlamaForCausalLM(CollieModelForCausalLM):
     @staticmethod
     def save_parallel_state_dict(state_dict: dict, path: str,
                                  config: CollieConfig,
-                                 process_exclusion: bool = False):...
+                                 process_exclusion: bool = False, **kwargs):...
     @staticmethod
     def save_parallel_state_dict(state_dict: dict,
                                  path: str,
