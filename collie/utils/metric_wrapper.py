@@ -6,8 +6,7 @@ from collie.log import logger
 
 class _MetricsWrapper:
     r"""注意 metrics 的输入只支持：Dict[str, Metric]；并且通过对 update() ,
-    reset() , get_metric() 函数的封装，实现支持 fastNLP 的 metric 以及
-    torchmetrics 或者更多。"""
+    reset() , get_metric() 函数的封装"""
 
     def __init__(self, metrics, trainer):
         self._metrics = []
