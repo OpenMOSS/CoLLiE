@@ -17,11 +17,23 @@ from collie.module import PipelineGenerationMixin, GPTLMLoss
 from collie.driver.io.file import FileIODriver
 from collie.driver.io.petrel import PetrelIODriver
 from collie.log import logger
-from collie.utils import progress, env, setup_ds_engine, BaseServer, GenerationStreamer
+from collie.utils import progress, env, setup_ds_engine, BaseServer, GenerationStreamer, _MetricsWrapper
+from collie.utils.rich_progress import f_rich_progress
 from collie.optim import InplaceSGD
+from collie.metrics import BaseMetric
 
 
 class Trainer:
+    r"""
+    :param metrics: 用于传给 ``Trainer`` 内部训练过程中的对 eval_dataset 进行验证。
+        其应当为一个字典，其中 key 表示 monitor，value 表示一个
+        metric，例如 ``{"acc1": Accuracy(), "acc2": Accuracy()}``；
+
+        目前我们支持的 ``metric`` 的种类有以下几种：
+
+        1. Collie 自己的 ``metric``：详见 :class:`.Metric`；
+        2. 继承 Collie 基类的自定义 Metric
+    """
     def __init__(self, 
                  model: torch.nn.Module,
                  config: Union[CollieConfig, str],
@@ -134,8 +146,6 @@ class Trainer:
             self.engine.total_loss = total_loss
         get_accelerator().empty_cache()
                       
-            
-        
     def setup_parallel_model(self):
         """Setup parallel model.
         """
@@ -199,10 +209,6 @@ class Trainer:
         else:
             self.eval_dataloader = None
               
-    def init_metrics(self):
-        for metric in self.metrics:
-            metric.construct(self)
-        
     def train(self, dataloader: Optional[Iterable] = None):
         train_dataloader = self.train_dataloader
         loss = 0.0

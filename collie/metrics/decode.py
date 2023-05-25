@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Dict
 from collie.metrics.base import BaseMetric
 from collie.utils import env
 import torch
