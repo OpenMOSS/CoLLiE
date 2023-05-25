@@ -55,6 +55,7 @@ class Trainer:
         self.eval_dataset_collate_fn = eval_dataset_collate_fn
         self.eval_config = eval_config
         self.metrics = metrics
+        self.metric_wrapper = _MetricsWrapper(self.metrics, self)
         self.config = config
         self.communicate_buffer_shape = None
         self.setup_parallel_model()
@@ -132,7 +133,7 @@ class Trainer:
             self.engine.reset_activation_shape()
             self.engine.total_loss = total_loss
         get_accelerator().empty_cache()
-            
+                      
             
         
     def setup_parallel_model(self):
@@ -197,7 +198,7 @@ class Trainer:
             )
         else:
             self.eval_dataloader = None
-        
+              
     def init_metrics(self):
         for metric in self.metrics:
             metric.construct(self)
@@ -255,12 +256,21 @@ class Trainer:
                     self.engine.total_loss = total_loss
                 if (self.config.pp_size == 1 or env.pp_rank == self.config.pp_size - 1) \
                     and (self.config.tp_size == 1 or env.tp_rank == self.config.tp_size - 1):
-                    for metric in self.metrics:
-                        if metric.gather_result:
-                            result = metric.gather(result)
-                        metric.update(result)
+                    self.metric_wrapper.update(result)
+                    # for metric in self.metrics:
+                    #     if metric.gather_result:
+                    #         result = metric.gather(result)
+                    #     metric.update(result)
                 tqbar_batch.set_postfix(
                     batch=f"{batch_idx + 1}/{num_eval_batches}")
+        if (self.config.pp_size == 1 or env.pp_rank == self.config.pp_size - 1) \
+            and (self.config.tp_size == 1 or env.tp_rank == self.config.tp_size - 1):
+            metric_results = self.metric_wrapper.get_metric()
+            self.metric_wrapper.reset()
+        
+            if len(metric_results) > 0:  # 如果 metric 不为 None 需要 print 。
+                f_rich_progress.print(metric_results)
+
         if isinstance(self.engine, PipelineEngine):
             self.engine.reset_activation_shape()
             self.communicate_buffer_shape = None
