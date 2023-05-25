@@ -319,8 +319,7 @@ class MossBlock(nn.Module):
 class MossForCausalLM(CollieModelForCausalLM):
     # MossForCausalLM
     def __init__(self, config):
-        super().__init__()
-        self.config = config
+        super().__init__(config)
         self.embed_dim = config.n_embd
         self.vocab_size = config.vocab_size
         self.wte = VocabParallelEmbedding(config.vocab_size, self.embed_dim)
@@ -387,13 +386,13 @@ class MossForCausalLM(CollieModelForCausalLM):
     
     @staticmethod
     def load_parallel_state_dict(path: str, config: Union[CollieConfig, str],
-                                 process_exclusion: bool = False):...
+                                 process_exclusion: bool = False, **kwargs):...
     @staticmethod
     def load_parallel_state_dict(path: str,
                                  config: Union[CollieConfig, str],
                                  process_exclusion: bool = False,
                                  protocol: str = 'file',
-                                 format: str = 'hf'):
+                                 format: str = 'hf', **kwargs):
         """
         Load state_dict from ``path``.
 
@@ -449,7 +448,7 @@ class MossForCausalLM(CollieModelForCausalLM):
     @staticmethod
     def save_parallel_state_dict(state_dict: dict, path: str,
                                  config: CollieConfig,
-                                 process_exclusion: bool = False):...
+                                 process_exclusion: bool = False, **kwargs):...
     @staticmethod
     def save_parallel_state_dict(state_dict: dict,
                                  path: str, 

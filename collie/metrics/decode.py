@@ -44,3 +44,6 @@ class DecodeMetric(BaseMetric):
         if self.save_to_file and env.local_rank == 0:
             with open(self.save_path, 'a+') as f:
                 f.write('\n'.join(sentences) + '\n')
+                
+    def get_metric(self, *args, **kwargs) -> dict:
+        return None
