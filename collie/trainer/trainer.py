@@ -48,7 +48,7 @@ class Trainer:
                  eval_dataset_collate_fn: Optional[Callable] = None,
                  eval_config: GenerationConfig = GenerationConfig(),
                  generation_server: Optional[BaseServer] = None,
-                 metrics: Sequence = []) -> None:
+                 metrics: Optional[Dict] = None) -> None:
         if isinstance(optimizer, InplaceSGD):
             if config.pp_size > 1:
                 raise ValueError("InplaceSGD is incompatible with pipeline parallelism.")
@@ -71,7 +71,7 @@ class Trainer:
         self.config = config
         self.communicate_buffer_shape = None
         self.setup_parallel_model()
-        self.init_metrics()
+        # self.init_metrics()
         get_accelerator().empty_cache()
         self.generation_server = generation_server
         if self.generation_server is not None and dist.get_rank() == 0:
