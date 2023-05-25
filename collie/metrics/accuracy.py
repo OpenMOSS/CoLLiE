@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 import torch
 import numpy as np
@@ -44,7 +44,11 @@ class Accuracy(BaseMetric):
         self.correct = 0
         self.total = 0
     
-    def get_metric(self, reset:bool=True)->Dict:
+    def reset(self):
+        self.correct = 0
+        self.total = 0
+
+    def get_metric(self)->Dict:
         r"""
         :meth:`get_metric` 函数将根据 :meth:`update` 函数累计的评价指标统计量来计算最终的评价结果。
 
@@ -52,10 +56,6 @@ class Accuracy(BaseMetric):
         """
         evaluate_result = {'acc': round(self.correct / (self.total + 1e-12), 6),
                            'total': self.total, 'correct': self.correct}
-        # reset 
-        if reset:
-            self.total = 0
-            self.correct = 0 
         return evaluate_result
     
     def update(self, result:Dict):
@@ -76,6 +76,13 @@ class Accuracy(BaseMetric):
         pred = result.get("pred")
         target = result.get("target")
         
+        # ddp 时候需要手动 gahter 所有数据。 默认输入的类型都是tensor
+        if isinstance(pred, List):
+            pred = torch.stack(pred, dim=0)
+        
+        if isinstance(target, List):
+            target = torch.stack(target, dim=0)
+
         seq_len = None
         if "seq_len" in result.keys():
             seq_len = result.get("seq_len")
