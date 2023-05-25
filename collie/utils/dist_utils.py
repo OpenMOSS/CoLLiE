@@ -20,34 +20,10 @@ from typing import Union, Optional
 from .utils import classproperty, _split_batch
 from collie.config import load_config, CollieConfig
 
-   
-
-
-class Zero3_Init:
-    def __init__(self, config: CollieConfig):
-        self.config = config
-        setup_distribution(config)
-
-    def __enter__(self):
-        
-        if is_zero3_enabled(self.config):
-            self.ds_context_manager = deepspeed.zero.Init(
-                data_parallel_group=parallel_state.get_data_parallel_group())
-            self.ds_context_manager.__enter__()  # enter deepspeed context
-            return self
-        else:
-            return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if hasattr(self, 'ds_context_manager'):
-            self.ds_context_manager.__exit__(exc_type, exc_val, exc_tb)  # exit deepspeed context
-
-
 def zero3_load_state_dict(model: torch.nn.Module, state_dict: dict):
     for name, param in model.named_parameters():
         with deepspeed.zero.GatheredParameters(param, modifier_rank=0):
             param.data = state_dict[name].data.to(param.device).to(param.dtype)
-
 
 def is_zero3_enabled(config: CollieConfig):
     if isinstance(config.ds_config, str) and os.path.exists(config.ds_config):

@@ -422,13 +422,14 @@ class Trainer:
         if mode == "model":
             if isinstance(self.engine.module, CollieModelForCausalLM) or isinstance(self.engine.module, PipelineModel):
                 if is_zero3_enabled(self.config):
-                    with deepspeed.zero.GatheredParameters(list(self.engine.module.parameters(recurse=True)), modifier_rank=0):
-                        if env.dp_rank == 0:
-                            self.engine.module.load_state_dict(
-                                self.engine.module.load_parallel_state_dict(
-                                    path=path, config=self.config, process_exclusion=process_exclusion, protocol=protocol
-                                )
+                    if env.dp_rank == 0:
+                        state_dict = self.engine.module.load_parallel_state_dict(
+                            path=path, config=self.config, process_exclusion=process_exclusion, protocol=protocol
                             )
+                    for attr in state_dict.keys():
+                        with deepspeed.zero.GatheredParameters(self.engine.module.state_dict()[attr], modifier_rank=0):
+                            if env.dp_rank == 0:
+                                self.engine.module.state_dict()[attr].copy_(state_dict[attr])
                 else:
                     self.engine.module.load_state_dict(
                         self.engine.module.load_parallel_state_dict(

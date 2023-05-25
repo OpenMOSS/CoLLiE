@@ -309,7 +309,7 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                                  config: Union[CollieConfig, str],
                                  process_exclusion: bool = False,
                                  protocol: str = 'file',
-                                 format: str = 'hf'):
+                                 format: str = 'hf', **kwargs):
         """
         Load state_dict from ``path``.
 
@@ -345,18 +345,6 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                     # 保存的是 json 格式
                     parts = env.pipline_parts
                 if format == "hf":
-                    # 根据 huggingface 中的 config.json 更新一下用户配置
-                    if IODriver.exists(os.path.join(path, "config.json")):
-                        new_config = json.loads(IODriver.load(os.path.join(path, "config.json"), mode="r"))
-                        for key, value in {
-                            "vocab_size": new_config["vocab_size"],
-                            "hidden_size": new_config["hidden_size"],
-                            "intermediate_size": new_config["intermediate_size"],
-                            "num_hidden_layers": new_config["num_hidden_layers"],
-                            "num_attention_heads": new_config["num_attention_heads"],
-                            "rms_norm_eps": new_config["rms_norm_eps"]
-                        }.items():
-                            setattr(config, key, value)
                     # 如果存在 pytorch_model.bin.index.json 文件的话，此时不同的 pp 进程可以按需加载自己需要的权重
                     if IODriver.exists(os.path.join(path, "pytorch_model.bin.index.json")) and "COLLIE_PP_PARTS" in os.environ.keys():
                         weight_map = json.loads(IODriver.load(os.path.join(path, "pytorch_model.bin.index.json"), mode="r"))["weight_map"]

@@ -392,7 +392,7 @@ class MossForCausalLM(CollieModelForCausalLM):
                                  config: Union[CollieConfig, str],
                                  process_exclusion: bool = False,
                                  protocol: str = 'file',
-                                 format: str = 'hf'):
+                                 format: str = 'hf', **kwargs):
         """
         Load state_dict from ``path``.
 
