@@ -1,29 +1,56 @@
 from abc import ABC, abstractmethod
 import torch.distributed as dist
-from typing import Any
+from typing import Any, Dict, List, Optional
 
-from collie.trainer.trainer import Trainer
+# from collie.trainer.trainer import Trainer
 
 class BaseMetric(ABC):
     def __init__(self, 
                  gather_result: bool=False) -> None:
         self.gather_result = gather_result
         
-    def construct(self, trainer: Trainer):
+    def construct(self, trainer):
         self.trainer = trainer
     
+    def reset(self):
+        r"""
+        用来重置 init 中定义的值。在调用 get_metric 方法后会自动调用一次该方法
+        """
+        pass
+
     @abstractmethod
-    def get_metric(self, *args, **kwargs) -> dict:
+    def get_metric(self) -> Optional[Dict]:
         raise NotImplementedError()
 
     @abstractmethod
-    def update(self, result: Any):
+    def update(self, result: Dict):
+        r"""
+        :param result: 经过 gather 后的输入。一般为 ``{'logits': [logit1, logit2, ..., logit_dp_size],
+            'labels': [label1, label2, ..., label_dp_size]}``。其中 dp_size 为 并行的卡数量
+        """
         raise NotImplementedError
     
-    def gather(self, result: Any):
+    def gather(self, result: Dict) -> Dict[str, List]:
+        r"""
+        :param result: :class `Trainer` 中 eval_fn 返回的结果。类型为 Dict。
+            例如 ``result = {'logits': logit, 'labels': label}``。
+        :return: 经过 gather 后的结果。如果 ``result = {'logits': logit, 'labels': label}``，
+            其根据 ``dp_size`` 的值有如下两种情况。
+
+            * dp_size 为 ``1``, 其返回值为 ``{'logits': [logit], 'labels': [label]}``。
+            * dp_size > 1, 其返回值为 ``{'logits': [logit1, logit2, ..., logit_dp_size],
+              'labels': [label1, label2, ..., label_dp_size]}``。
+
+        """
+        gather_result = {key_name: [] for key_name in result.keys()}
         if self.trainer.config.dp_size == 1:
-            return [result]
-        group = self.trainer.engine.mpu.get_data_parallel_group()
-        result_list = [None for _ in range(self.trainer.config.dp_size)]
-        dist.all_gather_object(result_list, result, group=group)
-        return result_list
+            result_list = [result]
+        else:
+            group = self.trainer.engine.mpu.get_data_parallel_group()
+            result_list = [None for _ in range(self.trainer.config.dp_size)]
+            dist.all_gather_object(result_list, result, group=group)
+        for result_dp in result_list:
+            for name, value in result_dp.items():
+                gather_result[name].append(value)
+
+        return gather_result
