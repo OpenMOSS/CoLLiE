@@ -38,14 +38,14 @@ def find_tensors():
         
 class progress:
 
-    def __init__(self, sequence, desc="Workin on...", total=None,
+    def __init__(self, sequence, desc="Workin on...", total=None, completed=0,
                  upgrade_period=0.1, disable=False, post_desc: str = ""):
         self.bar = f_rich_progress
         self.bar.set_disable(disable)
         self.total = float(length_hint(sequence)) if total is None else total
         self.task_id = self.bar.add_task(
-            desc, upgrade_period=upgrade_period, post_desc=post_desc,
-            visible=not disable, total=self.total
+            desc, upgrade_period=upgrade_period, completed=completed,
+            post_desc=post_desc, visible=not disable, total=self.total
         )
         self.sequence = sequence
 

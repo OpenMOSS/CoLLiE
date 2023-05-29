@@ -4,6 +4,7 @@ import glob
 from typing import Optional, Callable, Union, Tuple, Iterable, Any, Dict, Sequence
 from collections import OrderedDict
 from functools import reduce
+from itertools import cycle
 
 import torch
 import deepspeed
@@ -108,7 +109,7 @@ class Trainer:
             "batch_idx": self.batch_idx
         }
         
-    def load_state_dict(state_dict: dict):
+    def load_state_dict(self, state_dict: dict):
         self.epoch_idx = state_dict["epoch_idx"]
         self.batch_idx = state_dict["batch_idx"]
         
@@ -306,7 +307,7 @@ class Trainer:
     @staticmethod
     def train_fn(trainer, batch: Tuple, global_step) -> float:
         if trainer.config.pp_size > 1:
-            loss = trainer.engine.train_batch(batch)
+            loss = trainer.engine.train_batch(data_iter=cycle([batch]))
         else:
             input_ids, labels = batch
             logits = trainer.engine(input_ids=input_ids.cuda()).logits
