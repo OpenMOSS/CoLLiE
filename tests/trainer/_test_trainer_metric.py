@@ -5,7 +5,7 @@ from transformers.generation.utils import GenerationConfig
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from transformers.generation.utils import GenerationConfig
 
-sys.path.append("/mnt/petrelfs/hongjiawei/collie/")
+sys.path.append("../../")
 
 from collie.config import CollieConfig
 from collie.trainer.trainer import Trainer
@@ -77,7 +77,7 @@ def _test_llama():
                                     eos_token_id=2, 
                                     pad_token_id=0, 
                                     bos_token_id=1),
-        metrics=[DecodeMetric(tokenizer=tokenizer)],
+        metrics={DecodeMetric(tokenizer=tokenizer)},
         config=config
     )
     trainer.train()
@@ -123,7 +123,8 @@ def _test_gpt2():
                                     eos_token_id=2, 
                                     pad_token_id=0, 
                                     bos_token_id=1),
-        metrics={"decodeMetric": DecodeMetric(tokenizer=tokenizer, gather_result=True)},
+        metrics={"decodeMetric": DecodeMetric(tokenizer=tokenizer, gather_result=True),
+                 "decodeMetric1": DecodeMetric(tokenizer=tokenizer, gather_result=True)},
         config=config
     )
     trainer.train()
