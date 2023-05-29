@@ -1,20 +1,20 @@
 import os
 import json
 import torch
-from typing import Optional, Sequence
+from typing import Callable, Optional, List, Union
+from itertools import cycle
 
 from torch import nn
 from torch import distributed as dist
+from transformers.generation.configuration_utils import GenerationConfig
 from megatron.core.tensor_parallel import (ColumnParallelLinear,
                                            RowParallelLinear,
                                            VocabParallelEmbedding)
 from megatron.core import parallel_state
 from deepspeed.runtime.pipe.module import PipelineModule
 from deepspeed.runtime.pipe.topology import (PipeModelDataParallelTopology,
-                                             PipelineParallelGrid,
-                                             _prime_factors)
+                                             PipelineParallelGrid)
 from deepspeed.runtime.engine import DeepSpeedEngine
-from deepspeed.runtime.pipe.engine import PipelineEngine
 from deepspeed.runtime.activation_checkpointing import checkpointing
 from deepspeed.accelerator import get_accelerator
 from transformers.generation.utils import GenerationConfig, GenerationMixin
@@ -22,15 +22,75 @@ from transformers.modeling_utils import PretrainedConfig
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from collie.log import logger
-from collie.trainer.arguments import Arguments
+from collie.utils import env, broadcast_tensor
 
 class ColumnParallelLinearWithoutBias(ColumnParallelLinear):
     def forward(self, input_):
         return super().forward(input_)[0]
+    
+    def __new__(cls, *args, **kwargs):
+        if env.tp_size == 1:
+            naive_kwargs = {}
+            if "output_size" in kwargs:
+                naive_kwargs["output_size"] = kwargs["output_size"]
+            if "input_size" in kwargs:
+                naive_kwargs["input_size"] = kwargs["input_size"]
+            if "bias" in kwargs:
+                naive_kwargs["bias"] = kwargs["bias"]
+            return nn.Linear(*args, **naive_kwargs)
+        return super().__new__(cls)
+    
+class LinearWithHiddenStates(nn.Linear):
+    def __init__(self, in_features: int, out_features: int, bias: bool = True, device=None, dtype=None) -> None:
+        super().__init__(in_features, out_features, bias, device, dtype)
+        self.hidden_states = None
+        
+    def forward(self, input_):
+        if not self.training:
+            self.hidden_states = input_
+        else:
+            self.hidden_states = None
+        return super().forward(input_)
+    
+class ColumnParallelLMHead(ColumnParallelLinearWithoutBias):
+    def __init__(self, *args, **kwargs):
+        super(ColumnParallelLMHead, self).__init__(*args, **kwargs)
+        self.hidden_states = None
+
+    def forward(self, input_):
+        if not self.training:
+            self.hidden_states = input_
+        else:
+            self.hidden_states = None
+        return super().forward(input_)
+    
+    def __new__(cls, *args, **kwargs):
+        if env.tp_size == 1:
+            naive_kwargs = {}
+            if "output_size" in kwargs:
+                naive_kwargs["output_size"] = kwargs["output_size"]
+            if "input_size" in kwargs:
+                naive_kwargs["input_size"] = kwargs["input_size"]
+            if "bias" in kwargs:
+                naive_kwargs["bias"] = kwargs["bias"]
+            return LinearWithHiddenStates(*args, **naive_kwargs)
+        return super().__new__(cls)
 
 class RowParallelLinearWithoutBias(RowParallelLinear):
     def forward(self, input_):
         return super().forward(input_)[0]
+    
+    def __new__(cls, *args, **kwargs):
+        if env.tp_size == 1:
+            naive_kwargs = {}
+            if "output_size" in kwargs:
+                naive_kwargs["output_size"] = kwargs["output_size"]
+            if "input_size" in kwargs:
+                naive_kwargs["input_size"] = kwargs["input_size"]
+            if "bias" in kwargs:
+                naive_kwargs["bias"] = kwargs["bias"]
+            return nn.Linear(*args, **naive_kwargs)
+        return super().__new__(cls)
 
 class GPTLMLoss(torch.nn.Module):
     def __init__(self, ignore_index=0):
@@ -134,131 +194,104 @@ class PipelineModel(PipelineModule):
         os.environ["COLLIE_DP_RANK"] = str(self._grid.data_parallel_id)
 
 
-class CollieCausalLM(nn.Module, GenerationMixin):
-    def __init__(self, engine: DeepSpeedEngine, config: GenerationConfig = GenerationConfig()) -> None:
+class PipelineGenerationMixin(nn.Module, GenerationMixin):
+    def __init__(self, engine: DeepSpeedEngine) -> None:
         super().__init__()
         self.config = PretrainedConfig(is_decoder=True)
+        self.generation_config = GenerationConfig()
         self.main_input_name = "input_ids"
         self.device = torch.device("cuda")
         self.engine = engine
-        self.args: Arguments = self.engine.module.args
+        self.model_config = self.engine.module.config
         self.layers = None
         self.communicate_buffer_shape = None
-        self.generation_config = config
         self._find_layers()
+
+    def generate(self, *args, **kwargs):
+        res = super().generate(*args, **kwargs)
         self._clean_past_key_values()
+        self._clean_hidden_states()
+        return res
         
-    def forward(self, input_ids: torch.Tensor, past_key_values: Optional[list] = None, *args, **kwargs) -> torch.Tensor:
+    def forward(self, input_ids: torch.Tensor, **kwargs) -> torch.Tensor:
+        past_key_values=self._get_past_key_values()
         if past_key_values is not None:
-            self._set_past_key_values(past_key_values)
-            start_pos = past_key_values[0][0].shape[1]
+            input_ids = input_ids[:, -1:]
+        batch = (input_ids, input_ids)
+        if self.communicate_buffer_shape is None:
+            self.communicate_buffer_shape = batch[0].shape
         else:
-            start_pos = 0
-        if self.generation_config.use_cache:
-            input_ids = input_ids[:, start_pos:]
-        if isinstance(self.engine, PipelineEngine):
-            batch = (input_ids, input_ids)
-            if self.communicate_buffer_shape is None:
+            if self.communicate_buffer_shape != batch[0].shape:
+                self.engine.reset_activation_shape()
+                self.engine.total_loss = None
                 self.communicate_buffer_shape = batch[0].shape
-            else:
-                if self.communicate_buffer_shape != batch[0].shape:
-                    self.engine.reset_activation_shape()
-                    self.engine.total_loss = None
-                    self.communicate_buffer_shape = batch[0].shape
-            _, logits = self.engine.eval_batch(
-                data_iter=iter([batch]),
-                return_logits=True,
-                compute_loss=False,
-                reduce_output=None
-            )
-            src_rank = self.engine.grid.stage_to_global(self.engine.num_stages - 1)
-            if logits is not None:
-                logits = logits.detach().clone()
-                ndim = torch.tensor([logits.ndim]).int().cuda()
-            else:
-                ndim = torch.tensor([3]).int().cuda()
-            dist.broadcast(tensor=ndim, src=src_rank, group=self.engine.mpu.get_pipe_parallel_group())
-            if logits is not None:
-                shape = torch.tensor(list(logits.shape)).int().cuda()
-            else:
-                shape = torch.tensor([0] * int(ndim.data)).int().cuda()
-            dist.broadcast(tensor=shape, src=src_rank, group=self.engine.mpu.get_pipe_parallel_group())
-            dtype = torch.float32
-            try:
-                if self.args.ds_config["fp16"]["enabled"]:
-                    dtype = torch.float16
-            except KeyError:
-                pass
-            try:
-                if self.args.ds_config["bf16"]["enabled"]:
-                    dtype = torch.bfloat16
-            except KeyError:
-                pass
-            if logits is None:
-                logits = torch.zeros(tuple(shape.cpu().numpy().tolist())).to(dtype).cuda()
-            dist.broadcast(tensor=logits, src=src_rank, group=self.engine.mpu.get_pipe_parallel_group())
-        else:
-            logits = self.engine(input_ids)
-            logits = logits.detach().clone()
-        if self.generation_config.use_cache:
-            past_key_values = self._get_past_key_values()
-        else:
-            past_key_values = None
-            self._clean_past_key_values()
+        logits = self.engine.eval_batch(cycle([batch]))
         return CausalLMOutputWithPast(
+            loss=None,
             logits=logits,
-            past_key_values=past_key_values
+            past_key_values=self._get_past_key_values(),
+            hidden_states=self._get_hidden_states(),
+            attentions=None
         )
     
     def prepare_inputs_for_generation(self, 
-                                      input_ids, 
-                                      past_key_values: Optional[list] = None, 
-                                      attention_mask: Optional[torch.Tensor] = None, *args, **kwargs):
-        return {"input_ids": input_ids, "past_key_values": past_key_values}
+                                      input_ids: torch.Tensor,
+                                      past_key_values: Optional[list] = None,
+                                      attention_mask: Optional[torch.Tensor] = None,
+                                      **kwargs):
+        self._set_use_cache(self.generation_config.use_cache)
+        if past_key_values is None:
+            self._clean_past_key_values()
+        else:
+            self._set_past_key_values(past_key_values)
+        return {"input_ids": input_ids}
     
     def can_generate(self) -> bool:
         return True
     
     def _find_layers(self):
-        if isinstance(self.engine.module, PipelineModel):
-            self.layers = self.engine.module.forward_funcs
-        else:
-            for value in self.engine.module.__dict__["_modules"].values():
-                if isinstance(value, nn.Sequential) \
-                    or isinstance(value, nn.ModuleList) \
-                        or isinstance(value, Sequence):
-                            for layer in value:
-                                if hasattr(layer, "eval"):
-                                    layer.eval()
-                            if self.layers is None:
-                                self.layers = [layer for layer in value]
-                            else:
-                                self.layers.extend([layer for layer in value])
+        self.layers = self.engine.module.forward_funcs
     
-    def _get_past_key_values(self):
-        if self.layers is None:
-            raise ValueError("The layers of the model is not found.")
+    def _get_past_key_values(self, attr_name: str="past_key_values"):
         past_key_values = []
         for layer in self.layers:
-            if hasattr(layer, "past_key_values") and layer.past_key_values is not None:
-                past_key_values.append(layer.past_key_values)
+            if hasattr(layer, attr_name) and getattr(layer, attr_name) is not None:
+                past_key_values.append(getattr(layer, attr_name))
         return past_key_values if len(past_key_values) > 1 else None
     
-    def _clean_past_key_values(self):
-        if self.layers is None:
-            raise ValueError("The layers of the model is not found.")
+    def _clean_past_key_values(self, attr_name: str="past_key_values"):
         for layer in self.layers:
-            if hasattr(layer, "past_key_values"):
-                object.__setattr__(layer, "past_key_values", None)
-        get_accelerator().empty_cache()
+            if hasattr(layer, attr_name):
+                object.__setattr__(layer, attr_name, None)
                 
-    def _set_past_key_values(self, past_key_values: list):
-        if self.layers is None:
-            raise ValueError("The layers of the model is not found.")
+    def _set_past_key_values(self, past_key_values: List[List[torch.Tensor]], attr_name: str="past_key_values"):
         past_key_values = iter(past_key_values)
         for layer in self.layers:
-            if hasattr(layer, "past_key_values"):
-                object.__setattr__(layer, "past_key_values", next(past_key_values))
+            if hasattr(layer, attr_name):
+                object.__setattr__(layer, attr_name, next(past_key_values))
+            
+    def _get_hidden_states(self, attr_name: str="hidden_states"):
+        past_key_values = []
+        for layer in self.layers:
+            if hasattr(layer, attr_name) and getattr(layer, attr_name) is not None:
+                past_key_values.append(getattr(layer, attr_name))
+        return past_key_values if len(past_key_values) > 1 else None
+    
+    def _clean_hidden_states(self, attr_name: str="hidden_states"):
+        for layer in self.layers:
+            if hasattr(layer, attr_name):
+                object.__setattr__(layer, attr_name, None)
+                
+    def _set_hidden_states(self, hidden_states: List[torch.Tensor], attr_name: str="hidden_states"):
+        hidden_states = iter(hidden_states)
+        for layer in self.layers:
+            if hasattr(layer, attr_name):
+                object.__setattr__(layer, attr_name, next(hidden_states))   
+                
+    def _set_use_cache(self, use_cache: bool=True, attr_name: str="use_cache"):
+        for layer in self.layers:
+            if hasattr(layer, attr_name):
+                object.__setattr__(layer, attr_name, use_cache)    
 
 
 class MultiParallelGrid(PipelineParallelGrid):

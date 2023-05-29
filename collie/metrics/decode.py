@@ -1,6 +1,6 @@
-from typing import Any
+from typing import Any, Dict
 from collie.metrics.base import BaseMetric
-from collie.log.print import print
+from collie.utils import env
 import torch
 
 class DecodeMetric(BaseMetric):
@@ -9,19 +9,22 @@ class DecodeMetric(BaseMetric):
                  verbose: bool = True,
                  save_to_file: bool = False,
                  save_path: str = None,
-                 gather_result: bool = True, 
-                 only_rank0_update: bool = True) -> None:
-        super().__init__(gather_result, only_rank0_update)
+                 gather_result: bool = False) -> None:
+        super().__init__(gather_result)
         self.verbose = verbose
         self.save_to_file = save_to_file
         self.save_path = save_path
         self.tokenizer = tokenizer
-        
-    def update(self, result: Any):
-        if isinstance(result, list):
-            input_ids = [r['input_ids'] for r in result]
-        else:
-            input_ids = [result['input_ids']]
+    
+    def get_metric(self):
+        return None
+
+    def update(self, result: Dict):
+        # 合并数据
+        # if isinstance(result, list):
+            # input_ids = [r['input_ids'] for r in result]
+        # else:
+        input_ids = result['input_ids']
         decode_list = []
         for i in range(len(input_ids)):
             if isinstance(input_ids[i], torch.Tensor):
@@ -38,6 +41,6 @@ class DecodeMetric(BaseMetric):
             sentences.append(self.tokenizer.decode(ids))
         if self.verbose:
             print(sentences)
-        if self.save_to_file and self.trainer.args.local_rank == 0:
+        if self.save_to_file and env.local_rank == 0:
             with open(self.save_path, 'a+') as f:
                 f.write('\n'.join(sentences) + '\n')

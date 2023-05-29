@@ -1,26 +1,27 @@
+# 使用 collie 模型进行批量并行模型推理
 import sys
 sys.path.append("/mnt/lustre/zhangshuo/projects/collie/")
-from collie.models.llama.model import LlamaModel, LlamaArguments
+from collie.models.llama.model import LlamaForCausalLM
 from collie.trainer.trainer import Trainer
+from collie.config import CollieConfig
 from collie.metrics.decode import DecodeMetric
 
 from transformers import LlamaTokenizer
-from transformers.generation.utils import GenerationConfig
 from torch.utils.data import Dataset
-import torch
+from transformers.generation.utils import GenerationConfig
 
-tokenizer = LlamaTokenizer.from_pretrained("/mnt/lustre/zhangshuo/model/llama-30b-hf", 
+tokenizer = LlamaTokenizer.from_pretrained("decapoda-research/llama-7b-hf", 
                                            padding_side="left")
 tokenizer.pad_token_id = 0
 tokenizer.bos_token_id = 1
 tokenizer.eos_token_id = 2
 
-args = LlamaArguments.from_pretrained("/mnt/lustre/zhangshuo/model/llama-30b-hf")
-args.dp_size = 2
-args.pp_size = 2
-args.tp_size = 2
-args.eval_batch_size = 4
-args.ds_config = {
+config = CollieConfig.from_pretrained("decapoda-research/llama-7b-hf")
+config.dp_size = 2
+config.pp_size = 2
+config.tp_size = 2
+config.eval_batch_size = 4
+config.ds_config = {
     "fp16": {"enabled": True}
 }
 
@@ -50,19 +51,12 @@ dataset = GenerationDataset([
     "So this is the reason why",
     "We have to"
 ])
-model = LlamaModel.from_pretrained("/mnt/lustre/zhangshuo/model/test/", args=args)
+model = LlamaForCausalLM.from_pretrained("/mnt/lustre/zhangshuo/model/test/", config=config)
 
 trainer = Trainer(model=model,
-                  train_dataset=dataset,
+                  config=config,
                   eval_dataset=dataset,
                   eval_config=GenerationConfig(max_new_tokens=100),
-                  metrics=[DecodeMetric(tokenizer=tokenizer, gather_result=True, only_rank0_update=True)],
-                  eval_dataset_collate_fn=collate_fn,
-                  train_dataset_collate_fn=collate_fn,
-                  args=args)
-torch.cuda.empty_cache()
-import os
-if os.environ.get("RANK") == "0":
-    import pdb
-    pdb.set_trace()
+                  metrics=[DecodeMetric(tokenizer=tokenizer)],
+                  eval_dataset_collate_fn=collate_fn)
 trainer.eval()
