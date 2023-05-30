@@ -25,12 +25,11 @@ class _MetricsWrapper:
 
     def update(self, result):
         for metric in self._metrics:
-            args = []
             if not isinstance(result, dict):
                 raise RuntimeError(
                     'The output of your model is of type:`{}`, please '
                     'either directly return a dict from your model'.
-                    format(type(batch)))
+                    format(type(result)))
             # gather 输入
             if metric.gather_result:
                 result = metric.gather(result)

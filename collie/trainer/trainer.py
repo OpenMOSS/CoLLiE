@@ -286,10 +286,6 @@ class Trainer:
                 if (self.config.pp_size == 1 or env.pp_rank == self.config.pp_size - 1) \
                     and (self.config.tp_size == 1 or env.tp_rank == self.config.tp_size - 1):
                     self.metric_wrapper.update(result)
-                    # for metric in self.metrics:
-                    #     if metric.gather_result:
-                    #         result = metric.gather(result)
-                    #     metric.update(result)
                 tqbar_batch.set_postfix(
                     batch=f"{batch_idx + 1}/{num_eval_batches}")
         if (self.config.pp_size == 1 or env.pp_rank == self.config.pp_size - 1) \
@@ -307,7 +303,7 @@ class Trainer:
     @staticmethod
     def train_fn(trainer, batch: Tuple, global_step) -> float:
         if trainer.config.pp_size > 1:
-            loss = trainer.engine.train_batch(data_iter=cycle([batch]))
+            loss = trainer.engine.train_batch(batch)
         else:
             input_ids, labels = batch
             logits = trainer.engine(input_ids=input_ids.cuda()).logits
