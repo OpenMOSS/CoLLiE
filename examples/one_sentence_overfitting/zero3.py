@@ -1,11 +1,10 @@
 import sys
 import torch
-sys.path.append("/mnt/lustre/zhangshuo/projects/collie/")
+sys.path.append("../..")
 from collie.models.llama.model import LlamaForCausalLM
 from collie.trainer.trainer import Trainer
 from collie.metrics.decode import DecodeMetric
 from collie.config import CollieConfig
-from collie.utils import zero3_load_state_dict
 
 from transformers import LlamaTokenizer
 from transformers.generation.utils import GenerationConfig
@@ -34,14 +33,7 @@ config.ds_config = {
         "stage": 3,
     }
 }
-model = LlamaForCausalLM.from_config(config)
-state_dict = LlamaForCausalLM.load_parallel_state_dict(
-    path="hdd:s3://opennlplab_hdd/models/llama/llama-7b-hf",
-    config=config,
-    protocol="petrel",
-    format="hf"
-)
-zero3_load_state_dict(model, state_dict)
+model = LlamaForCausalLM.from_pretrained("/mnt/petrelfs/zhangshuo/model/llama-7b-hf", config=config)
 train_sample = tokenizer("Collie is a python package for finetuning large language models.", return_tensors="pt").input_ids.squeeze(0)
 eval_sample = tokenizer("Collie is", return_tensors="pt").input_ids.squeeze(0)[:-1,]
 train_dataset = [(train_sample, train_sample) for _ in range(1000)]

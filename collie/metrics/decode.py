@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Dict
 from collie.metrics.base import BaseMetric
 from collie.utils import env
 import torch
@@ -15,12 +15,16 @@ class DecodeMetric(BaseMetric):
         self.save_to_file = save_to_file
         self.save_path = save_path
         self.tokenizer = tokenizer
-        
-    def update(self, result: Any):
-        if isinstance(result, list):
-            input_ids = [r['input_ids'] for r in result]
-        else:
-            input_ids = [result['input_ids']]
+    
+    def get_metric(self):
+        return None
+
+    def update(self, result: Dict):
+        # 合并数据
+        # if isinstance(result, list):
+            # input_ids = [r['input_ids'] for r in result]
+        # else:
+        input_ids = result['input_ids']
         decode_list = []
         for i in range(len(input_ids)):
             if isinstance(input_ids[i], torch.Tensor):

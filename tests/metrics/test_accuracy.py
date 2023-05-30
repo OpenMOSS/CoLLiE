@@ -1,5 +1,5 @@
 import sys
-sys.path.append("/mnt/petrelfs/hongjiawei/collie/")
+sys.path.append("../..")
 import pytest
 from collie.metrics.accuracy import Accuracy
 import torch

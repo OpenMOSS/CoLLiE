@@ -10,12 +10,13 @@ import deepspeed
 from torch import nn
 from torch import distributed as dist
 from deepspeed.runtime.pipe.topology import PipeModelDataParallelTopology
+from megatron.core import parallel_state
 from transformers.generation.utils import GenerationMixin
 from transformers.generation.utils import GenerationConfig
 from collie.module import PipelineModel, GPTLMLoss
 from collie.config import CollieConfig, load_config
 from collie.log import logger
-from collie.utils import setup_distribution, Zero3_Init, zero3_load_state_dict, is_zero3_enabled
+from collie.utils import setup_distribution, is_zero3_enabled, env
 
 class CollieModelForCausalLM(nn.Module, GenerationMixin):
     """
@@ -24,10 +25,11 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
     Every new model should inherit this class.
     """
     main_input_name = "input_ids"
-    def __init__(self) -> None:
+    def __init__(self, config: CollieConfig) -> None:
         super().__init__()
         self.device = torch.device("cuda")
         self.generation_config = GenerationConfig()
+        self.config = config
             
     def _get_past_key_values(self, layers: Sequence[nn.Module], attr_name: str="past_key_values"):
         past_key_values = []
@@ -90,7 +92,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         setup_distribution(config)
         model_cls = cls._get_model_cls(config)
         if config.pp_size == 1:
-            with Zero3_Init(config):
+            with deepspeed.zero.Init(data_parallel_group=parallel_state.get_data_parallel_group(), enabled=is_zero3_enabled(config)):
                 model = super().__new__(model_cls)
                 model.__init__(config)
                 dist.barrier()
@@ -145,15 +147,31 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
             # prevent duplicate `from_pretrained`` in load_parallel
             config = CollieConfig.from_pretrained(config, **kwargs)
         model = cls.from_config(config)
-        state_dict = cls.load_parallel_state_dict(
-            path=model_path_or_name, config=config,
-            process_exclusion=process_exclusion,
-        )
+        state_dict = {}
+        if not is_zero3_enabled(config) or env.dp_rank == 0:
+            state_dict = cls.load_parallel_state_dict(
+                path=model_path_or_name, config=config,
+                process_exclusion=process_exclusion, **kwargs
+            )
         if is_zero3_enabled(config):
-            zero3_load_state_dict(model, state_dict)
+            for name, param in model.named_parameters():
+                with deepspeed.zero.GatheredParameters(param, modifier_rank=0):
+                    if env.dp_rank == 0:
+                        param.data.copy_(state_dict[name].data)
         else:
             model.load_state_dict(state_dict)
         return model
+    
+    # def save_pretrained(self, **kwargs):
+    #     path = kwargs.get("path", kwargs.get("save_directory", None))
+    #     assert path is not None, "Please specify `path` or `save_directory`."
+    #     self.save_parallel_state_dict(
+    #         self.state_dict(),
+    #         path=path,
+    #         config=self.config,
+    #         protocol=kwargs.get("protocol", "file"),
+    #         process_exclusion=kwargs.get("process_exclusion", False)
+    #     )
 
     @classmethod
     def pipline_layers(cls, config: Union[CollieConfig, str]):
@@ -170,7 +188,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
     @staticmethod
     @abstractmethod
     def load_parallel_state_dict(path: str, config: Union[CollieConfig, str],
-                                 process_exclusion: bool = False):
+                                 process_exclusion: bool = False, **kwargs):
         """
         Load state_dict from ``path``.
 
@@ -193,7 +211,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
     @abstractmethod
     def save_parallel_state_dict(state_dict: dict, path: str,
                                  config: CollieConfig,
-                                 process_exclusion: bool = False):
+                                 process_exclusion: bool = False, **kwargs):
         """
         Save ``state_dict`` to ``path``.
 

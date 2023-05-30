@@ -19,32 +19,11 @@ from typing import Union, Optional
 
 from .utils import classproperty, _split_batch
 from collie.config import load_config, CollieConfig
-   
-
-
-class Zero3_Init:
-    def __init__(self, config: CollieConfig):
-        self.config = config
-
-    def __enter__(self):
-        if is_zero3_enabled(self.config):
-            self.ds_context_manager = deepspeed.zero.Init(
-                data_parallel_group=parallel_state.get_data_parallel_group())
-            self.ds_context_manager.__enter__()  # enter deepspeed context
-            return self
-        else:
-            return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if hasattr(self, 'ds_context_manager'):
-            self.ds_context_manager.__exit__(exc_type, exc_val, exc_tb)  # exit deepspeed context
-
 
 def zero3_load_state_dict(model: torch.nn.Module, state_dict: dict):
     for name, param in model.named_parameters():
         with deepspeed.zero.GatheredParameters(param, modifier_rank=0):
             param.data = state_dict[name].data.to(param.device).to(param.dtype)
-
 
 def is_zero3_enabled(config: CollieConfig):
     if isinstance(config.ds_config, str) and os.path.exists(config.ds_config):
@@ -64,6 +43,10 @@ def setup_ds_engine(
         optimizer: Optional[Union[torch.optim.Optimizer, DeepSpeedOptimizerCallable]] = None,
         lr_scheduler: Optional[Union[torch.optim.lr_scheduler._LRScheduler, DeepSpeedSchedulerCallable]] = None
 ):
+    if config.pp_size != 1 or config.tp_size != 1:
+        from collie.models import CollieModelForCausalLM
+        from collie.module import PipelineModel
+        assert isinstance(model, CollieModelForCausalLM) or isinstance(model, PipelineModel), "Currently pipeline or tensor parallelism only supports Collie models."
     engine, optimizer, _, lr_scheduler = deepspeed.initialize(
         model=model,
         optimizer=optimizer,
@@ -94,7 +77,7 @@ def setup_distribution(config) -> None:
     if "gradient_accumulation_steps" not in config.ds_config.keys():
         config.ds_config["gradient_accumulation_steps"] = config.gradient_accumulation_steps
     hf_ds_config = HfDeepSpeedConfig(config.ds_config)
-    patch_deepspeed(config);
+    patch_deepspeed(config)
     patch_megatron()
     if "WORLD_SIZE" in os.environ.keys():
         # launch from pytorch
