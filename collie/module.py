@@ -225,7 +225,7 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
                 self.engine.reset_activation_shape()
                 self.engine.total_loss = None
                 self.communicate_buffer_shape = batch[0].shape
-        logits = self.engine.eval_batch(cycle([batch]))
+        logits = self.engine.eval_batch(batch)
         return CausalLMOutputWithPast(
             loss=None,
             logits=logits,
