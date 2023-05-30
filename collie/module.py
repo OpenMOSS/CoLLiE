@@ -217,7 +217,6 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
         if past_key_values is not None:
             input_ids = input_ids[:, -1:]
         batch = (input_ids, input_ids)
-        print(input_ids.shape)
         if self.communicate_buffer_shape is None:
             self.communicate_buffer_shape = batch[0].shape
         else:
@@ -265,7 +264,6 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
                 object.__setattr__(layer, attr_name, None)
                 
     def _set_past_key_values(self, past_key_values: List[List[torch.Tensor]], attr_name: str="past_key_values"):
-        print(f"in set: {past_key_values[0][0].shape}")
         past_key_values = iter(past_key_values)
         for layer in self.layers:
             if hasattr(layer, attr_name):
