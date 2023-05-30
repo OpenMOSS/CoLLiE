@@ -33,8 +33,8 @@ class _MetricsWrapper:
                     format(type(batch)))
             # gather 输入
             if metric.gather_result:
-                result = metric.gather(result)
-            metric.update(result)
+                gather_out = metric.gather(result)
+            metric.update(gather_out)
 
     def reset(self):
         """将 Metric 中的状态重新设置。
