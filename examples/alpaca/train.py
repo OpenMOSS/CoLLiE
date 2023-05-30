@@ -75,7 +75,7 @@ config.ds_config = {
     }
 }
 
-def eval_fn(trainer, batch, train_meta):
+def eval_fn(trainer, batch):
     input_ids, labels = batch
     if env.pp_size > 1:
         logits = trainer.engine.eval_batch(batch)
@@ -106,7 +106,6 @@ def eval_fn(trainer, batch, train_meta):
         # "total": total,
         # "right": right,
         "generate": gen_res,
-        "train_meta": train_meta
     }
     
     

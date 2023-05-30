@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 from typing import Any, Union, Optional
 
 from rich.progress import Progress, Console, GetTimeCallable, get_console, TaskID, Live, Text, ProgressSample
@@ -87,6 +88,7 @@ class FRichProgress(Progress, metaclass=Singleton):
         )
         self.get_time = get_time or self.console.get_time
         self.print = self.console.print
+        self.print_json = lambda x, **kwargs: self.console.print_json(json.dumps(x), **kwargs)
         self.log = self.console.log
         self.auto_refresh = auto_refresh
         self.transient = transient

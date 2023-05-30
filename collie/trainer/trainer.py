@@ -240,16 +240,19 @@ class Trainer:
         deepspeed_logging_level = logging.ERROR if 'logging_level' not in self.config.ds_config \
             else self.config.ds_config['logging_level']
         deepspeed.utils.logging.logger.setLevel(deepspeed_logging_level)
-        
+
     def train(self, dataloader: Optional[Iterable] = None):
         train_dataloader = self.train_dataloader
         loss = 0.0
         if dataloader is not None:
             train_dataloader = dataloader
-        with progress(range(self.epoch_idx, self.config.train_epochs), desc="Training Epoch: ", disable=env.rank != 0) as tqbar_epoch:
+
+        with progress(range(self.epoch_idx, self.config.train_epochs), desc="Training Epoch", disable=env.rank != 0, completed=self.epoch_idx) as tqbar_epoch:
             for self.epoch_idx in tqbar_epoch:
-                with progress(train_dataloader, desc="Training Batch: ", disable=env.rank != 0) as tqbar_batch:
+                tqbar_epoch.set_description(f"Training Epoch: {self.epoch_idx} / {self.config.train_epochs}")
+                with progress(train_dataloader, desc="Training Batch: ", disable=env.rank != 0, completed=self.batch_idx) as tqbar_batch:
                     for self.batch_idx, batch in enumerate(tqbar_batch, start=self.batch_idx):
+                        tqbar_batch.set_description(f"Training Batch: {self.batch_idx} / {len(self.train_dataloader)}")
                         if isinstance(self.engine, PipelineEngine):
                             if self.communicate_buffer_shape is None:
                                 self.communicate_buffer_shape = batch[0].shape
@@ -262,24 +265,23 @@ class Trainer:
                         get_accelerator().empty_cache()
                         with self.monitor:
                             loss = self.train_fn(self, batch, self.epoch_idx * len(self.train_dataloader) + self.batch_idx)
-                        tqbar_batch.set_postfix(
-                            loss=round(loss, 4), 
-                            batch=f"{self.batch_idx + 1}/{len(self.train_dataloader)}")
+                        tqbar_batch.set_postfix(Loss=round(loss, 4))
                         if self.config.eval_per_n_steps > 0 and (self.batch_idx + 1) % self.config.eval_per_n_steps == 0:
-                            self.eval(train_meta={"epoch_idx": self.epoch_idx, "batch_idx": self.batch_idx, "last_loss": loss})
-                tqbar_epoch.set_postfix(epoch=f"{self.epoch_idx + 1}/{self.config.train_epochs}")
+                            self.eval()
+                    self.batch_idx = 0
                 if self.config.eval_per_n_epochs > 0 and (self.epoch_idx + 1) % self.config.eval_per_n_epochs == 0:
-                            self.eval(train_meta={"epoch_idx": self.epoch_idx, "batch_idx": 0, "last_loss": loss})
+                            self.eval()
+            self.epoch_idx = 0
                 
     def eval(self, 
-             dataloader: Optional[Iterable] = None, 
-             train_meta: Dict = {"epoch_idx": 0, "batch_idx": 0, "last_loss": 0.0}):
+             dataloader: Optional[Iterable] = None):
         eval_dataloader = self.eval_dataloader
         if dataloader is not None:
             eval_dataloader = dataloader
         num_eval_batches = len(self.eval_dataloader)
-        with progress(eval_dataloader, desc="Evaluating Batch: ", disable=dist.get_rank() != 0, total=num_eval_batches) as tqbar_batch:
+        with progress(eval_dataloader, desc="Evaluating Batch: ", disable=env.rank != 0, total=num_eval_batches) as tqbar_batch:
             for batch_idx, batch in enumerate(tqbar_batch):
+                tqbar_batch.set_description(f"Evaluating Batch: {batch_idx} / {num_eval_batches}")
                 if isinstance(self.engine, PipelineEngine):
                     self.engine.reset_activation_shape()
                     if self.engine.total_loss is not None:
@@ -289,22 +291,21 @@ class Trainer:
                     self.engine.total_loss = None
                 self.generation_server_handler()
                 self.engine.eval()
-                result = self.eval_fn(self, batch, train_meta)
+                result = self.eval_fn(self, batch)
                 get_accelerator().empty_cache()
                 if isinstance(self.engine, PipelineEngine):
                     self.engine.total_loss = total_loss
-                if (self.config.pp_size == 1 or env.pp_rank == self.config.pp_size - 1) \
-                    and (self.config.tp_size == 1 or env.tp_rank == self.config.tp_size - 1):
+                if env.pp_rank == 0 and env.tp_rank == 0:
                     self.metric_wrapper.update(result)
-                tqbar_batch.set_postfix(
-                    batch=f"{batch_idx + 1}/{num_eval_batches}")
-        if (self.config.pp_size == 1 or env.pp_rank == self.config.pp_size - 1) \
-            and (self.config.tp_size == 1 or env.tp_rank == self.config.tp_size - 1):
+        if env.pp_rank == 0 and env.tp_rank == 0:
             metric_results = self.metric_wrapper.get_metric()
             self.metric_wrapper.reset()
         
             if len(metric_results) > 0:  # 如果 metric 不为 None 需要 print 。
-                f_rich_progress.print(metric_results)
+                if isinstance(metric_results, dict):
+                    f_rich_progress.print_json(metric_results)
+                else:
+                    f_rich_progress.print(metric_results)
 
         if isinstance(self.engine, PipelineEngine):
             self.engine.reset_activation_shape()
@@ -340,9 +341,7 @@ class Trainer:
         return loss.item()
 
     @staticmethod
-    def eval_fn(trainer, 
-                batch: Tuple, 
-                train_meta: Dict = {"epoch_idx": 0, "batch_idx": 0, "last_loss": 0.0}) -> Any:
+    def eval_fn(trainer, batch: Tuple) -> Any:
         input_ids, labels = batch
         if isinstance(trainer.engine, PipelineEngine):
             generation_model = PipelineGenerationMixin(
@@ -354,7 +353,6 @@ class Trainer:
         return {
             "input_ids": input_ids,
             "labels": labels,
-            "train_meta": train_meta
         }
 
     def save_checkpoint(self, path: str, process_exclusion: bool = False, mode: str = "trainer", **kwargs):...

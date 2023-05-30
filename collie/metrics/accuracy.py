@@ -1,10 +1,10 @@
-from typing import Any, Dict, Optional, List
+from typing import Dict, Optional, List
 
 import torch
 import numpy as np
 
 from collie.metrics.base import BaseMetric
-
+from collie.log import logger
 
 def seq_len_to_mask(seq_len, max_len: Optional[int]=None):
     r"""
@@ -102,7 +102,7 @@ class Accuracy(BaseMetric):
         elif pred.dim() == target.dim() + 1:
             pred = pred.argmax(dim=-1)
             if seq_len is None and target.dim() > 1:
-                warnings.warn("You are not passing `seq_len` to exclude pad when calculate accuracy.")
+                logger.warning("You are not passing `seq_len` to exclude pad when calculate accuracy.")
         else:
             raise RuntimeError(f"when pred have size:{pred.shape}, target should have size: {pred.shape} or "
                                f"{pred.shape[:-1]}, got {target.shape}.")

@@ -265,6 +265,7 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
                 object.__setattr__(layer, attr_name, None)
                 
     def _set_past_key_values(self, past_key_values: List[List[torch.Tensor]], attr_name: str="past_key_values"):
+        print(f"in set: {past_key_values[0][0].shape}")
         past_key_values = iter(past_key_values)
         for layer in self.layers:
             if hasattr(layer, attr_name):
