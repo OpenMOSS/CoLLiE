@@ -78,28 +78,32 @@ class LlamaLayer(nn.Module):
                     config.hidden_size,
                     bias=False,
                     gather_output=False,
-                    init_method=lambda x: x
+                    init_method=lambda x: x,
+                    use_cpu_initialization=config.use_cpu_initialization
                 ),
                 "k_proj": ColumnParallelLinearWithoutBias(
                     config.hidden_size,
                     config.hidden_size,
                     bias=False,
                     gather_output=False,
-                    init_method=lambda x: x
+                    init_method=lambda x: x,
+                    use_cpu_initialization=config.use_cpu_initialization
                 ),
                 "v_proj": ColumnParallelLinearWithoutBias(
                     config.hidden_size,
                     config.hidden_size,
                     bias=False,
                     gather_output=False,
-                    init_method=lambda x: x
+                    init_method=lambda x: x,
+                    use_cpu_initialization=config.use_cpu_initialization
                 ),
                 "o_proj": RowParallelLinearWithoutBias(
                     config.hidden_size,
                     config.hidden_size,
                     bias=False,
                     input_is_parallel=True,
-                    init_method=lambda x: x
+                    init_method=lambda x: x,
+                    use_cpu_initialization=config.use_cpu_initialization
                 ),
                 "rotary_emb": RotaryPositionEmbedding(
                     self.config.hidden_size // self.config.num_attention_heads)
@@ -115,21 +119,24 @@ class LlamaLayer(nn.Module):
                 config.intermediate_size,
                 bias=False,
                 gather_output=False,
-                init_method=lambda x: x
+                init_method=lambda x: x,
+                use_cpu_initialization=config.use_cpu_initialization
             ),
             "up_proj": ColumnParallelLinearWithoutBias(
                 config.hidden_size,
                 config.intermediate_size,
                 bias=False,
                 gather_output=False,
-                init_method=lambda x: x
+                init_method=lambda x: x,
+                use_cpu_initialization=config.use_cpu_initialization
             ),
             "down_proj": RowParallelLinearWithoutBias(
                 config.intermediate_size,
                 config.hidden_size,
                 bias=False,
                 input_is_parallel=True,
-                init_method=lambda x: x
+                init_method=lambda x: x,
+                use_cpu_initialization=config.use_cpu_initialization
             )
         })
         self.post_attention_layernorm = FusedRMSNorm(
@@ -219,7 +226,8 @@ class LlamaForCausalLM(CollieModelForCausalLM):
         super().__init__(config)
         self.embed_tokens = tensor_parallel.VocabParallelEmbedding(
             self.config.vocab_size,
-            self.config.hidden_size
+            self.config.hidden_size,
+            use_cpu_initialization=config.use_cpu_initialization
         )
         self.layers = nn.Sequential(
             *[LlamaLayer(self.config) for _ in range(self.config.num_hidden_layers)])
@@ -230,7 +238,8 @@ class LlamaForCausalLM(CollieModelForCausalLM):
         self.lm_head = ColumnParallelLMHead(
             self.config.hidden_size,
             self.config.vocab_size,
-            bias=False
+            bias=False,
+            use_cpu_initialization=config.use_cpu_initialization
         )
         # GenerationMixin 需要的额外参数
         self.config = PretrainedConfig(is_decoder=True)

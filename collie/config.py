@@ -89,6 +89,12 @@ class CollieConfig:
             "help": "Dropout probability."
         }
     )
+    use_cpu_initialization: bool = field(
+        default=True,
+        metadata={
+            "help": "Whether to initialize model on CPU. Set False to initialize model directly on GPU."
+        }
+    )
     ds_config: Union[str, dict] = field(
         default="",
         metadata={
@@ -115,7 +121,6 @@ class CollieConfig:
         for key in list(kwargs.keys()):
             if key in cls.__annotations__.keys():
                 setattr(cfg, key, kwargs.pop(key))
-
         cfg.model_config = AutoConfig.from_pretrained(name_or_path, **kwargs)
 
         return cfg

@@ -154,13 +154,13 @@ def patch_pipeline_engine(config):
         # batch tuple, batch_size is micro_batch * accumulate_steps
         batch = _split_batch(batch, self.train_micro_batch_size_per_gpu(),
                              self.gradient_accumulation_steps())
-        data_iter = cycle(batch)
+        data_iter = iter(batch)
         return raw_train_batch(self, data_iter)
     
     def eval_batch(self, batch):
         batch = _split_batch(batch, config.eval_batch_size,
                              self.gradient_accumulation_steps())
-        data_iter = cycle(batch)
+        data_iter = iter(batch)
         logits = raw_eval_batch(self, data_iter, return_logits=False,
                                     compute_loss=False, reduce_output=None)
         # logits: list
