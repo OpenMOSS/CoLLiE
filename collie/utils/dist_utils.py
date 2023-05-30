@@ -16,6 +16,7 @@ from megatron.core import parallel_state, tensor_parallel
 from transformers.deepspeed import HfDeepSpeedConfig
 
 from typing import Union, Optional
+from itertools import cycle
 
 from .utils import classproperty, _split_batch
 from collie.config import load_config, CollieConfig
@@ -36,7 +37,6 @@ def is_zero3_enabled(config: CollieConfig):
     else:
         return False
 
-
 def setup_ds_engine(
         config: CollieConfig,
         model: torch.nn.Module,
@@ -47,6 +47,7 @@ def setup_ds_engine(
         from collie.models import CollieModelForCausalLM
         from collie.module import PipelineModel
         assert isinstance(model, CollieModelForCausalLM) or isinstance(model, PipelineModel), "Currently pipeline or tensor parallelism only supports Collie models."
+    model = model.cpu()
     engine, optimizer, _, lr_scheduler = deepspeed.initialize(
         model=model,
         optimizer=optimizer,
@@ -85,7 +86,7 @@ def setup_distribution(config) -> None:
         master_port = os.environ.get("MASTER_PORT", "27001")
     elif "SLURM_PROCID" in os.environ.keys():
         # launch from slurm
-        if "SLURM_JOB_NODELIST" not in os.environ.keys():
+        if "SLURM_JOB_NODELIST" in os.environ.keys():
             node_list_str = os.environ["SLURM_JOB_NODELIST"]
             node_list = []
             result = re.search(r"\[(.*?)\]", node_list_str)
@@ -99,17 +100,17 @@ def setup_distribution(config) -> None:
                             list(map(lambda x: f"{x}", range(int(i.split("-")[0]), int(i.split("-")[1]) + 1))))
                         node_list.remove(i)
                 node_list = list(map(lambda x: re.sub(r"\[(.*?)\]", x, node_list_str), node_list))
-                node_list = sorted(node_list)
-                master_addr = node_list[0]
-                os.environ["MASTER_PORT"] = f"{master_addr}"
-                result = subprocess.run(["scontrol", "show", "node", master_addr], capture_output=True)
-                result = re.search(r"NodeAddr=(.*?)\s", result.stdout.decode())
-                if result:
-                    master_addr = result.groups(1)[0]
-                    os.environ["MASTER_PORT"] = f"{master_addr}"
+            node_list = sorted(node_list)
+            master_addr = node_list[0]
+            os.environ["MASTER_ADDR"] = f"{master_addr}"
+            result = subprocess.run(["scontrol", "show", "node", master_addr], capture_output=True)
+            result = re.search(r"NodeAddr=(.*?)\s", result.stdout.decode())
+            if result:
+                master_addr = result.groups(1)[0]
+                os.environ["MASTER_ADDR"] = f"{master_addr}"
         else:
             master_addr = "localhost"
-            os.environ["MASTER_PORT"] = f"{master_addr}"
+            os.environ["MASTER_ADDR"] = f"{master_addr}"
         if "MASTER_PORT" in os.environ.keys():
             master_port = os.environ["MASTER_PORT"]
         else:
@@ -153,13 +154,13 @@ def patch_pipeline_engine(config):
         # batch tuple, batch_size is micro_batch * accumulate_steps
         batch = _split_batch(batch, self.train_micro_batch_size_per_gpu(),
                              self.gradient_accumulation_steps())
-        data_iter = iter(batch)
+        data_iter = cycle(batch)
         return raw_train_batch(self, data_iter)
     
     def eval_batch(self, batch):
         batch = _split_batch(batch, config.eval_batch_size,
                              self.gradient_accumulation_steps())
-        data_iter = iter(batch)
+        data_iter = cycle(batch)
         logits = raw_eval_batch(self, data_iter, return_logits=False,
                                     compute_loss=False, reduce_output=None)
         # logits: list

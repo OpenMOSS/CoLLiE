@@ -118,3 +118,15 @@ def _split_batch(batch, micro_batch_size, micro_batch_num):
         batch_split += ((input_split, label_split), )
 
     return batch_split
+
+class Dict(dict):
+    __setattr__ = dict.__setitem__
+    __getattr__ = dict.__getitem__
+
+def dictToObj(dictObj):
+    if not isinstance(dictObj, dict):
+        return dictObj
+    d = Dict()
+    for k, v in dictObj.items():
+        d[k] = dictToObj(v)
+    return d

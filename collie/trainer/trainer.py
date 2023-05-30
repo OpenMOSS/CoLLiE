@@ -1,5 +1,6 @@
 import os
 import json
+import logging
 import glob
 from typing import Optional, Callable, Union, Tuple, Iterable, Any, Dict, Sequence
 from collections import OrderedDict
@@ -11,6 +12,7 @@ import deepspeed
 import torch.distributed as dist
 from torch.utils.data import DistributedSampler
 from torch.optim.lr_scheduler import _LRScheduler
+import deepspeed
 from deepspeed.accelerator import get_accelerator
 from deepspeed.runtime.constants import ROUTE_EVAL
 from deepspeed.runtime.pipe.engine import PipelineEngine
@@ -23,7 +25,7 @@ from collie.module import PipelineGenerationMixin, GPTLMLoss, PipelineModel
 from collie.driver.io.file import FileIODriver
 from collie.driver.io.petrel import PetrelIODriver
 from collie.log import logger
-from collie.utils import progress, env, setup_ds_engine, BaseServer, GenerationStreamer, _MetricsWrapper, is_zero3_enabled
+from collie.utils import progress, env, setup_ds_engine, BaseServer, GenerationStreamer, _MetricsWrapper, is_zero3_enabled, BaseMonitor, MultiMonitors
 from collie.utils.rich_progress import f_rich_progress
 from collie.optim import InplaceSGD
 from collie.metrics import BaseMetric
@@ -56,6 +58,7 @@ class Trainer:
                  eval_dataset_collate_fn: Optional[Callable] = None,
                  eval_config: GenerationConfig = GenerationConfig(),
                  generation_server: Optional[BaseServer] = None,
+                 monitors: Sequence[BaseMonitor] = [],
                  metrics: Optional[Dict] = None) -> None:
         if isinstance(optimizer, InplaceSGD):
             if config.pp_size > 1:
@@ -82,6 +85,7 @@ class Trainer:
         # self.init_metrics()
         get_accelerator().empty_cache()
         self.generation_server = generation_server
+        self.monitor = MultiMonitors(self, monitors)
         if self.generation_server is not None and dist.get_rank() == 0:
             self.generation_server.start_provider()
         self.checkpoint_file = "collie_dp{}_pp{}_tp{}.pt".format(
@@ -231,7 +235,12 @@ class Trainer:
             )
         else:
             self.eval_dataloader = None
-              
+
+        # set logger level
+        deepspeed_logging_level = logging.ERROR if 'logging_level' not in self.config.ds_config \
+            else self.config.ds_config['logging_level']
+        deepspeed.utils.logging.logger.setLevel(deepspeed_logging_level)
+        
     def train(self, dataloader: Optional[Iterable] = None):
         train_dataloader = self.train_dataloader
         loss = 0.0
@@ -251,7 +260,8 @@ class Trainer:
                         self.generation_server_handler()
                         self.engine.train()
                         get_accelerator().empty_cache()
-                        loss = self.train_fn(self, batch, self.epoch_idx * len(self.train_dataloader) + self.batch_idx)
+                        with self.monitor:
+                            loss = self.train_fn(self, batch, self.epoch_idx * len(self.train_dataloader) + self.batch_idx)
                         tqbar_batch.set_postfix(
                             loss=round(loss, 4), 
                             batch=f"{self.batch_idx + 1}/{len(self.train_dataloader)}")
@@ -307,7 +317,7 @@ class Trainer:
     @staticmethod
     def train_fn(trainer, batch: Tuple, global_step) -> float:
         if trainer.config.pp_size > 1:
-            loss = trainer.engine.train_batch(data_iter=cycle([batch]))
+            loss = trainer.engine.train_batch(batch)
         else:
             input_ids, labels = batch
             logits = trainer.engine(input_ids=input_ids.cuda()).logits
