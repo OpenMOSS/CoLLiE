@@ -15,7 +15,6 @@ class _MetricsWrapper:
             if not isinstance(metrics, Dict):
                 raise TypeError('Parameter `metrics` can only be `Dict` type.')
             for metric_name, metric in metrics.items():
-                metric.construct(self)
                 if isinstance(metric, BaseMetric):
                     metric.construct(trainer)
                 else:
@@ -32,8 +31,10 @@ class _MetricsWrapper:
                     format(type(result)))
             # gather 输入
             if metric.gather_result:
-                result = metric.gather(result)
-            metric.update(result)
+                gather_out = metric.gather(result)
+            else:
+                gather_out = result
+            metric.update(gather_out)
 
     def reset(self):
         """将 Metric 中的状态重新设置。
