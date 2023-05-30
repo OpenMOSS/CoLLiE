@@ -59,7 +59,7 @@ def train_collate_fn(batch, max_length=512, tokenizer=None):
         label_ids = label_ids_list[i]
         input_ids_tensor[i, -len(input_ids):] = torch.LongTensor(input_ids)
         label_ids_tensor[i, -len(label_ids):] = torch.LongTensor(label_ids)
-    return (input_ids_tensor, label_ids_tensor)
+    return (label_ids_tensor, label_ids_tensor)
 
 def eval_collate_fn(batch, max_length=512, tokenizer=None):
     input_ids_list = []
