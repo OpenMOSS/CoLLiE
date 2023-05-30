@@ -31,12 +31,3 @@ class AlpacaDecodeMetric(BaseMetric):
 
     def get_metric(self):
         return self.sentences
-        # filename = "generate_result_epoch{}_step{}_rank{}".format(
-        #     train_meta["epoch_idx"], train_meta["batch_idx"], env.rank
-        # )
-        # if not os.path.exists(self.save_path):
-        #     os.makedirs(self.save_path, exist_ok=True)
-        # with open(os.path.join(self.save_path, filename), "w") as fp:
-        #     for sentence in self.sentences:
-        #         fp.write(sentence + "\n-------------------------------\n")
-        # self.sentences = []
