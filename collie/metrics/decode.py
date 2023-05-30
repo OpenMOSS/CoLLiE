@@ -1,6 +1,7 @@
 from typing import Any, Dict
 from collie.metrics.base import BaseMetric
 from collie.utils import env
+from collie.log.print import print
 import torch
 
 class DecodeMetric(BaseMetric):
@@ -9,7 +10,7 @@ class DecodeMetric(BaseMetric):
                  verbose: bool = True,
                  save_to_file: bool = False,
                  save_path: str = None,
-                 gather_result: bool = False) -> None:
+                 gather_result: bool = True) -> None:
         super().__init__(gather_result)
         self.verbose = verbose
         self.save_to_file = save_to_file
@@ -29,18 +30,19 @@ class DecodeMetric(BaseMetric):
         for i in range(len(input_ids)):
             if isinstance(input_ids[i], torch.Tensor):
                 if input_ids[i].ndim == 2:
-                    input_ids[i] = list(map(lambda x: x.detach().cpu().tolist(), [*input_ids[i]]))
-                    decode_list.extend(input_ids[i])
+                    decode_list.extend(list(map(lambda x: x.detach().cpu().tolist(), [*input_ids[i]])))
                 else:
-                    input_ids[i] = input_ids[i].detach().cpu().tolist()
-                    decode_list.append(input_ids[i])
+                    decode_list.append(input_ids[i].detach().cpu().tolist())
             else:
                 decode_list.append(input_ids[i])
         sentences = []
         for ids in decode_list:
             sentences.append(self.tokenizer.decode(ids))
-        if self.verbose:
-            print(sentences)
-        if self.save_to_file and env.local_rank == 0:
-            with open(self.save_path, 'a+') as f:
-                f.write('\n'.join(sentences) + '\n')
+        if env.pp_rank == env.pp_size - 1 \
+            and env.tp_rank == env.tp_size - 1 \
+                and (env.dp_rank == 0 or self.gather_result):
+                    if self.verbose:
+                        print(sentences)
+                    if self.save_to_file:
+                        with open(self.save_path, 'a+') as f:
+                            f.write('\n'.join(sentences) + '\n')

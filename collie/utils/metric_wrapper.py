@@ -30,10 +30,12 @@ class _MetricsWrapper:
                 raise RuntimeError(
                     'The output of your model is of type:`{}`, please '
                     'either directly return a dict from your model'.
-                    format(type(batch)))
+                    format(type(result)))
             # gather 输入
             if metric.gather_result:
                 gather_out = metric.gather(result)
+            else:
+                gather_out = result
             metric.update(gather_out)
 
     def reset(self):

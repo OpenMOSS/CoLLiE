@@ -293,9 +293,7 @@ class Trainer:
                 get_accelerator().empty_cache()
                 if isinstance(self.engine, PipelineEngine):
                     self.engine.total_loss = total_loss
-                if (self.config.pp_size == 1 or env.pp_rank == self.config.pp_size - 1) \
-                    and (self.config.tp_size == 1 or env.tp_rank == self.config.tp_size - 1):
-                    self.metric_wrapper.update(result)
+                self.metric_wrapper.update(result)
                     # for metric in self.metrics:
                     #     if metric.gather_result:
                     #         result = metric.gather(result)
