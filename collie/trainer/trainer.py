@@ -1,11 +1,13 @@
 import os
 import json
+import logging
 from typing import Optional, Callable, Union, Tuple, Iterable, Any, Dict, Sequence
 
 import torch
 import torch.distributed as dist
 from torch.utils.data import DistributedSampler
 from torch.optim.lr_scheduler import _LRScheduler
+import deepspeed
 from deepspeed.accelerator import get_accelerator
 from deepspeed.runtime.constants import ROUTE_EVAL
 from deepspeed.runtime.pipe.engine import PipelineEngine
@@ -197,6 +199,11 @@ class Trainer:
             )
         else:
             self.eval_dataloader = None
+
+        # set logger level
+        deepspeed_logging_level = logging.ERROR if 'logging_level' not in self.config.ds_config \
+            else self.config.ds_config['logging_level']
+        deepspeed.utils.logging.logger.setLevel(deepspeed_logging_level)
         
     def init_metrics(self):
         for metric in self.metrics:
