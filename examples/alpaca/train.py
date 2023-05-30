@@ -75,17 +75,8 @@ config.ds_config = {
     }
 }
 
-def eval_fn(trainer, batch, train_meta):
+def eval_fn(trainer, batch):
     input_ids, labels = batch
-    if env.pp_size > 1:
-        logits = trainer.engine.eval_batch(batch)
-    else:
-        logits = trainer.engine(input_ids=input_ids.cuda()).logits
-    # shift_preds = logits[...,:-1,:].argmax(dim=-1)
-    # shift_labels = labels[...,1:].to(logits.device)
-    # right = (shift_preds == shift_labels).masked_fill(shift_labels.eq(-100), 0).sum()
-    # total = (shift_labels != -100).sum()
-    # generate
     if env.pp_size > 1:
         generation_model = PipelineGenerationMixin(
             engine=trainer.engine
@@ -97,16 +88,8 @@ def eval_fn(trainer, batch, train_meta):
         attention_mask=torch.ones_like(input_ids).cuda(),
         generation_config=trainer.eval_config
     )
-    print('[INFO]gen_res的大小是', gen_res.shape)
-    if len(gen_res) >= 128:
-        gen_res = gen_res[:128]
-    else:
-        gen_res = torch.nn.functional.pad(gen_res, (128 - len(gen_res), 0), 'constant', 0)
     return {
-        # "total": total,
-        # "right": right,
         "generate": gen_res,
-        "train_meta": train_meta
     }
     
     

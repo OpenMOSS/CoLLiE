@@ -42,12 +42,14 @@ class progress:
                  upgrade_period=0.1, disable=False, post_desc: str = ""):
         self.bar = f_rich_progress
         self.bar.set_disable(disable)
+        self.sequence = sequence
+
         self.total = float(length_hint(sequence)) if total is None else total
+        self.completed = completed
         self.task_id = self.bar.add_task(
             desc, upgrade_period=upgrade_period, completed=completed,
-            post_desc=post_desc, visible=not disable, total=self.total
+            post_desc=post_desc, visible=not disable, total=total
         )
-        self.sequence = sequence
 
     def __iter__(self):
         yield from self.bar.track(
@@ -69,13 +71,16 @@ class progress:
         post_desc = ", ".join([f"{k}: {v}" for k, v in kwargs.items()])
         self.set_post_desc(post_desc)
 
+    def set_description(self, desc):
+        self.update(desc=desc)
+
     def update(
         self, desc: Optional[str] = None, total: Optional[float] = None,
         completed: Optional[float] = None, advance: Optional[float] = None,
         visible: Optional[bool] = None, refresh: bool = False,
         post_desc: Optional[str] = None,
     ) -> None:
-        if post_desc is not None:
+        if post_desc is None:
             self.bar.update(self.task_id, total=total, completed=completed,
                         advance=advance, description=desc, visible=visible,
                         refresh=refresh)

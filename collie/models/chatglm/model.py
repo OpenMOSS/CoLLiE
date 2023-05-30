@@ -3,9 +3,10 @@ import gc
 import json
 
 import torch
-from torch import nn
+from torch import Tensor, nn
 import torch.nn.functional as F
 import torch.distributed as dist
+from torch.nn.modules.module import Module
 import torch.utils.checkpoint
 
 from deepspeed.pipe import LayerSpec, TiedLayerSpec
@@ -133,7 +134,7 @@ def apply_rotary_pos_emb_index(q, k, cos, sin, position_id):
 
 
 class ChatGLMLayer(nn.Module):
-    def __init__(self, config: CollieConfig) -> None:
+    def __init__(self, config: CollieConfig, layer_id: int) -> None:
         super().__init__()
         self.config = config
         self.attention = nn.ModuleDict(
@@ -181,13 +182,24 @@ class ChatGLMLayer(nn.Module):
             eps=config.layernorm_epsilon
         )
         self.alpha = (2 * self.config.num_layers) ** 0.5
+        self.layer_id = layer_id
         # 务必保持变量名一致
         self.use_cache = True
         self.past_key_values = None
         self.hidden_states = None
         
+    def get_masks(self, input_ids, device):
+        batch_size, seq_length = input_ids.shape
+        context_lengths = [seq.tolist().index(self.config.bos_token_id) for seq in input_ids]
+        attention_mask = torch.full((batch_size, seq_length, seq_length), float("-inf"))
+        attention_mask = torch.triu(attention_mask, diagonal=1).to(device)
+        for i, context_length in enumerate(context_lengths):
+            attention_mask[i, :, :context_length] = 0.
+        attention_mask.unsqueeze_(1)
+        return attention_mask
+        
 
-    def _forward(self, hidden_states: torch.Tensor, position_ids: torch.Tensor):
+    def _forward(self, input_ids: torch.Tensor, hidden_states: torch.Tensor, position_ids: torch.Tensor):
         if not self.training:
             self.hidden_states = hidden_states
         else:
@@ -205,14 +217,14 @@ class ChatGLMLayer(nn.Module):
         else:
             self.past_key_values = None
             start_pos = 0
-        # import pdb; pdb.set_trace()
+        
         query1, query2 = query.chunk(2, dim=-1)
         key1, key2 = key.chunk(2, dim=-1)
-        cos, sin = self.attention["rotary_emb"](query1, seq_len=seq_len)
-        position_ids, block_position_ids = position_ids[:, 0, :].transpose(0, 1).contiguous(), \
+        cos, sin = self.attention["rotary_emb"](query1, seq_len=position_ids.max() + 1)
+        _position_ids, _block_position_ids = position_ids[:, 0, :].transpose(0, 1).contiguous(), \
             position_ids[:, 1, :].transpose(0, 1).contiguous()
-        query1, key1 = apply_rotary_pos_emb_index(query1, key1, cos, sin, position_ids)
-        query2, key2 = apply_rotary_pos_emb_index(query2, key2, cos, sin, block_position_ids)
+        query1, key1 = apply_rotary_pos_emb_index(query1, key1, cos, sin, _position_ids)
+        query2, key2 = apply_rotary_pos_emb_index(query2, key2, cos, sin, _block_position_ids)
         query = torch.concat([query1, query2], dim=(query1.ndim - 1))
         key = torch.concat([key1, key2], dim=(key1.ndim - 1))
         if not self.training and self.use_cache:
@@ -221,25 +233,26 @@ class ChatGLMLayer(nn.Module):
                 key = torch.cat([self.past_key_values[0], key], dim=1)
                 value = torch.cat([self.past_key_values[1], value], dim=1)
             self.past_key_values = [key, value]
-
-        if self.config.use_flash:
+        # if self.config.use_flash:
+        if False: # TODO: flash attention not work for chatglm
             assert FlashAttention is not None, \
                 "Detected flash_attn is not installed. See https://github.com/HazyResearch/flash-attention"
             qkv = torch.stack([query, key, value], dim=2)
+            qkv = qkv.permute(1, 0, 2, 3, 4).contiguous()
             output, _ = FlashAttention()(qkv, causal=True)
             output = rearrange(output, "b n h d -> b n (h d)")
             output = F.dropout(output, p=self.config.dropout,
                                training=self.training)
         else:
-            query, key, value = query.permute(0, 2, 1, 3), key.permute(
-                0, 2, 1, 3), value.permute(0, 2, 1, 3)
+            query = query / (math.sqrt(self.config.hidden_size // self.config.num_attention_heads) * float(self.layer_id + 1))
+            query, key, value = query.permute(1, 2, 0, 3), key.permute(
+                1, 2, 0, 3), value.permute(1, 2, 0, 3)
             attention_score = torch.matmul(query, key.transpose(
-                2, 3)) / math.sqrt(head_dim)
+                2, 3))
             if seq_len + start_pos > 1:
-                mask = torch.full((1, 1, seq_len + start_pos, seq_len + start_pos), float("-inf"))
-                mask = torch.triu(mask, diagonal=1).to(
-                    attention_score.device)
+                mask = self.get_masks(input_ids, hidden_states.device)
                 attention_score = attention_score + mask
+            attention_score = attention_score * float(self.layer_id + 1)
             attention_score = F.softmax(
                 attention_score, dim=-1).type_as(value)
             output = torch.matmul(attention_score, value)
@@ -247,12 +260,12 @@ class ChatGLMLayer(nn.Module):
                 batch_size, seq_len + start_pos, -1)
             output = F.dropout(output, p=self.config.dropout,
                                training=self.training)
+        # import pdb; pdb.set_trace()
         output = output[:, start_pos:, :]
-        hidden_states = hidden_states * self.alpha + self.attention["dense"](output)
+        hidden_states = hidden_states.permute(1, 0, 2) * self.alpha + self.attention["dense"](output)
         hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = hidden_states * self.alpha + F.dropout(self.mlp["dense_4h_to_h"](self.mlp["dense_h_to_4h"](hidden_states)), p=self.config.dropout, training=self.training)
-        hidden_states = hidden_states.permute(1, 0, 2).contiguous() # [B, N, H]
-        return hidden_states, position_ids
+        hidden_states = hidden_states * self.alpha + F.dropout(self.mlp["dense_4h_to_h"](F.gelu(self.mlp["dense_h_to_4h"](hidden_states))), p=self.config.dropout, training=self.training)
+        return input_ids, hidden_states, position_ids
 
     def forward(self, inputs: tuple):
         if self.config.checkpointing and self.training:
@@ -272,15 +285,13 @@ class ChatGLMForCausalLM(CollieModelForCausalLM):
     def __init__(self, config: CollieConfig) -> None:
         super().__init__(config)
         self.word_embeddings = self._get_word_embedding_with_position_ids_cls(config)(
-            tensor_parallel.VocabParallelEmbedding,
             self.config.vocab_size,
             self.config.hidden_size,
             use_cpu_initialization=config.use_cpu_initialization
         )
         self.layers = nn.Sequential(
-            *[ChatGLMLayer(self.config) for _ in range(self.config.num_layers)])
+            *[ChatGLMLayer(self.config, i) for i in range(self.config.num_layers)])
         self.final_layernorm = self._get_final_norm_cls_without_position_ids_cls()(
-            nn.LayerNorm,
             self.config.hidden_size,
             eps=self.config.layernorm_epsilon
         )
@@ -366,27 +377,19 @@ class ChatGLMForCausalLM(CollieModelForCausalLM):
         
     @classmethod
     def _get_word_embedding_with_position_ids_cls(cls, config):
-        class WordEmbeddingWithPositionIds(torch.nn.Module):
-            def __init__(self, word_embeddings_cls: type, *args, **kwargs) -> None:
-                super().__init__()
-                self.word_embeddings = word_embeddings_cls(*args, **kwargs)
-
-            def forward(self, input_ids: torch.Tensor):
-                return self.word_embeddings(input_ids), cls._get_position_ids(config, input_ids)
-        return WordEmbeddingWithPositionIds
+        class WordEmbeddingWithPositionIdsAndInputIds(tensor_parallel.VocabParallelEmbedding):
+            def forward(self, input_):
+                return input_, super().forward(input_), cls._get_position_ids(config, input_)
+        return WordEmbeddingWithPositionIdsAndInputIds
     
     @classmethod
     def _get_final_norm_cls_without_position_ids_cls(cls):
-        class FinalNormWithoutPositionIds(torch.nn.Module):
-            def __init__(self, norm_cls: type, *args, **kwargs) -> None:
-                super().__init__()
-                self.final_layernorm = norm_cls(*args, **kwargs)
-
-            def forward(self, inputs: tuple):
-                hidden_states, _ = inputs
-                return self.final_layernorm(hidden_states)
+        class FinalNormWithoutPositionIds(nn.LayerNorm):
+            def forward(self, inputs: tuple) -> Tensor:
+                input_ids, hidden_states, _ = inputs
+                return super().forward(hidden_states)
         return FinalNormWithoutPositionIds
-
+    
     @classmethod
     def pipeline_layers(cls, config: CollieConfig):
         """
@@ -400,13 +403,11 @@ class ChatGLMForCausalLM(CollieModelForCausalLM):
             TiedLayerSpec(
             "word_embeddings",
             cls._get_word_embedding_with_position_ids_cls(config),
-            tensor_parallel.VocabParallelEmbedding,
             config.vocab_size,
             config.hidden_size),
-            *[LayerSpec(ChatGLMLayer, config)
-              for _ in range(config.num_layers)],
+            *[LayerSpec(ChatGLMLayer, config, i)
+              for i in range(config.num_layers)],
             LayerSpec(cls._get_final_norm_cls_without_position_ids_cls(),
-                nn.LayerNorm,
                 config.hidden_size,
                 eps=config.layernorm_epsilon),
             TiedLayerSpec(
@@ -474,11 +475,12 @@ class ChatGLMForCausalLM(CollieModelForCausalLM):
                     weights = list(set(weights))
                     # 继续筛选，如果有 0 层，那么就要加载 embedding；如果有最后一层，那么就要加载 lm_head；如果有倒数第二层，那么就要加载 norm
                     if 0 in layers:
-                        weights.append(weight_map["model.word_embeddings.weight"])
+                        weights.append(weight_map["transformer.word_embeddings.weight"])
                     if max(parts) - 1 in layers:
                         weights.append(weight_map["lm_head.weight"])
                     if max(parts) - 2 in layers:
-                        weights.append(weight_map["model.norm.weight"])
+                        weights.append(weight_map["transformer.final_layernorm.weight"])
+                        weights.append(weight_map["transformer.final_layernorm.bias"])
                 else:
                     # 如果没有 pytorch_model.bin.index.json 文件的话，那么就加载所有的权重
                     weights = [weight for weight in IODriver.list(path) if weight.endswith(".bin")]
@@ -486,12 +488,6 @@ class ChatGLMForCausalLM(CollieModelForCausalLM):
                     for weight in pbar:
                         part_state_dict = IODriver.load(os.path.join(path, weight), mode="rb")
                         for key in list(part_state_dict.keys()):
-                            if "word_embeddings" in key:
-                                part_state_dict[key.replace("word_embeddings", "word_embeddings.word_embeddings")] = part_state_dict.pop(key)
-                                key = key.replace("word_embeddings", "word_embeddings.word_embeddings")
-                            if "final_layernorm" in key:
-                                part_state_dict[key.replace("final_layernorm", "final_layernorm.final_layernorm")] = part_state_dict.pop(key)
-                                key = key.replace("final_layernorm", "final_layernorm.final_layernorm")
                             part_state_dict[key.replace("transformer.", "")] = part_state_dict.pop(key)
                         state_dict.update(part_state_dict)
                         del part_state_dict
@@ -511,9 +507,14 @@ class ChatGLMForCausalLM(CollieModelForCausalLM):
                                 state_dict["tied_modules.word_embeddings.weight"] = state_dict.pop(key)
                             else:
                                 state_dict.pop(key)
-                        if key == "norm.weight":
+                        if key == "final_layernorm.weight":
                             if max(parts) - 2 in layers:
                                 state_dict[f"{max(parts) - 2}.weight"] = state_dict.pop(key)
+                            else:
+                                state_dict.pop(key)
+                        if key == "final_layernorm.bias":
+                            if max(parts) - 2 in layers:
+                                state_dict[f"{max(parts) - 2}.bias"] = state_dict.pop(key)
                             else:
                                 state_dict.pop(key)
                         if key.endswith("lm_head.weight"):
@@ -600,11 +601,6 @@ class ChatGLMForCausalLM(CollieModelForCausalLM):
                 if env.dp_rank == 0 \
                     and (env.pp_rank == rank
                          or not process_exclusion):
-                    for key in sorted(list(state_dict.keys())):
-                        if "word_embeddings.word_embeddings" in key:
-                            state_dict[key.replace("word_embeddings.word_embeddings", "word_embeddings")] = state_dict.pop(key)
-                        if "final_layernorm.final_layernorm" in key:
-                            state_dict[key.replace("final_layernorm.final_layernorm", "final_layernorm")] = state_dict.pop(key)
                     for key in sorted(list(state_dict.keys())):
                         device = state_dict[key].device
                         tensor_list = None

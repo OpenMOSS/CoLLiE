@@ -11,55 +11,40 @@ class SFTAccMetric(BaseMetric):
         self.right = 0
         self.total = 0
 
-    def update(self, result):
-        """
-
-        :param result: list. Gathered result of eval_fn. Contains `right`,
-            `total`, `generate` and `train_meta` in this case.
-        """
-        res = result
-        if not isinstance(res, list):
-            res = [result]
-        for r in res:
-            self.right += r["right"].cpu().item()
-            self.total += r["total"].cpu().item()
-        with open(f"rank_{env.rank}", "w") as fp:
-            fp.write(f"{self.right}, {self.total}, {env.rank}, {len(result)}")
-
-    def get_metric(self, train_meta):
-        acc = self.right / self.total
-        # logger.info("Epoch {} Batch {} Accuracy:{}".format(
-        #     train_meta['epoch_idx'], train_meta['batch_idx'], acc
-        # ))
-        print(f"\n------------------\n"
-              "Epoch {} Batch {} Accuracy:{}"
-              "\n------------------\n".format(
-             train_meta['epoch_idx'], train_meta['batch_idx'], acc
-         ))
+    def reset(self):
         self.right = 0
         self.total = 0
 
+    def update(self, result):
+        """
+
+        :param result: dict. Gathered result of eval_fn. Contains `right`,
+            `total` in this case.
+        """
+        self.right += sum(result["right"]).cpu().item()
+        self.total += sum(result["total"]).cpu().item()
+
+    def get_metric(self):
+        acc = self.right / self.total
+        return acc
+
 
 class SFTDecodeMetric(BaseMetric):
-    def __init__(self, tokenizer, save_path, gather_result=True):
+    def __init__(self, tokenizer, gather_result=True):
         super(SFTDecodeMetric, self).__init__(gather_result=gather_result)
         self.tokenizer = tokenizer
-        self.save_path = save_path
+        self.sentences = []
+
+    def reset(self):
         self.sentences = []
 
     def update(self, result):
         """
 
         :param result: list. Gathered result of eval_fn. Contains `right`,
-            `total`, `generate` and `train_meta` in this case.
+            `total` in this case.
         """
-        if isinstance(result, list):
-            # TODO
-            # metric 的 gather 功能也不完善导致多个 metric 下这里的 result 是
-            # list of list; 暂时规避掉这个问题
-            input_ids = [r[0]['generate'] for r in result]
-        else:
-            input_ids = [result['generate']]
+        input_ids = [r for r in result['generate']]
         decode_list = []
         for i in range(len(input_ids)):
             if isinstance(input_ids[i], torch.Tensor):
@@ -74,13 +59,5 @@ class SFTDecodeMetric(BaseMetric):
         for ids in decode_list:
             self.sentences.append(self.tokenizer.decode(ids))
 
-    def get_metric(self, train_meta):
-        filename = "generate_result_epoch{}_step{}_rank{}".format(
-            train_meta["epoch_idx"], train_meta["batch_idx"], env.rank
-        )
-        if not os.path.exists(self.save_path):
-            os.makedirs(self.save_path, exist_ok=True)
-        with open(os.path.join(self.save_path, filename), "w") as fp:
-            for sentence in self.sentences:
-                fp.write(sentence + "\n-------------------------------\n")
-        self.sentences = []
+    def get_metric(self):
+        return {"decode": self.sentences}
