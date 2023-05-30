@@ -2,7 +2,6 @@ import os
 import json
 import torch
 from typing import Callable, Optional, List, Union
-from itertools import cycle
 
 from torch import nn
 from torch import distributed as dist

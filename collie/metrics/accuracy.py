@@ -37,7 +37,7 @@ def seq_len_to_mask(seq_len, max_len: Optional[int]=None):
     return mask
 
     
-class Accuracy(BaseMetric):
+class AccuracyMetric(BaseMetric):
 
     def __init__(self, gather_result: bool=False):
         super().__init__(gather_result=gather_result)
