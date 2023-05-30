@@ -15,7 +15,6 @@ class _MetricsWrapper:
             if not isinstance(metrics, Dict):
                 raise TypeError('Parameter `metrics` can only be `Dict` type.')
             for metric_name, metric in metrics.items():
-                metric.construct(self)
                 if isinstance(metric, BaseMetric):
                     metric.construct(trainer)
                 else:
