@@ -217,6 +217,7 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
         if past_key_values is not None:
             input_ids = input_ids[:, -1:]
         batch = (input_ids, input_ids)
+        print(input_ids.shape)
         if self.communicate_buffer_shape is None:
             self.communicate_buffer_shape = batch[0].shape
         else:
