@@ -1,7 +1,19 @@
+""" **CoLLie** 中的可复用模块
+"""
+__all__ = [
+    'ColumnParallelLinearWithoutBias',
+    'ColumnParallelLMHead',
+    'RowParallelLinearWithoutBias',
+    'GPTLMLoss',
+    'PipelineModel',
+    'PipelineGenerationMixin',
+    'MultiParallelGrid'
+]
+
 import os
 import json
 import torch
-from typing import Callable, Optional, List, Union
+from typing import Optional, List, Sequence, Union, Tuple
 
 from torch import nn
 from torch import distributed as dist
@@ -16,6 +28,7 @@ from deepspeed.runtime.pipe.topology import (PipeModelDataParallelTopology,
 from deepspeed.runtime.engine import DeepSpeedEngine
 from deepspeed.runtime.activation_checkpointing import checkpointing
 from deepspeed.accelerator import get_accelerator
+from deepspeed.runtime.pipe.topology import ProcessTopology
 from transformers.generation.utils import GenerationConfig, GenerationMixin
 from transformers.modeling_utils import PretrainedConfig
 from transformers.modeling_outputs import CausalLMOutputWithPast
@@ -24,6 +37,9 @@ from collie.log import logger
 from collie.utils import env, broadcast_tensor
 
 class ColumnParallelLinearWithoutBias(ColumnParallelLinear):
+    """重写 `megatron` 提供的列并行全连接层以去掉结果中的 `bias`
+        并且在 `tp_size` 为 1 时返回普通的全连接层（支持 `peft` 中的 `lora` 方法替换全连接层）
+    """
     def forward(self, input_):
         return super().forward(input_)[0]
     
@@ -40,6 +56,8 @@ class ColumnParallelLinearWithoutBias(ColumnParallelLinear):
         return super().__new__(cls)
     
 class LinearWithHiddenStates(nn.Linear):
+    """重写 `torch.nn.Linear` 以支持在 `eval` 时保存隐藏状态（用于 `Pipeline` 模式中）
+    """
     def __init__(self, in_features: int, out_features: int, bias: bool = True, device=None, dtype=None) -> None:
         super().__init__(in_features, out_features, bias, device, dtype)
         self.hidden_states = None
@@ -52,6 +70,9 @@ class LinearWithHiddenStates(nn.Linear):
         return super().forward(input_)
     
 class ColumnParallelLMHead(ColumnParallelLinearWithoutBias):
+    """ 重写 `megatron` 提供的列并行全连接层以支持在 `eval` 时保存隐藏状态（用于 `Pipeline` 模式中）、
+        并且在 `tp_size` 为 1 时返回普通的全连接层（支持 `peft` 中的 `lora` 方法替换全连接层）
+    """
     def __init__(self, *args, **kwargs):
         super(ColumnParallelLMHead, self).__init__(*args, **kwargs)
         self.hidden_states = None
@@ -76,6 +97,9 @@ class ColumnParallelLMHead(ColumnParallelLinearWithoutBias):
         return super().__new__(cls)
 
 class RowParallelLinearWithoutBias(RowParallelLinear):
+    """重写 `megatron` 提供的行并行全连接层以去掉结果中的 `bias`
+        并且在 `tp_size` 为 1 时返回普通的全连接层（支持 `peft` 中的 `lora` 方法替换全连接层）
+    """
     def forward(self, input_):
         return super().forward(input_)[0]
     
@@ -92,11 +116,20 @@ class RowParallelLinearWithoutBias(RowParallelLinear):
         return super().__new__(cls)
 
 class GPTLMLoss(torch.nn.Module):
+    """ 最基本的 GPT 语言模型的损失函数
+    :param ignore_index: 忽略的标签的 `index`，默认为 `0`
+    """
     def __init__(self, ignore_index=0):
         super().__init__()
         self.loss = torch.nn.CrossEntropyLoss(ignore_index=ignore_index)  # ignore <pad> when compute loss
 
-    def forward(self, logits, labels):
+    def forward(self, logits: torch.Tensor, labels: Union[torch.Tensor, Tuple[torch.Tensor]], *args):
+        """ 计算损失
+        :param logits: 模型的输出
+        :param labels: 真实标签
+        """
+        if isinstance(labels, Sequence):
+            labels = labels[0]
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous().to(logits.device)
         # Flatten the tokens
@@ -104,16 +137,28 @@ class GPTLMLoss(torch.nn.Module):
 
 
 class PipelineModel(PipelineModule):
+    """ 重写 `megatron` 提供的 `PipelineModule` 以支持 **CoLLie** 中的 `Trainer`
+    :param layers: 分层化的模型，为 `callable` 组成的 `list`
+    :param topology: 模型的拓扑结构
+    :param loss_fn: 损失函数
+    :param seed_layers: 是否对每一层使用不同的随机种子
+    :param seed_fn: 随机种子生成函数
+    :param base_seed: 随机种子的基数
+    :param partition_method: 模型分割方法
+    :param activation_checkpoint_interval: 激活检查点间隔
+    :param activation_checkpoint_func: 激活检查点函数
+    :param checkpointable_layers: 可检查点的层
+    """
     def __init__(self,
-                 layers,
-                 topology,
-                 loss_fn=None,
-                 seed_layers=False,
-                 seed_fn=None,
-                 base_seed=1234,
-                 partition_method='parameters',
-                 activation_checkpoint_interval=0,
-                 activation_checkpoint_func=checkpointing.checkpoint,
+                 layers: Sequence[callable],
+                 topology: ProcessTopology,
+                 loss_fn: callable=None,
+                 seed_layers: bool=False,
+                 seed_fn: callable=None,
+                 base_seed: int=1234,
+                 partition_method: str='parameters',
+                 activation_checkpoint_interval: int=0,
+                 activation_checkpoint_func: callable=checkpointing.checkpoint,
                  checkpointable_layers=None):
         """
         Rewrite PipelineModule to use megaton's process group
@@ -194,6 +239,9 @@ class PipelineModel(PipelineModule):
 
 
 class PipelineGenerationMixin(nn.Module, GenerationMixin):
+    """ 重写 `transformers` 提供的 `GenerationMixin` 以支持 **CoLLie** 中的流水线模型
+    :param engine: `DeepSpeedEngine` 实例，可由 :meth:`collie.utils.setup_ds_engine` 函数生成
+    """
     def __init__(self, engine: DeepSpeedEngine) -> None:
         super().__init__()
         self.config = PretrainedConfig(is_decoder=True)
@@ -207,6 +255,8 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
         self._find_layers()
 
     def generate(self, *args, **kwargs):
+        """开始迭代的生成过程
+        """
         self.engine.eval()
         res = super().generate(*args, **kwargs)
         self._clean_past_key_values()
@@ -214,6 +264,8 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
         return res
         
     def forward(self, input_ids: torch.Tensor, **kwargs) -> torch.Tensor:
+        """ 进行一次流水线模型的前向传播
+        """
         past_key_values=self._get_past_key_values()
         if past_key_values is not None:
             input_ids = input_ids[:, -1:]
@@ -240,6 +292,8 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
                                       attention_mask: Optional[torch.Tensor] = None,
                                       use_cache: bool = False,
                                       **kwargs):
+        """ 准备流水线模型的输入
+        """
         if use_cache:
             logger.warning("use_cache is not supported for pipeline generation. Setting use_cache to False")
             self.generation_config.use_cache = False
@@ -252,12 +306,18 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
         return {"input_ids": input_ids}
     
     def can_generate(self) -> bool:
+        """ 判断当前流水线模型是否可以进行生成
+        """
         return True
     
     def _find_layers(self):
+        """ 从流水线 `engine` 中找到所有的层
+        """
         self.layers = self.engine.module.forward_funcs
     
     def _get_past_key_values(self, attr_name: str="past_key_values"):
+        """ 从所有层中获取 `past_key_values`
+        """
         past_key_values = []
         for layer in self.layers:
             if hasattr(layer, attr_name) and getattr(layer, attr_name) is not None:
@@ -265,43 +325,54 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
         return past_key_values if len(past_key_values) > 1 else None
     
     def _clean_past_key_values(self, attr_name: str="past_key_values"):
+        """ 清除所有层中的 `past_key_values`
+        """
         for layer in self.layers:
             if hasattr(layer, attr_name):
                 object.__setattr__(layer, attr_name, None)
                 
     def _set_past_key_values(self, past_key_values: List[List[torch.Tensor]], attr_name: str="past_key_values"):
+        """ 设置所有层中的 `past_key_values`
+        """
         past_key_values = iter(past_key_values)
         for layer in self.layers:
             if hasattr(layer, attr_name):
                 object.__setattr__(layer, attr_name, next(past_key_values))
             
     def _get_hidden_states(self, attr_name: str="hidden_states"):
-        past_key_values = []
+        """ 从所有层中获取 `hidden_states`
+        """
+        all_hidden_states = []
         for layer in self.layers:
             if hasattr(layer, attr_name) and getattr(layer, attr_name) is not None:
-                past_key_values.append(getattr(layer, attr_name))
-        return past_key_values if len(past_key_values) > 1 else None
+                all_hidden_states.append(getattr(layer, attr_name))
+        return all_hidden_states if len(all_hidden_states) > 1 else None
     
     def _clean_hidden_states(self, attr_name: str="hidden_states"):
+        """ 清除所有层中的 `hidden_states`
+        """
         for layer in self.layers:
             if hasattr(layer, attr_name):
                 object.__setattr__(layer, attr_name, None)
                 
     def _set_hidden_states(self, hidden_states: List[torch.Tensor], attr_name: str="hidden_states"):
+        """ 设置所有层中的 `hidden_states`
+        """
         hidden_states = iter(hidden_states)
         for layer in self.layers:
             if hasattr(layer, attr_name):
                 object.__setattr__(layer, attr_name, next(hidden_states))   
                 
     def _set_use_cache(self, use_cache: bool=True, attr_name: str="use_cache"):
+        """ 设置所有层中的 `use_cache`
+        """ 
         for layer in self.layers:
             if hasattr(layer, attr_name):
                 object.__setattr__(layer, attr_name, use_cache)    
 
 
 class MultiParallelGrid(PipelineParallelGrid):
-    """
-    Rewrite to use process group from megatron.
+    """ 重写以支持 `megatron` 中的张量并行进程组
     """
     def __init__(self, topology):
         self.global_rank = dist.get_rank()

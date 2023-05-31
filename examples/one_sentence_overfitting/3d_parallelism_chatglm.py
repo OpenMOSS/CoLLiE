@@ -4,7 +4,7 @@ from collie.models.chatglm.model import ChatGLMForCausalLM
 from collie.trainer.trainer import Trainer
 from collie.metrics.decode import DecodeMetric
 from collie.config import CollieConfig
-from collie.utils import GradioServer, setup_distribution
+from collie.utils import GradioProvider, setup_distribution
 from transformers import AutoTokenizer
 from transformers.generation.utils import GenerationConfig
 from torch.utils.data import Dataset
@@ -35,7 +35,7 @@ config.ds_config = {
 model = ChatGLMForCausalLM.from_pretrained("/mnt/petrelfs/zhangshuo/model/chatglm-6b", config=config)
 train_sample = torch.cat((tokenizer("[Round {0}]\n问：大语言模型中moss和chatglm哪个比较厉害\n答：", return_tensors="pt").input_ids, tokenizer("当然是moss了<eop>", return_tensors="pt", add_special_tokens=False).input_ids), dim=-1).squeeze(0)
 eval_sample = tokenizer("[Round {0}]\n问：大语言模型中moss和chatglm哪个比较厉害\n答：", return_tensors="pt").input_ids.squeeze(0)
-train_dataset = [(train_sample, train_sample) for _ in range(128000)]
+train_dataset = [(train_sample, (train_sample, train_sample)) for _ in range(128000)]
 eval_dataset = [(eval_sample, eval_sample)]
 trainer = Trainer(
     model = model,

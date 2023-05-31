@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Sequence
 from operator import length_hint
 
 import torch
@@ -167,9 +167,13 @@ def _split_batch(batch, micro_batch_size, micro_batch_num):
     :return: tuple
     """
     # Assume batch first.
-    assert len(batch) == 2, len(batch)
-    inputs, label = batch
-    label_split = torch.split(label, micro_batch_size)
+    assert len(batch) >= 2, len(batch)
+    inputs = batch[0]
+    labels = batch[1]
+    if isinstance(labels, Sequence):
+        labels_split = [torch.split(label, micro_batch_size) for label in labels]
+    else:
+        labels_split = torch.split(labels, micro_batch_size)
     if isinstance(inputs, torch.Tensor):
         inputs_split = torch.split(inputs, micro_batch_size)
         assert len(inputs_split) == micro_batch_num, len(inputs_split)
@@ -185,8 +189,8 @@ def _split_batch(batch, micro_batch_size, micro_batch_num):
                 inputs_split[i] += (tensor_split[i], )
     
     batch_split = ()
-    for input_split, label_split in zip(inputs_split, label_split):
-        batch_split += ((input_split, label_split), )
+    for input_split, labels_split in zip(inputs_split, labels_split):
+        batch_split += ((input_split, labels_split), )
 
     return batch_split
 
