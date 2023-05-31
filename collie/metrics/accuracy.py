@@ -38,6 +38,11 @@ def seq_len_to_mask(seq_len, max_len: Optional[int]=None):
 
     
 class AccuracyMetric(BaseMetric):
+    """
+    计算准确率的 metric
+
+    :param gather_result: 在计算 metric 的时候是否自动将各个进程上的输入进行聚合后再输入到 update 之中。
+    """
 
     def __init__(self, gather_result: bool=False):
         super().__init__(gather_result=gather_result)
@@ -45,6 +50,9 @@ class AccuracyMetric(BaseMetric):
         self.total = 0
     
     def reset(self):
+        """
+        重置参数
+        """
         self.correct = 0
         self.total = 0
 
@@ -61,12 +69,13 @@ class AccuracyMetric(BaseMetric):
     def update(self, result:Dict):
         r"""
         :meth:`update` 函数将针对一个批次的预测结果做评价指标的累计。
-        :param result 类型为Dict且keys至少包含["pred", "target"]
-            pred: 预测的 tensor, tensor 的形状可以是 ``torch.Size([B,])`` 、``torch.Size([B, n_classes])`` 、
+
+        :param result 类型为 Dict 且 keys 至少包含["pred", "target"]
+            * pred: 预测的 tensor, tensor 的形状可以是 ``torch.Size([B,])`` 、``torch.Size([B, n_classes])`` 、
             ``torch.Size([B, max_len])`` 或 ``torch.Size([B, max_len, n_classes])``
-            target: 真实值的 tensor, tensor 的形状可以是 ``torch.Size([B,])`` 、``torch.Size([B, max_len])``
+            * target: 真实值的 tensor, tensor 的形状可以是 ``torch.Size([B,])`` 、``torch.Size([B, max_len])``
             或 ``torch.Size([B, max_len])``
-            seq_len: 序列长度标记, 标记的形状可以是 ``None``,  或者 ``torch.Size([B])`` 。
+            * seq_len: 序列长度标记, 标记的形状可以是 ``None``,  或者 ``torch.Size([B])`` 。
             如果 mask 也被传进来的话 ``seq_len`` 会被忽略
         """
         if "pred" not in result.keys():

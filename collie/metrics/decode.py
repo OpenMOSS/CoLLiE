@@ -5,6 +5,14 @@ from collie.log.logger import logger
 import torch
 
 class DecodeMetric(BaseMetric):
+    """
+    用以保存并打印 decode 生成内容的 metric
+
+    :param verbose: 控制是否使用 logger 打印生成的 sentences
+    :param save_to_file: 控制是否保存生成的 sentences 到文件夹中。
+    :param save_path: 保存 decode 生成的 sentences 的文件路径, 当 save_to_file 为 `True` 才生效
+    :param tokenizer: 用来进行 decode 的 tokenizer.
+    """
     def __init__(self, 
                  tokenizer: Any,
                  verbose: bool = True,
@@ -18,13 +26,15 @@ class DecodeMetric(BaseMetric):
         self.tokenizer = tokenizer
     
     def get_metric(self):
+        """
+        该 metric 不需要返回
+        """
         return None
 
     def update(self, result: Dict):
-        # 合并数据
-        # if isinstance(result, list):
-            # input_ids = [r['input_ids'] for r in result]
-        # else:
+        """
+        :meth:`update` 函数将针对一个批次的预测结果做评价指标的累计。
+        """
         input_ids = result['input_ids']
         decode_list = []
         for i in range(len(input_ids)):
