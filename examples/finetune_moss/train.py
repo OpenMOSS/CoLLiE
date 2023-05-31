@@ -1,5 +1,6 @@
 import sys
 sys.path.append("../../")
+import os
 from transformers import AutoTokenizer
 from transformers.generation.utils import GenerationConfig
 
@@ -15,7 +16,7 @@ from metric import SFTDecodeMetric, SFTAccMetric
 
 DS_CONFIG = {
     "fp16": {
-        "enabled": False
+        "enabled": True
     },
     "zero_allow_untested_optimizer": True,
     "zero_force_ds_cpu_optimizer": False,
@@ -41,13 +42,13 @@ DS_CONFIG = {
 pretrained_model = "fnlp/moss-moon-003-sft"
 data_dir = "moss_002_sft_data"
 data_num = -1
-test_size = 64
+test_size = 256
 
 # Collie Configuration
 config = CollieConfig.from_pretrained(
-    pretrained_model, tp_size=2, dp_size=1, pp_size=2, train_epochs=10,
-    eval_per_n_steps=1, eval_per_n_epochs=1, train_micro_batch_size=2,
-    gradient_accumulation_steps=32, eval_batch_size=1, ds_config=DS_CONFIG,
+    pretrained_model, tp_size=2, dp_size=1, pp_size=4, train_epochs=10,
+    eval_per_n_steps=0, eval_per_n_epochs=1, train_micro_batch_size=2,
+    gradient_accumulation_steps=64, eval_batch_size=1, ds_config=DS_CONFIG,
     trust_remote_code=True
 )
 

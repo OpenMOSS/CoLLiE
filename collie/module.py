@@ -245,7 +245,11 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
     def __init__(self, engine: DeepSpeedEngine) -> None:
         super().__init__()
         self.config = PretrainedConfig(is_decoder=True)
-        self.generation_config = GenerationConfig()
+        self.generation_config = GenerationConfig(use_cache=False)
+        logger.warning(
+            "Collie does not support `use_cache` in pipeline parallelism and "
+            "we will set `use_cache` to `False` during generation."
+        )
         self.main_input_name = "input_ids"
         self.device = torch.device("cuda")
         self.engine = engine
