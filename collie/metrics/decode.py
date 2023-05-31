@@ -1,7 +1,7 @@
 from typing import Any, Dict
 from collie.metrics.base import BaseMetric
 from collie.utils import env
-from collie.log.print import print
+from collie.log.logger import logger
 import torch
 
 class DecodeMetric(BaseMetric):
@@ -38,11 +38,9 @@ class DecodeMetric(BaseMetric):
         sentences = []
         for ids in decode_list:
             sentences.append(self.tokenizer.decode(ids))
-        if env.pp_rank == env.pp_size - 1 \
-            and env.tp_rank == env.tp_size - 1 \
-                and (env.dp_rank == 0 or self.gather_result):
-                    if self.verbose:
-                        print(sentences)
-                    if self.save_to_file:
-                        with open(self.save_path, 'a+') as f:
-                            f.write('\n'.join(sentences) + '\n')
+        if env.dp_rank == 0 or self.gather_result:
+            if self.verbose:
+                logger.info(sentences)
+            if self.save_to_file:
+                with open(self.save_path, 'a+') as f:
+                    f.write('\n'.join(sentences) + '\n')

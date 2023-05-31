@@ -51,7 +51,6 @@ def setup_ds_engine(
         from collie.models import CollieModelForCausalLM
         from collie.module import PipelineModel
         assert isinstance(model, CollieModelForCausalLM) or isinstance(model, PipelineModel), "Currently pipeline or tensor parallelism only supports Collie models."
-    model = model.cpu()
     engine, optimizer, _, lr_scheduler = deepspeed.initialize(
         model=model,
         optimizer=optimizer,
@@ -241,7 +240,6 @@ def broadcast_tensor(tensor, dtype=None, src=0, shape=None,
             ndim_tensor = torch.tensor(0, dtype=torch.int).cuda()
         dist.broadcast(ndim_tensor, src, group)
         ndim = ndim_tensor.item()
-    print(f"{env.rank}的ndim: {ndim}！")
     if shape is None:
         if src == env.rank:
             shape_tensor = torch.tensor(tensor.shape, dtype=torch.int).cuda()
@@ -249,14 +247,6 @@ def broadcast_tensor(tensor, dtype=None, src=0, shape=None,
             shape_tensor = torch.zeros(ndim, dtype=torch.int).cuda()
         dist.broadcast(shape_tensor, src, group)
         shape = shape_tensor.tolist()
-    print(f"{env.rank}的shape: {shape}！")
-    dtype_list = [
-        torch.int,
-        torch.long,
-        torch.float16,
-        torch.float32,
-        torch.bfloat16
-    ]
     if dtype is None:
         if src == env.rank:
             dtype_idx = DTYPE_ENUM.index(tensor.dtype)
@@ -267,10 +257,7 @@ def broadcast_tensor(tensor, dtype=None, src=0, shape=None,
         dtype = DTYPE_ENUM[dtype_idx_tensor.item()]
     if src != env.rank:
         tensor = torch.zeros(shape, dtype=dtype).cuda().to(dtype)
-    if os.environ.get("RANK") == "0":
-        import pdb; pdb.set_trace()
     dist.broadcast(tensor, src, group)
-    print(f"{env.rank}的tensor: {tensor}！")
     return tensor
 
 class env:

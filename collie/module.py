@@ -207,6 +207,7 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
         self._find_layers()
 
     def generate(self, *args, **kwargs):
+        self.engine.eval()
         res = super().generate(*args, **kwargs)
         self._clean_past_key_values()
         self._clean_hidden_states()
@@ -224,7 +225,6 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
                 self.engine.reset_activation_shape()
                 self.engine.total_loss = None
                 self.communicate_buffer_shape = batch[0].shape
-        print(f"我已经到达了现场{env.rank}")
         logits = self.engine.eval_batch(batch)
         # import os
         # if os.environ.get("RANK") == "0":
@@ -241,8 +241,13 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
                                       input_ids: torch.Tensor,
                                       past_key_values: Optional[list] = None,
                                       attention_mask: Optional[torch.Tensor] = None,
+                                      use_cache: bool = False,
                                       **kwargs):
-        self._set_use_cache(self.generation_config.use_cache)
+        if use_cache:
+            logger.warning("use_cache is not supported for pipeline generation. Setting use_cache to False")
+            self.generation_config.use_cache = False
+            use_cache = False
+        self._set_use_cache(use_cache)
         if past_key_values is None:
             self._clean_past_key_values()
         else:
