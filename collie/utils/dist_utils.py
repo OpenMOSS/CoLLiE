@@ -19,6 +19,11 @@ from typing import Union, Optional
 from .utils import classproperty, _split_batch
 from collie.config import load_config, CollieConfig
 
+__all__ = [
+    "env", "setup_distribution", "set_seed", "setup_ds_engine",
+    "zero3_load_state_dict", "is_zero3_enabled", "broadcast_tensor"
+]
+
 DTYPE_ENUM = [
     torch.float32, torch.float64, torch.float16, torch.bfloat16, torch.uint8,
     torch.int8, torch.int16, torch.int32, torch.int64, torch.bool
@@ -62,12 +67,16 @@ def setup_ds_engine(
 
 
 def setup_distribution(config) -> None:
-    """Set up the distributed training environment.
-    Support two kinds of distributed training:
+    """
+    设置分布式环境。
+
+    可以支持多机情况下的分布式训练：
     1. launch from torchrun
-        eg: torchrun --standalone --nproc_per_node=8 train.py
+       eg: torchrun --standalone --nproc_per_node=8 train.py
     2. launch from slurm
-        eg. srun --partition=xxx --gres=gpu:8 --ntasks=8 --ntasks-per-node=8 --job-name=xxx --kill-on-bad-exit=1 train.py
+       eg. srun --partition=xxx --gres=gpu:8 --ntasks=8 --ntasks-per-node=8 --job-name=xxx --kill-on-bad-exit=1 train.py
+
+    :param config: :class:`.CollieConfig`
     """
     if torch.distributed.is_initialized():
         return
@@ -140,14 +149,17 @@ def setup_distribution(config) -> None:
 
 
 def set_seed(config):
-    """Set random seed for reproducibility.
+    """
+    设置随机数种子。
     """
     tensor_parallel.model_parallel_cuda_manual_seed(config.seed)
     set_random_seed(config.seed)
 
 def patch_pipeline_engine(config):
     """
-    Replace train_batch and eval_batch to fit our Trainer and GenerationMixin.
+    改写 ``PipelineEngine`` 的 :meth:`train_batch` 和 :meth:`eval_batch`。
+
+    用于适应 **CoLLiE** 的训练和生成过程。
     """
     raw_train_batch = copy.deepcopy(PipelineEngine.train_batch)
     raw_eval_batch = copy.deepcopy(PipelineEngine.eval_batch)
@@ -223,12 +235,27 @@ def patch_megatron():
 def broadcast_tensor(tensor, dtype=None, src=0, shape=None,
                      ndim=None, group=None):
     """
-    Broadcast ``tensor`` from ``src``.
+    从 ``src`` 广播 ``tensor``。
 
-    if ``ndim`` and ``shape`` is None, we will broadcast ``tensor``'s
-    shape first. It is required that every rank's parameter is the same.
-    :param tensor: Tensor to broadcast. In source rank ``tensor`` must
-        be a ``torch.Tensor``.
+    该函数支持广播 ``tensor`` 的维度和类型。如果 ``ndim`` 和 ``shape`` 为 ``None``
+    则会首先广播 ``tensor`` 的维度。
+
+    .. code-block::
+
+        if rank == 0:
+            logits = torch.ones(4,2)
+        else:
+            logits = None
+
+        # 其它 rank 上并不知道 logits 的维度，因此 ndim 和 shape 均为 None
+        logits = broadcast_tensor(logits, src=0)
+
+    .. warning::
+
+        请确保 ``ndim``、``shape`` 和 ``dtype`` 参数在所有 rank 上保持一致，
+        否则会导致分布式进程卡死。
+
+    :param tensor: 要广播的张量。注意在 ``src`` rank 上必须为一个张量。
     """
     ndim = ndim if shape is None else len(shape)
     if ndim is None:
@@ -259,53 +286,90 @@ def broadcast_tensor(tensor, dtype=None, src=0, shape=None,
     return tensor
 
 class env:
+    """
+    **CoLLiE** 的环境变量，可以从中获取各种并行的 world_size 和 rank。
+    """
     @classproperty
     def rank(self):
+        """
+        Global rank。
+        """
         return int(os.getenv("RANK", "0"))
 
     @classproperty
     def local_rank(self):
+        """
+        Local rank。
+        """
         return int(os.getenv("LOCAL_RANK", "0"))
 
     @staticmethod
     def barrier(group=None):
+        """
+        在 ``group`` 上进行同步。
+        """
         if dist.is_initialized():
             torch.distributed.barrier(group)
 
     @classproperty
     def world_size(self):
+        """
+        分布式训练的 world size。
+        """
         return int(os.getenv("WORLD_SIZE", "1"))
 
     @classproperty
     def pp_rank(self):
+        """
+        流水线并行的 rank。
+        """
         if not dist.is_initialized():
             return 0
         return parallel_state.get_pipeline_model_parallel_rank()
 
     @classproperty
     def dp_rank(self):
+        """
+        数据并行的 rank。
+        """
         if not dist.is_initialized():
             return 0
         return parallel_state.get_data_parallel_rank()
 
     @classproperty
     def tp_rank(self):
+        """
+        张量并行的 rank。
+        """
         if not dist.is_initialized():
             return 0
         return parallel_state.get_tensor_model_parallel_rank()
 
     @classproperty
     def mp_rank(self):
+        """
+        模型并行的 rank。模型并行与数据并行相对，同时包含了张量并行和模型并行。
+        """
         if not dist.is_initialized():
             return 0
         return parallel_state.get_model_parallel_group().rank()
 
     @classproperty
     def is_pipeline(self):
+        """
+        判断是否是流水线并行。
+        """
         return "COLLIE_PP_PARTS" in os.environ.keys()
 
     @classproperty
     def pipline_parts(self):
+        """
+        返回流水线并行中模型切分的分界点，长度为 ``pp_size + 1``。
+
+        如果不存在流水线并行则返回 ``None``。
+
+        e.g. pp_size 为 2时，返回形如 [0, 13, 25] 的结果。
+        """
         if "COLLIE_PP_PARTS" in os.environ.keys():
             parts = json.loads(os.environ["COLLIE_PP_PARTS"])
         else:
@@ -316,7 +380,9 @@ class env:
     @classproperty
     def pipline_layers_idx(self):
         """
-        :return: list or None
+        返回流水线并行中当前 rank 切分的模型索引。
+
+        如果不存在流水线并行返回 ``None``。
         """
         parts = self.pipline_parts
         if parts is None:
@@ -327,42 +393,66 @@ class env:
 
     @classproperty
     def tp_group(self):
+        """
+        张量并行的通信组。
+        """
         return parallel_state.get_tensor_model_parallel_group()
 
     @classproperty
     def pp_group(self):
+        """
+        流水线并行的通信组。
+        """
         return parallel_state.get_pipeline_model_parallel_group()
 
     @classproperty
     def dp_group(self):
+        """
+        数据并行的通信组。
+        """
         return parallel_state.get_data_parallel_group()
 
     @classproperty
     def dp_size(self):
+        """
+        数据并行的 world size。
+        """
         if not dist.is_initialized():
             return 1
         return parallel_state.get_data_parallel_world_size()
 
     @classproperty
     def tp_size(self):
+        """
+        张量并行的 world size。
+        """
         if not dist.is_initialized():
             return 1
         return parallel_state.get_tensor_model_parallel_world_size()
 
     @classproperty
     def pp_size(self):
+        """
+        流水线并行的 world size。
+        """
         if not dist.is_initialized():
             return 1
         return parallel_state.get_pipeline_model_parallel_world_size()
 
     @classproperty
     def is_last_stage(self):
+        """
+        是否是流水线的最后一个阶段。
+        """
         if not dist.is_initialized():
             return True
         return parallel_state.is_pipeline_last_stage()
 
     @classproperty
     def is_first_stage(self):
+        """
+        是否是流水线的第一个阶段。
+        """
         if not dist.is_initialized():
             return True
         return parallel_state.is_pipeline_first_stage()

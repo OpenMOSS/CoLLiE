@@ -27,6 +27,8 @@ from .utils import (apply_rotary_pos_emb, create_sinusoidal_positions,
                     set_index_dict, _state_dict_to_save, _state_dict_to_load,
                     _weight_name_in_current_rank)
 
+__all__ = ["MossForCausalLM"]
+
 class MossAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -53,11 +55,14 @@ class MossAttention(nn.Module):
             )
         self.scale_attn = torch.sqrt(torch.tensor(self.head_dim, dtype=torch.float32)).to(torch.get_default_dtype())
         self.qkv_proj = ColumnParallelLinearWithoutBias(
-            self.embed_dim, self.embed_dim * 3, bias=False, gather_output=True
+            self.embed_dim, self.embed_dim * 3, bias=False, gather_output=True,
+            use_cpu_initialization=config.use_cpu_initialization
         )
 
         self.out_proj = RowParallelLinearWithoutBias(
-            self.embed_dim, self.embed_dim, bias=False, input_is_parallel=False
+            self.embed_dim, self.embed_dim, bias=False,
+            use_cpu_initialization=config.use_cpu_initialization,
+            input_is_parallel=False
         )
         self.rotary_dim = config.rotary_dim
         pos_embd_dim = self.rotary_dim or self.embed_dim
@@ -203,9 +208,13 @@ class MossMLP(nn.Module):
         embed_dim = config.n_embd
 
         self.fc_in = ColumnParallelLinearWithoutBias(
-            embed_dim, intermediate_size, gather_output=False)
+            embed_dim, intermediate_size, gather_output=False,
+            use_cpu_initialization=config.use_cpu_initialization
+        )
         self.fc_out = RowParallelLinearWithoutBias(
-            intermediate_size, embed_dim, input_is_parallel=True)
+            intermediate_size, embed_dim, input_is_parallel=True,
+            use_cpu_initialization=config.use_cpu_initialization
+        )
 
         self.act = NewGELUActivation()
         self.dropout = nn.Dropout(config.resid_pdrop)
@@ -317,18 +326,25 @@ class MossBlock(nn.Module):
 
 
 class MossForCausalLM(CollieModelForCausalLM):
-    # MossForCausalLM
+    """
+    支持 3D 并行的 Moss 模型。
+
+    :param config: :class:`.CollieConfig`
+    """
     def __init__(self, config):
         super().__init__(config)
         self.embed_dim = config.n_embd
         self.vocab_size = config.vocab_size
-        self.wte = VocabParallelEmbedding(config.vocab_size, self.embed_dim)
+        self.wte = VocabParallelEmbedding(config.vocab_size, self.embed_dim,
+                                          use_cpu_initialization=config.use_cpu_initialization)
         self.drop = nn.Dropout(config.embd_pdrop)
         self.h = nn.ModuleList([
             MossBlock(config, i) for i in range(config.n_layer)
         ])
         self.ln_f = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_epsilon)
-        self.lm_head = ColumnParallelLMHead(config.n_embd, config.vocab_size)
+        self.lm_head = ColumnParallelLMHead(
+            config.n_embd, config.vocab_size, use_cpu_initialization=config.use_cpu_initialization
+        )
 
     def forward(self, input_ids, **kwargs):
         inputs_embed = self.wte(input_ids)
@@ -371,7 +387,10 @@ class MossForCausalLM(CollieModelForCausalLM):
         if isinstance(config, str):
             config = CollieConfig.from_pretrained(config)
         layers = [
-            VocabParallelEmbedding(config.vocab_size, config.n_embd),
+            VocabParallelEmbedding(
+                config.vocab_size, config.n_embd,
+                use_cpu_initialization=config.use_cpu_initialization
+            ),
             nn.Dropout(config.embd_pdrop),
         ]
         layers += [
@@ -379,7 +398,10 @@ class MossForCausalLM(CollieModelForCausalLM):
         ]
         layers += [
             nn.LayerNorm(config.n_embd, eps=config.layer_norm_epsilon),
-            ColumnParallelLMHead(config.n_embd, config.vocab_size)
+            ColumnParallelLMHead(
+                config.n_embd, config.vocab_size,
+                use_cpu_initialization=config.use_cpu_initialization
+            )
         ]
 
         return layers
