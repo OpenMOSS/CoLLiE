@@ -197,11 +197,7 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
     def __init__(self, engine: DeepSpeedEngine) -> None:
         super().__init__()
         self.config = PretrainedConfig(is_decoder=True)
-        self.generation_config = GenerationConfig(use_cache=False)
-        logger.warning(
-            "Collie does not support `use_cache` in pipeline parallelism and "
-            "we will set `use_cache` to `False` during generation."
-        )
+        self.generation_config = GenerationConfig()
         self.main_input_name = "input_ids"
         self.device = torch.device("cuda")
         self.engine = engine
@@ -230,9 +226,6 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
                 self.engine.total_loss = None
                 self.communicate_buffer_shape = batch[0].shape
         logits = self.engine.eval_batch(batch)
-        # import os
-        # if os.environ.get("RANK") == "0":
-        #     import pdb; pdb.set_trace()
         return CausalLMOutputWithPast(
             loss=None,
             logits=logits,
