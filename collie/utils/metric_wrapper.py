@@ -24,7 +24,6 @@ class _MetricsWrapper:
 
     def update(self, result):
         for metric in self._metrics:
-            args = []
             if not isinstance(result, dict):
                 raise RuntimeError(
                     'The output of your model is of type:`{}`, please '

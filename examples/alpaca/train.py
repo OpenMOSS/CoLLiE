@@ -74,8 +74,8 @@ config.ds_config = {
         }
     }
 }
-           
-def eval_fn(trainer, batch, train_meta):
+
+def eval_fn(trainer, batch):
     input_ids, labels = batch
     if env.pp_size > 1:
         generation_model = PipelineGenerationMixin(
@@ -90,7 +90,6 @@ def eval_fn(trainer, batch, train_meta):
     )
     return {
         "generate": gen_res,
-        "train_meta": train_meta
     }
     
     

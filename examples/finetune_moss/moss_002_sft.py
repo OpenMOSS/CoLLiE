@@ -93,7 +93,7 @@ def load_data(save_dir, tokenizer, max_len, num=-1) -> HFDataset:
     else:
         logger.info(f"Loading moss-002-sft from datasets")
         if env.rank == 0:
-            moss_sft = load_dataset("fnlp/moss-002-sft-data", split="train")
+            moss_sft = load_dataset("fnlp/moss-002-sft-data", split="train[:500]")
             moss_sft = moss_sft.map(lambda x:process(x, tokenizer, max_len), num_proc=10)
             moss_sft = moss_sft.filter(lambda x:len(x["input_ids"]) != 0)
             info = {
