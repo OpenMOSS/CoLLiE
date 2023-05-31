@@ -4,7 +4,7 @@ from collie.models.llama.model import LlamaForCausalLM
 from collie.trainer.trainer import Trainer
 from collie.metrics.decode import DecodeMetric
 from collie.config import CollieConfig
-from collie.utils import GradioServer, setup_distribution, StepTimeMonitor
+from collie.utils import GradioProvider, setup_distribution, StepTimeMonitor
 from transformers import LlamaTokenizer
 from transformers.generation.utils import GenerationConfig
 from torch.utils.data import Dataset

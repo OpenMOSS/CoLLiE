@@ -4,7 +4,7 @@ from collie.models.llama.model import LlamaForCausalLM
 from collie.trainer.trainer import Trainer
 from collie.metrics.decode import DecodeMetric
 from collie.config import CollieConfig
-from collie.utils import GradioServer, setup_distribution
+from collie.utils import GradioProvider, setup_distribution
 from transformers import LlamaTokenizer
 from transformers.generation.utils import GenerationConfig
 from torch.utils.data import Dataset
@@ -16,10 +16,10 @@ tokenizer = LlamaTokenizer.from_pretrained("decapoda-research/llama-7b-hf",
                                            add_eos_token=True)
 tokenizer.bos_token_id = 1
 tokenizer.eos_token_id = 2
-config = CollieConfig.from_pretrained("decapoda-research/llama-7b-hf")
-config.tp_size = 2
+config = CollieConfig.from_pretrained("decapoda-research/llama-65b-hf")
+config.tp_size = 1
 config.dp_size = 1
-config.pp_size = 2
+config.pp_size = 16
 config.train_epochs = 1000
 config.train_micro_batch_size = 32
 config.eval_batch_size = 1
@@ -35,13 +35,13 @@ config.ds_config = {
 }
 
 model = LlamaForCausalLM.from_config(config)
-state_dict = LlamaForCausalLM.load_parallel_state_dict(
-    path="hdd:s3://opennlplab_hdd/models/llama/llama-7b-hf",
-    config=config,
-    protocol="petrel",
-    format="hf"
-)
-model.load_state_dict(state_dict)
+# state_dict = LlamaForCausalLM.load_parallel_state_dict(
+#     path="hdd:s3://opennlplab_hdd/models/llama/llama-7b-hf",
+#     config=config,
+#     protocol="petrel",
+#     format="hf"
+# )
+# model.load_state_dict(state_dict)
 train_sample = tokenizer("Collie is a python package for finetuning large language models.", return_tensors="pt").input_ids.squeeze(0)
 eval_sample = tokenizer("Collie is", return_tensors="pt").input_ids.squeeze(0)[:-1,]
 train_dataset = [(train_sample, train_sample) for _ in range(128000)]

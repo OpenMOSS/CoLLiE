@@ -4,7 +4,7 @@ from collie.models.llama.model import LlamaForCausalLM
 from collie.trainer.trainer import Trainer
 from collie.metrics.decode import DecodeMetric
 from collie.config import CollieConfig
-from collie.utils import GradioServer
+from collie.utils import GradioProvider
 from transformers import LlamaTokenizer
 from transformers.generation.utils import GenerationConfig
 from torch.utils.data import Dataset
@@ -43,13 +43,13 @@ train_sample = torch.concat((tokenizer("Collie is a python package for finetunin
 eval_sample = tokenizer("Collie is", return_tensors="pt").input_ids.squeeze(0)
 train_dataset = [(train_sample, train_sample) for _ in range(1000)]
 eval_dataset = [(eval_sample, eval_sample)]
-server = GradioServer(tokenizer=tokenizer, stream=True, port=8080)
+server = GradioProvider(tokenizer=tokenizer, stream=True, port=8080)
 trainer = Trainer(
     model = model,
     config=config,
     train_dataset=train_dataset,
     eval_dataset=eval_dataset,
-    generation_server=server,
+    data_provider=server,
     eval_config=GenerationConfig(max_new_tokens=128, 
                                  eos_token_id=2, 
                                  pad_token_id=0, 
