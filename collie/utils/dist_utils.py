@@ -171,6 +171,7 @@ def patch_pipeline_engine(config):
             logits = torch.cat(logits, dim=0)
         src_rank = self.grid.stage_to_global(self.num_stages - 1)
         dtype, _ = self.get_data_types()
+        print(f"{env.rank}", dtype)
         logits = broadcast_tensor(logits, dtype=dtype, src=src_rank,
                                   group=env.pp_group)
         return logits
@@ -238,6 +239,7 @@ def broadcast_tensor(tensor, dtype=None, src=0, shape=None,
             ndim_tensor = torch.tensor(0, dtype=torch.int).cuda()
         dist.broadcast(ndim_tensor, src, group)
         ndim = ndim_tensor.item()
+    print(f"{env.rank}的ndim: {ndim}！")
     if shape is None:
         if src == env.rank:
             shape_tensor = torch.tensor(tensor.shape, dtype=torch.int).cuda()
@@ -245,11 +247,31 @@ def broadcast_tensor(tensor, dtype=None, src=0, shape=None,
             shape_tensor = torch.zeros(ndim, dtype=torch.int).cuda()
         dist.broadcast(shape_tensor.cuda(), src, group)
         shape = shape_tensor.tolist()
+    print(f"{env.rank}的shape: {shape}！")
+    dtype_list = [
+        torch.int,
+        torch.long,
+        torch.float16,
+        torch.float32,
+        torch.bfloat16
+    ]
     if dtype is None:
-        dtype = torch.get_default_dtype()
+        if src == env.rank:
+            if tensor.dtype not in dtype_list:
+                dtype_id = 3
+            else:
+                dtype_id = dtype_list.index(tensor.dtype)
+            dtype_tensor = torch.tensor(dtype_id, dtype=torch.int).cuda()
+        else:
+            dtype_tensor = torch.tensor(3, dtype=torch.int).cuda()
+        dist.broadcast(dtype_tensor, src, group)
+        dtype = dtype_list[dtype_tensor.item]
     if src != env.rank:
-        tensor = torch.zeros(shape, dtype=dtype).cuda()
+        tensor = torch.zeros(shape, dtype=dtype).cuda().to(dtype)
+    if os.environ.get("RANK") == "0":
+        import pdb; pdb.set_trace()
     dist.broadcast(tensor, src, group)
+    print(f"{env.rank}的tensor: {tensor}！")
     return tensor
 
 class env:

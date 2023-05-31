@@ -217,7 +217,6 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
         if past_key_values is not None:
             input_ids = input_ids[:, -1:]
         batch = (input_ids, input_ids)
-        print(input_ids.shape)
         if self.communicate_buffer_shape is None:
             self.communicate_buffer_shape = batch[0].shape
         else:
@@ -225,7 +224,11 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
                 self.engine.reset_activation_shape()
                 self.engine.total_loss = None
                 self.communicate_buffer_shape = batch[0].shape
+        print(f"我已经到达了现场{env.rank}")
         logits = self.engine.eval_batch(batch)
+        # import os
+        # if os.environ.get("RANK") == "0":
+        #     import pdb; pdb.set_trace()
         return CausalLMOutputWithPast(
             loss=None,
             logits=logits,
