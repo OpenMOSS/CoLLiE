@@ -16,10 +16,14 @@ from megatron.core import parallel_state, tensor_parallel
 from transformers.deepspeed import HfDeepSpeedConfig
 
 from typing import Union, Optional
-from itertools import cycle
 
 from .utils import classproperty, _split_batch
 from collie.config import load_config, CollieConfig
+
+DTYPE_ENUM = [
+    torch.float32, torch.float64, torch.float16, torch.bfloat16, torch.uint8,
+    torch.int8, torch.int16, torch.int32, torch.int64, torch.bool
+]
 
 def zero3_load_state_dict(model: torch.nn.Module, state_dict: dict):
     for name, param in model.named_parameters():
@@ -156,7 +160,7 @@ def patch_pipeline_engine(config):
                              self.gradient_accumulation_steps())
         data_iter = iter(batch)
         return raw_train_batch(self, data_iter)
-    
+
     def eval_batch(self, batch):
         batch = _split_batch(batch, config.eval_batch_size,
                              self.gradient_accumulation_steps())
@@ -170,8 +174,7 @@ def patch_pipeline_engine(config):
             assert isinstance(logits, list), type(logits)
             logits = torch.cat(logits, dim=0)
         src_rank = self.grid.stage_to_global(self.num_stages - 1)
-        dtype, _ = self.get_data_types()
-        logits = broadcast_tensor(logits, dtype=dtype, src=src_rank,
+        logits = broadcast_tensor(logits, src=src_rank,
                                   group=env.pp_group)
         return logits
     
@@ -226,7 +229,7 @@ def broadcast_tensor(tensor, dtype=None, src=0, shape=None,
     Broadcast ``tensor`` from ``src``.
 
     if ``ndim`` and ``shape`` is None, we will broadcast ``tensor``'s
-    shape first.
+    shape first. It is required that every rank's parameter is the same.
     :param tensor: Tensor to broadcast. In source rank ``tensor`` must
         be a ``torch.Tensor``.
     """
@@ -243,10 +246,16 @@ def broadcast_tensor(tensor, dtype=None, src=0, shape=None,
             shape_tensor = torch.tensor(tensor.shape, dtype=torch.int).cuda()
         else:
             shape_tensor = torch.zeros(ndim, dtype=torch.int).cuda()
-        dist.broadcast(shape_tensor.cuda(), src, group)
+        dist.broadcast(shape_tensor, src, group)
         shape = shape_tensor.tolist()
     if dtype is None:
-        dtype = torch.get_default_dtype()
+        if src == env.rank:
+            dtype_idx = DTYPE_ENUM.index(tensor.dtype)
+            dtype_idx_tensor = torch.tensor(dtype_idx, dtype=torch.int).cuda()
+        else:
+            dtype_idx_tensor = torch.tensor(0, dtype=torch.int).cuda()
+        dist.broadcast(dtype_idx_tensor, src, group)
+        dtype = DTYPE_ENUM[dtype_idx_tensor.item()]
     if src != env.rank:
         tensor = torch.zeros(shape, dtype=dtype).cuda()
     dist.broadcast(tensor, src, group)
