@@ -3,8 +3,48 @@ from typing import Any, Union
 
 from transformers import PretrainedConfig, AutoConfig
 
+__all__ = ["CollieConfig"]
+
 @dataclass
 class CollieConfig:
+    """
+    **CoLLiE** 的配置类。
+
+    :param seed: 随机数种子。
+    :param pp_size: 流水线并行的大小。
+    :param tp_size: 张量并行大小。
+    :param dp_size: 数据并行大小。
+    :param pp_partition_method: 流水线的切分策略，包括以下几种取值：
+        * 'parameters' - 默认情况下的取值。根据可训练的参数数量进行切分，保证所有
+          rank 上的计算时间是接近的。
+        * 'uniform' - 根据模型的层数进行切分，保证每个 rank 上的模型层数是接近的。
+        * 'type:[regex]' - 根据指定的 layer 进行切分，抱枕与 ``[regex]`` 名称正则
+          匹配的 layer 在每个 rank 上的数目是接近的。比如 ``type:transformer`` 会
+          使得每个 rank 上 Transformer 层的数目接近。该正则匹配不分大小写。 
+    :param train_epochs: 训练时的迭代次数。
+    :param eval_per_n_steps: 训练的一个 epoch 中，每隔多少 step 进行一次验证。
+    :param eval_per_n_epochs: 训练过程中每隔多少次迭代进行一次验证。
+    :param train_micro_batch_size: 每个 gpu 上的 batch_size，与 deepspeed 设置中
+        的 ``train_micro_batch_size_per_gpu`` 作用相同。如果 ``ds_config`` 中没
+        有指定 ``train_micro_batch_size_per_gpu``，则会将 :class:`CollieConfig`
+        的 ``train_micro_batch_size`` 作为 ``train_micro_batch_size_per_gpu``
+        的值。在流水线并行中，该项代表一个 micro batch 的大小。
+    :param gradient_accumulation_steps: 梯度累积的 step 数目。与 deepspeed 设置中
+        的 ``gradient_accumulation_steps`` 作用相同。如果 ``ds_config`` 中没有指
+        定 ``gradient_accumulation_steps``，则会将 :class:`CollieConfig`的
+        ``gradient_accumulation_steps`` 作为 ``gradient_accumulation_steps`` 的
+        值。在流水线并行中，该项代表流水线的 micro batch 的数目。
+    :param eval_batch_size: 验证时的 batch 大小。在流水线中代表验证时一个 micro
+        batch 的大小。
+    :param checkpointing: 是否使用梯度检查点，该设置可以节省显存。
+    :param use_flash: 是否使用 `FlashAttention <https://github.com/HazyResearch/flash-attention>`_ 。
+        仅对部分模型有效。
+    :param dropout: :class:`Dropout` 的概率。仅对部分模型有效。
+    :param use_cpu_initialization: 初始化张量并行的模型时是否在 cpu 上初始化。
+    :param ds_config: **DeepSpeed** 的配置文件。可以是一个路径或字典。
+    :param model_config: 模型设置。一般情况下无需手动设置，而是通过
+        :meth:`from_pretrained` 获取，
+    """
     seed: int = field(
         default=42,
         metadata={
@@ -111,11 +151,12 @@ class CollieConfig:
     @classmethod
     def from_pretrained(cls, name_or_path: str, **kwargs):
         """
-        Load pretrained model arguments.
+        加载预训练模型的设置。
 
-        :param path:
-        :param kwargs:
-            The remained kwargs is used to adjust arguments.
+        :param path: 预训练模型设置的路径，支持本地路径或 ``huggingface`` 上的仓库
+            名称。
+        :param kwargs: 其它的设置。可以通过该参数设置 ``pp_size``、``dp_size`` 等
+            训练参数和 ``vocab_size`` 等关于模型的参数。
         """
         cfg = cls()
         for key in list(kwargs.keys()):
@@ -126,6 +167,9 @@ class CollieConfig:
         return cfg
     
     def save_pretrained(self, path):
+        """
+        保存预训练模型的设置。
+        """
         self.model_config.save_pretrained(path)
 
     def __getattr__(self, name):

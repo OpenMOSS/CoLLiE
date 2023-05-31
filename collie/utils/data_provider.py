@@ -1,21 +1,20 @@
-import os
-import asyncio
-import multiprocessing as mp
-from websockets.server import serve
-from websockets.sync.client import connect
-
+""" **CoLLie** 中的异步数据提供器，为模型生成过程提供更加广泛的数据采集渠道
+"""
+__all__ = [
+    'BaseProvider',
+    'GradioProvider',
+    '_GenerationStreamer'
+]
 import time
 
-from torch.multiprocessing import Process, Queue, set_start_method
-from transformers.generation.utils import GenerationConfig
+from torch.multiprocessing import Process, Queue
 from transformers.generation.streamers import BaseStreamer
 from transformers import PreTrainedTokenizer
-from pydantic import BaseModel
-from fastapi import FastAPI
 import torch
-import queue
 
-class BaseServer:
+class BaseProvider:
+    """ BaseProvider 为异步数据提供器的基类，提供了一些基本的接口
+    """
     def __init__(self, 
                  stream: bool = False) -> None:
         self.data = Queue()
@@ -23,30 +22,42 @@ class BaseServer:
         self.stream = stream
         
     def provider_handler(self):
+        """ provider_handler 为异步数据提供器的主要逻辑，需要被子类重写，主要功能为异步地收集数据并放入队列 `self.data` 中
+        """
         while True:
             self.data.put('Hello World')
             time.sleep(1)
         
     def start_provider(self):
+        """ start_provider 为异步数据提供器的启动函数，会在一个新的进程中启动 `provider_handler` 函数
+        """
         process = Process(target=self.provider_handler)
         process.start()
         
     def get_data(self):
+        """ get_data 为异步数据提供器的数据获取函数，会从队列 `self.data` 中获取数据
+        """
         if self.data.empty():
             return None
         else:
             return self.data.get()
         
     def get_feedback(self):
+        """ get_feedback 为异步数据提供器的反馈获取函数，会从队列 `self.feedback` 中获取反馈，主要指模型生成的结果
+        """
         if self.feedback.empty():
             return None
         else:
             return self.feedback.get()
         
     def put_feedback(self, feedback):
+        """ put_feedback 为异步数据提供器的反馈放入函数，会将反馈放入队列 `self.feedback` 中，该函数由 **CoLLie** 自动调用，将模型生成的结果放入该队列中
+        """
         self.feedback.put(feedback)
         
-class GradioServer(BaseServer):
+class GradioProvider(BaseProvider):
+    """ 基于 Gradio 的异步数据提供器，会在本地启动一个 Gradio 服务，将用户输入的文本作为模型的输入
+    """ 
     def __init__(self, 
                  tokenizer: PreTrainedTokenizer,
                  port: int = 7878,
@@ -75,14 +86,16 @@ class GradioServer(BaseServer):
         interface.queue()
         interface.launch(server_name="0.0.0.0", server_port=self.port)
         
-class GenerationStreamer(BaseStreamer):
-    def __init__(self, server: BaseServer) -> None:
+class _GenerationStreamer(BaseStreamer):
+    """ 重写 `transformers` 的 `BaseStreamer` 类以兼容 **CoLLie** 的异步数据提供器
+    """
+    def __init__(self, server: BaseProvider) -> None:
         self.server = server
         self.stop_signal = 'END_OF_STREAM'
         
     def put(self, value):
         if len(value.shape) > 1 and value.shape[0] > 1:
-            raise ValueError("GenerationStreamer only supports batch size 1")
+            raise ValueError("_GenerationStreamer only supports batch size 1")
         elif len(value.shape) > 1:
             value = value[0]
         self.server.put_feedback(value)

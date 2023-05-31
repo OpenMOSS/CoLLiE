@@ -6,6 +6,7 @@ import torch
 from torch import Tensor, nn
 import torch.nn.functional as F
 import torch.distributed as dist
+import torch.nn.init as init
 from torch.nn.modules.module import Module
 import torch.utils.checkpoint
 
@@ -199,7 +200,7 @@ class ChatGLMLayer(nn.Module):
         return attention_mask
         
 
-    def _forward(self, input_ids: torch.Tensor, hidden_states: torch.Tensor, position_ids: torch.Tensor):
+    def _forward(self, hidden_states: torch.Tensor, input_ids: torch.Tensor, position_ids: torch.Tensor):
         if not self.training:
             self.hidden_states = hidden_states
         else:
@@ -265,7 +266,7 @@ class ChatGLMLayer(nn.Module):
         hidden_states = hidden_states.permute(1, 0, 2) * self.alpha + self.attention["dense"](output)
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = hidden_states * self.alpha + F.dropout(self.mlp["dense_4h_to_h"](F.gelu(self.mlp["dense_h_to_4h"](hidden_states))), p=self.config.dropout, training=self.training)
-        return input_ids, hidden_states, position_ids
+        return hidden_states, input_ids, position_ids
 
     def forward(self, inputs: tuple):
         if self.config.checkpointing and self.training:
@@ -327,7 +328,11 @@ class ChatGLMForCausalLM(CollieModelForCausalLM):
         )
         
     @staticmethod
-    def _get_position_ids(config, input_ids: torch.Tensor):
+    def _get_position_ids(config, input_ids: torch.Tensor, past_position_id: Optional[torch.Tensor]):
+        if past_position_id is not None:
+            return torch.cat((past_position_id, 
+                              torch.stack((past_position_id[:, 0, -1].unsqueeze(-1), 
+                                           past_position_id[:, 1, -1].unsqueeze(-1) + 1), dim=1)), dim=2)
         MASK, gMASK = config.mask_token_id, config.gmask_token_id
         seqs = input_ids.tolist()
         device = input_ids.device
@@ -373,20 +378,30 @@ class ChatGLMForCausalLM(CollieModelForCausalLM):
 
     def clean(self):
         self._clean_hidden_states([*self.layers, self.lm_head])
-        self._clean_past_key_values(self.layers)
+        # 别忘了清理 word_embeddings 里的 past_position_ids
+        self._clean_past_key_values(self.layers, self.word_embeddings)
         
     @classmethod
     def _get_word_embedding_with_position_ids_cls(cls, config):
         class WordEmbeddingWithPositionIdsAndInputIds(tensor_parallel.VocabParallelEmbedding):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                # 这个实际上是 past_position_ids
+                self.past_key_values = None
+                self.use_cache = True
+                
             def forward(self, input_):
-                return input_, super().forward(input_), cls._get_position_ids(config, input_)
+                position_ids = cls._get_position_ids(config, input_, None if self.past_key_values is None else self.past_key_values[0])
+                if not self.training and self.use_cache:
+                    self.past_key_values = (self.past_key_values, self.past_key_values)
+                return super().forward(input_), input_, position_ids
         return WordEmbeddingWithPositionIdsAndInputIds
     
     @classmethod
     def _get_final_norm_cls_without_position_ids_cls(cls):
         class FinalNormWithoutPositionIds(nn.LayerNorm):
             def forward(self, inputs: tuple) -> Tensor:
-                input_ids, hidden_states, _ = inputs
+                hidden_states, input_ids, position_ids = inputs
                 return super().forward(hidden_states)
         return FinalNormWithoutPositionIds
     

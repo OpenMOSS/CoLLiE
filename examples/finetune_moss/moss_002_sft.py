@@ -21,9 +21,9 @@ class SFTDataset(Dataset):
         return len(self.dataset)
     
     def __getitem__(self, index):
-        data = copy.deepcopy(self.dataset["input_ids"][index])
-        no_loss_spans = copy.deepcopy(self.dataset["no_loss_spans"][index])
-        
+        data = copy.deepcopy(self.dataset[index]["input_ids"])
+        no_loss_spans = copy.deepcopy(self.dataset[index]["no_loss_spans"])
+
         data = torch.tensor(data, dtype=torch.long)
         label = copy.deepcopy(data)
 
