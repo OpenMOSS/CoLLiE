@@ -10,6 +10,9 @@ class BaseMetric(ABC):
         self.gather_result = gather_result
         
     def construct(self, trainer):
+        """
+        将 trainer 传入到 metric 中以便于 gather 时候使用
+        """
         self.trainer = trainer
     
     def reset(self):
@@ -26,14 +29,16 @@ class BaseMetric(ABC):
     def update(self, result: Dict):
         r"""
         :param result: 经过 gather 后的输入。一般为 ``{'logits': [logit1, logit2, ..., logit_dp_size],
-            'labels': [label1, label2, ..., label_dp_size]}``。其中 dp_size 为 并行的卡数量
+        'labels': [label1, label2, ..., label_dp_size]}``。其中 dp_size 为 并行的卡数量
         """
         raise NotImplementedError
     
     def gather(self, result: Dict) -> Dict[str, List]:
         r"""
+        将不同进程上的 result 数据聚合在一起，使用了 DDP 情况。
+
         :param result: :class `Trainer` 中 eval_fn 返回的结果。类型为 Dict。
-            例如 ``result = {'logits': logit, 'labels': label}``。
+        例如 ``result = {'logits': logit, 'labels': label}``。
         :return: 经过 gather 后的结果。如果 ``result = {'logits': logit, 'labels': label}``，
             其根据 ``dp_size`` 的值有如下两种情况。
 
