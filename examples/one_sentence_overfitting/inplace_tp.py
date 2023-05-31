@@ -4,7 +4,6 @@ sys.path.append("../..")
 print(sys.path)
 
 from transformers import LlamaTokenizer, AutoModelForCausalLM
-from transformers.deepspeed import HfDeepSpeedConfig
 from collie.models.llama.model import LlamaForCausalLM
 from transformers.generation.utils import GenerationConfig
 

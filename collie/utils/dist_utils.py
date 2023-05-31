@@ -13,7 +13,6 @@ from deepspeed.runtime.engine import DeepSpeedOptimizerCallable, DeepSpeedSchedu
 from deepspeed.runtime.pipe.engine import PipelineEngine
 from deepspeed.accelerator import get_accelerator
 from megatron.core import parallel_state, tensor_parallel
-from transformers.deepspeed import HfDeepSpeedConfig
 
 from typing import Union, Optional
 
@@ -81,7 +80,6 @@ def setup_distribution(config) -> None:
         config.ds_config["train_micro_batch_size_per_gpu"] = config.train_micro_batch_size
     if "gradient_accumulation_steps" not in config.ds_config.keys():
         config.ds_config["gradient_accumulation_steps"] = config.gradient_accumulation_steps
-    hf_ds_config = HfDeepSpeedConfig(config.ds_config)
     patch_deepspeed(config)
     patch_megatron()
     if "WORLD_SIZE" in os.environ.keys():

@@ -2,10 +2,10 @@ import os
 import json
 import logging
 import glob
+import math
 from typing import Optional, Callable, Union, Tuple, Iterable, Any, Dict, Sequence
 from collections import OrderedDict
 from functools import reduce
-from itertools import cycle
 
 import torch
 import deepspeed
@@ -17,6 +17,7 @@ from deepspeed.accelerator import get_accelerator
 from deepspeed.runtime.constants import ROUTE_EVAL
 from deepspeed.runtime.pipe.engine import PipelineEngine
 from deepspeed.runtime.engine import DeepSpeedSchedulerCallable
+from deepspeed.runtime.dataloader import RepeatingLoader
 from transformers.generation.utils import GenerationConfig
 from transformers.modeling_utils import PreTrainedModel
 
@@ -63,6 +64,12 @@ class Trainer:
         if isinstance(optimizer, InplaceSGD):
             if config.pp_size > 1:
                 raise ValueError("InplaceSGD is incompatible with pipeline parallelism.")
+            if self.config.gradient_accumulation_steps > 1:
+                logger.rank_zero_warning(
+                    f"InplaceSGD is incompatible with gradient accumulation, "
+                    f"set gradient_accumulation_steps from {self.config.gradient_accumulation_steps} to 1."
+                )
+                self.config.ds_config["gradient_accumulation_steps"] = 1
 
         self.model = model
         self.optimizer = optimizer
@@ -95,12 +102,6 @@ class Trainer:
             env.dp_rank, env.pp_rank, env.tp_rank
         )
 
-        if isinstance(self.optimizer, InplaceSGD) and self.config.gradient_accumulation_steps > 1:
-            logger.rank_zero_warning(
-                f"InplaceSGD is incompatible with gradient accumulation, "
-                f"set gradient_accumulation_steps from {self.config.gradient_accumulation_steps} to 1."
-            )
-            self.config.gradient_accumulation_steps = 1
         self.init_state_dict()
             
     def init_state_dict(self):
@@ -201,10 +202,12 @@ class Trainer:
         # train_dataloader
         if self.train_dataset is None:
             self.train_dataloader = None
-        if self.config.pp_size == 1:
+            self.steps_per_epoch = 0
+        elif self.config.pp_size == 1:
             self.train_dataloader = self.engine.deepspeed_io(
                 self.train_dataset, collate_fn=self.train_dataset_collate_fn
             )
+            self.steps_per_epoch = len(self.train_dataloader)
         else:
             # PipelineModule._build_data_iter
             # For accumulation step. Batch will be splitted in train()
@@ -218,6 +221,8 @@ class Trainer:
                 collate_fn=self.train_dataset_collate_fn,
                 batch_size=pipe_batch_size
             )
+            self.steps_per_epoch = len(self.train_dataloader)
+            self.train_dataloader = RepeatingLoader(self.train_dataloader)
         if self.eval_dataset is not None:
             eval_batch_size = self.config.eval_batch_size
             if env.pp_size > 1:
@@ -233,7 +238,11 @@ class Trainer:
                 collate_fn=self.eval_dataset_collate_fn,
                 num_local_io_workers=None
             )
+            self.eval_steps = len(self.eval_dataloader)
+            if env.pp_size > 1:
+                self.eval_dataloader = RepeatingLoader(self.eval_dataloader)
         else:
+            self.eval_steps = 0
             self.eval_dataloader = None
 
         # set logger level
@@ -247,12 +256,15 @@ class Trainer:
         if dataloader is not None:
             train_dataloader = dataloader
 
-        with progress(range(self.epoch_idx, self.config.train_epochs), desc="Training Epoch", disable=env.rank != 0, completed=self.epoch_idx) as tqbar_epoch:
+        with progress(range(self.epoch_idx, self.config.train_epochs), desc="Training Epoch", disable=env.rank != 0, completed=self.epoch_idx, total=self.config.train_epochs) as tqbar_epoch:
             for self.epoch_idx in tqbar_epoch:
                 tqbar_epoch.set_description(f"Training Epoch: {self.epoch_idx} / {self.config.train_epochs}")
-                with progress(train_dataloader, desc="Training Batch: ", disable=env.rank != 0, completed=self.batch_idx) as tqbar_batch:
+
+                with progress(train_dataloader, desc="Training Batch: ", disable=env.rank != 0, completed=self.batch_idx, total=self.steps_per_epoch) as tqbar_batch:
                     for self.batch_idx, batch in enumerate(tqbar_batch, start=self.batch_idx):
-                        tqbar_batch.set_description(f"Training Batch: {self.batch_idx} / {len(self.train_dataloader)}")
+                        if self.batch_idx >= self.steps_per_epoch:
+                            break
+                        tqbar_batch.set_description(f"Training Batch: {self.batch_idx} / {self.steps_per_epoch}")
                         if isinstance(self.engine, PipelineEngine):
                             if self.communicate_buffer_shape is None:
                                 self.communicate_buffer_shape = batch[0].shape
@@ -264,7 +276,7 @@ class Trainer:
                         self.engine.train()
                         get_accelerator().empty_cache()
                         with self.monitor:
-                            loss = self.train_fn(self, batch, self.epoch_idx * len(self.train_dataloader) + self.batch_idx)
+                            loss = self.train_fn(self, batch, self.epoch_idx * self.steps_per_epoch + self.batch_idx)
                         tqbar_batch.set_postfix(Loss=round(loss, 4))
                         if self.config.eval_per_n_steps > 0 and (self.batch_idx + 1) % self.config.eval_per_n_steps == 0:
                             self.eval()
@@ -278,10 +290,11 @@ class Trainer:
         eval_dataloader = self.eval_dataloader
         if dataloader is not None:
             eval_dataloader = dataloader
-        num_eval_batches = len(self.eval_dataloader)
-        with progress(eval_dataloader, desc="Evaluating Batch: ", disable=env.rank != 0, total=num_eval_batches) as tqbar_batch:
+        with progress(eval_dataloader, desc="Evaluating Batch: ", disable=env.rank != 0, total=self.eval_steps) as tqbar_batch:
             for batch_idx, batch in enumerate(tqbar_batch):
-                tqbar_batch.set_description(f"Evaluating Batch: {batch_idx} / {num_eval_batches}")
+                if batch_idx >= self.eval_steps:
+                    break
+                tqbar_batch.set_description(f"Evaluating Batch: {batch_idx} / {self.eval_steps}")
                 if isinstance(self.engine, PipelineEngine):
                     self.engine.reset_activation_shape()
                     if self.engine.total_loss is not None:
@@ -300,7 +313,7 @@ class Trainer:
         if env.pp_rank == 0 and env.tp_rank == 0:
             metric_results = self.metric_wrapper.get_metric()
             self.metric_wrapper.reset()
-        
+
             if len(metric_results) > 0:  # 如果 metric 不为 None 需要 print 。
                 if isinstance(metric_results, dict):
                     f_rich_progress.print_json(metric_results)
