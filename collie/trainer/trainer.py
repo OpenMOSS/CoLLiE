@@ -44,6 +44,7 @@ from collie.models.base import CollieModelForCausalLM
 class Trainer:
     r"""
     **CoLLie** 训练器，支持快速分布式训练和验证。
+
     :param model: 用于训练和验证的模型，可以使用 **CoLLie** 实现的模型或 transformers 提供的模型：
 
         * **CoLLie** 实现的模型 :class:`~collie.CollieModelForCausalLM` 可支持的并行方式包括：张量并行、流水线并行、`ZeRO`

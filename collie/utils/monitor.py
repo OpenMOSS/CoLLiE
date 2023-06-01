@@ -15,6 +15,12 @@ class DummyDeepSpeedMonitor(Monitor):
         pass
 
 def get_monitor(config: CollieConfig):
+    """
+    用于获取DeepSpeed监控器实例的函数。通过这个函数，可以启用一个或多个监控后端（如PyTorch的Tensorboard、WandB和简单的CSV文件）实时记录指标。
+    
+    :param config:一个CollieConfig对象，用于配置监控器的行为
+    :return: (MonitorMaster | DummyDeepSpeedMonitor)如果传入的CollieConfig已经包含有Monitor的相关配置，则返回MonitorMaster实例；否则返回DummyDeepSpeedMonitor实例。
+    """
     if "monitor_config" in config.ds_config.keys():
         config.ds_config["monitor_config"]["enabled"] = True
         if "tensorboard" not in config.ds_config["monitor_config"].keys():
@@ -28,6 +34,11 @@ def get_monitor(config: CollieConfig):
         return DummyDeepSpeedMonitor(config.ds_config["monitor_config"])
     
 class BaseMonitor:
+    """
+    BaseMonitor是一个基础的监控器类，用于记录模型训练过程中的统计信息。
+    
+    :param config: 用户传入的config，类型为CollieConfig
+    """
     def __init__(self, config) -> None:
         self.config = config
         self.monitor = get_monitor(config)
