@@ -425,4 +425,3 @@ class MultiParallelGrid(PipelineParallelGrid):
         # Create new ProcessGroup for model (tensor-slicing) collectives
         self.slice_proc_group = parallel_state.get_tensor_model_parallel_group()
         self.slice_group = list(dist.distributed_c10d._pg_group_ranks[self.slice_proc_group].keys())
-        print(self.slice_group, dist.get_process_group_ranks(self.slice_proc_group))
