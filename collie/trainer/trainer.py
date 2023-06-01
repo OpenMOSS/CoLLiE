@@ -33,7 +33,7 @@ from collie.module import PipelineGenerationMixin, GPTLMLoss, PipelineModel
 from collie.driver.io.file import FileIODriver
 from collie.driver.io.petrel import PetrelIODriver
 from collie.log import logger
-from collie.utils import progress, env, setup_ds_engine, BaseProvider, _GenerationStreamer, _MetricsWrapper, is_zero3_enabled, BaseMonitor, MultiMonitors
+from collie.utils import progress, env, setup_ds_engine, BaseProvider, _GenerationStreamer, _MetricsWrapper, is_zero3_enabled, BaseMonitor, _MultiMonitors
 from collie.utils.rich_progress import f_rich_progress
 from collie.optim import InplaceSGD
 from collie.metrics import BaseMetric
@@ -144,10 +144,9 @@ class Trainer:
         self.config = config
         self.communicate_buffer_shape = None
         self.setup_parallel_model()
-        # self.init_metrics()
         get_accelerator().empty_cache()
         self.data_provider = data_provider
-        self.monitor = MultiMonitors(self, monitors)
+        self.monitor = _MultiMonitors(self, monitors)
         if self.data_provider is not None and dist.get_rank() == 0:
             self.data_provider.start_provider()
         self.checkpoint_file = "collie_dp{}_pp{}_tp{}.pt".format(
@@ -178,6 +177,12 @@ class Trainer:
         """
         self.epoch_idx = state_dict["epoch_idx"]
         self.batch_idx = state_dict["batch_idx"]
+        
+    @property
+    def global_batch_idx(self):
+        """获取当前全局步数
+        """
+        return self.epoch_idx * self.steps_per_epoch + self.batch_idx
         
     def data_provider_handler(self):
         """当初始化 :class:`collie.Trainer` 的过程中提供了 `data_provider` 时会使用此方法。
@@ -343,8 +348,15 @@ class Trainer:
                         self.data_provider_handler()
                         self.engine.train()
                         get_accelerator().empty_cache()
-                        with self.monitor:
+                        with self.monitor as item:
                             loss = self.train_fn(self, batch, self.epoch_idx * self.steps_per_epoch + self.batch_idx)
+                            item.update({"loss": loss,
+                                         "batch": batch,
+                                         "batch_idx": self.batch_idx,
+                                         "epoch_idx": self.epoch_idx,
+                                         "global_batch_idx": self.global_batch_idx,
+                                         "memory_allocated": torch.cuda.memory_allocated(),
+                                         "mode": "train"})
                         tqbar_batch.set_postfix(Loss=round(loss, 4))
                         if self.config.eval_per_n_steps > 0 and (self.batch_idx + 1) % self.config.eval_per_n_steps == 0:
                             self.eval()
@@ -383,14 +395,13 @@ class Trainer:
                 if env.pp_rank == 0 and env.tp_rank == 0:
                     self.metric_wrapper.update(result)
         if env.pp_rank == 0 and env.tp_rank == 0:
-            metric_results = self.metric_wrapper.get_metric()
+            with self.monitor as item:
+                metric_results = self.metric_wrapper.get_metric()
+                item.update({"eval_result": metric_results, "mode": "eval"})
             self.metric_wrapper.reset()
 
             if len(metric_results) > 0:  # 如果 metric 不为 None 需要 print 。
-                if isinstance(metric_results, dict):
-                    f_rich_progress.print_json(metric_results)
-                else:
-                    f_rich_progress.print(metric_results)
+                f_rich_progress.print_json(metric_results)
 
         if isinstance(self.engine, PipelineEngine):
             self.engine.reset_activation_shape()

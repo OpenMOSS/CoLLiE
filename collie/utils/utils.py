@@ -172,6 +172,7 @@ def _split_batch(batch, micro_batch_size, micro_batch_num):
     labels = batch[1]
     if isinstance(labels, Sequence):
         labels_split = [torch.split(label, micro_batch_size) for label in labels]
+        labels_split = list(zip(*labels_split))
     else:
         labels_split = torch.split(labels, micro_batch_size)
     if isinstance(inputs, torch.Tensor):

@@ -18,6 +18,7 @@ from typing import Union, Optional
 
 from .utils import classproperty, _split_batch
 from collie.config import load_config, CollieConfig
+from collie.log.logger import logger
 
 __all__ = [
     "env", "setup_distribution", "set_seed", "setup_ds_engine",
@@ -66,6 +67,30 @@ def setup_ds_engine(
     )
     return engine, optimizer, _, lr_scheduler
 
+def _decompose_slurm_nodes(s):
+    # 使用正则表达式找到所有符合模式的子串
+    sub_strings = re.findall(r'[\w-]+\-\[[^\]]*\]|[\w-]+\-\d+', s)
+
+    results = []
+
+    for sub_s in sub_strings:
+        # 搜索括号内的元素
+        bracket_content = re.search('\[([^\]]+)\]', sub_s)
+        if bracket_content:
+            # 获取前缀部分
+            prefix = sub_s.split('[')[0]
+            # 获取括号内的所有元素
+            elements = bracket_content.group(1).split(',')
+            for element in elements:
+                if '-' in element:  # 如果元素是一个范围
+                    start, end = [int(i) for i in element.split('-')]
+                    results.extend(f'{prefix}{i}' for i in range(start, end+1))
+                else:  # 如果元素是一个单独的数字
+                    results.append(prefix + element)
+        else:  # 如果没有括号，直接添加到结果中
+            results.append(sub_s)
+    return results
+
 
 def setup_distribution(config) -> None:
     """
@@ -99,20 +124,21 @@ def setup_distribution(config) -> None:
         # launch from slurm
         if "SLURM_JOB_NODELIST" in os.environ.keys():
             node_list_str = os.environ["SLURM_JOB_NODELIST"]
-            node_list = []
-            result = re.search(r"\[(.*?)\]", node_list_str)
-            if result is None:
-                node_list.append(node_list_str)
-            else:
-                node_list.extend([item for item in result.groups(1)[0].split(",")])
-                for i in node_list:
-                    if "-" in i:
-                        node_list.extend(
-                            list(map(lambda x: f"{x}", range(int(i.split("-")[0]), int(i.split("-")[1]) + 1))))
-                        node_list.remove(i)
-                node_list = list(map(lambda x: re.sub(r"\[(.*?)\]", x, node_list_str), node_list))
+            node_list = _decompose_slurm_nodes(node_list_str)
+            # result = re.search(r"\[(.*?)\]", node_list_str)
+            # if result is None:
+            #     node_list.extend(node_list_str.split(","))
+            # else:
+            #     node_list.extend([item for item in result.groups(1)[0].split(",")])
+            #     for i in node_list:
+            #         if "-" in i:
+            #             node_list.extend(
+            #                 list(map(lambda x: f"{x}", range(int(i.split("-")[0]), int(i.split("-")[1]) + 1))))
+            #             node_list.remove(i)
+            #     node_list = list(map(lambda x: re.sub(r"\[(.*?)\]", x, node_list_str), node_list))
             node_list = sorted(node_list)
             master_addr = node_list[0]
+            
             os.environ["MASTER_ADDR"] = f"{master_addr}"
             result = subprocess.run(["scontrol", "show", "node", master_addr], capture_output=True)
             result = re.search(r"NodeAddr=(.*?)\s", result.stdout.decode())
