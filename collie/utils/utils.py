@@ -7,23 +7,6 @@ from .rich_progress import f_rich_progress
 
 __all__ = ["find_tensors", "progress", "dictToObj"]
 
-class classproperty:
-    """
-    Reference to https://github.com/hottwaj/classproperties/tree/main
-
-    Decorator for a Class-level property.
-    Credit to Denis Rhyzhkov on Stackoverflow: https://stackoverflow.com/a/13624858/1280629"""
-    def __init__(self, fget, cached=False):
-        self.fget = fget
-        self.cached = cached
-
-    def __get__(self, owner_self, owner_cls):
-        val = self.fget(owner_cls)
-        if self.cached:
-            setattr(owner_cls, self.fget.__name__, val)
-        return val
-
-
 def find_tensors():
     """
     打印出垃圾回收区的所有张量。

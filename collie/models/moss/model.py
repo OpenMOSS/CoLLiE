@@ -1,6 +1,3 @@
-# TODO delete
-import sys
-sys.path.append("../../../")
 import os
 import json
 from typing import Optional, Tuple, Union

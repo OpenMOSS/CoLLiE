@@ -9,6 +9,7 @@ from collie.log import logger
 def seq_len_to_mask(seq_len, max_len: Optional[int]=None):
     r"""
     将一个表示 ``sequence length`` 的一维数组转换为二维的 ``mask`` ，不包含的位置为 **0**。
+
     .. code-block::
         >>> seq_len = torch.arange(2, 16)
         >>> mask = seq_len_to_mask(seq_len)
@@ -22,6 +23,7 @@ def seq_len_to_mask(seq_len, max_len: Optional[int]=None):
         >>> mask = seq_len_to_mask(seq_len, max_len=100)
         >>>print(mask.size())
         torch.Size([14, 100])
+
     :param seq_len: 大小为 ``(B,)`` 的长度序列；
     :param int max_len: 将长度补齐或截断到 ``max_len``。默认情况（为 ``None``）使用的是 ``seq_len`` 中最长的长度；
         但在 :class:`torch.nn.DataParallel` 等分布式的场景下可能不同卡的 ``seq_len`` 会有区别，所以需要传入
@@ -60,7 +62,9 @@ class AccuracyMetric(BaseMetric):
         r"""
         :meth:`get_metric` 函数将根据 :meth:`update` 函数累计的评价指标统计量来计算最终的评价结果。
 
-        :return dict evaluate_result: {"acc": float, 'total': float, 'correct': float}
+        :return: 字典形式的评测结果，例如::
+
+                {"acc": float, 'total': float, 'correct': float}
         """
         evaluate_result = {'acc': round(self.correct / (self.total + 1e-12), 6),
                            'total': self.total, 'correct': self.correct}
@@ -70,13 +74,14 @@ class AccuracyMetric(BaseMetric):
         r"""
         :meth:`update` 函数将针对一个批次的预测结果做评价指标的累计。
 
-        :param result 类型为 Dict 且 keys 至少包含["pred", "target"]
-            * pred: 预测的 tensor, tensor 的形状可以是 ``torch.Size([B,])`` 、``torch.Size([B, n_classes])`` 、
-            ``torch.Size([B, max_len])`` 或 ``torch.Size([B, max_len, n_classes])``
-            * target: 真实值的 tensor, tensor 的形状可以是 ``torch.Size([B,])`` 、``torch.Size([B, max_len])``
-            或 ``torch.Size([B, max_len])``
-            * seq_len: 序列长度标记, 标记的形状可以是 ``None``,  或者 ``torch.Size([B])`` 。
-            如果 mask 也被传进来的话 ``seq_len`` 会被忽略
+        :param result: 类型为 Dict 且 keys 至少包含["pred", "target"]
+
+            * pred - 预测的 tensor, tensor 的形状可以是 ``torch.Size([B,])`` 、``torch.Size([B, n_classes])`` 、
+              ``torch.Size([B, max_len])`` 或 ``torch.Size([B, max_len, n_classes])``
+            * target - 真实值的 tensor, tensor 的形状可以是 ``torch.Size([B,])`` 、``torch.Size([B, max_len])``
+              或 ``torch.Size([B, max_len])``
+            * seq_len - 序列长度标记, 标记的形状可以是 ``None``,  或者 ``torch.Size([B])`` 。
+              如果 mask 也被传进来的话 ``seq_len`` 会被忽略
         """
         if "pred" not in result.keys():
             raise ValueError(f"pred not in result!")

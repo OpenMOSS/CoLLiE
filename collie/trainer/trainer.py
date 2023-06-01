@@ -40,7 +40,6 @@ from collie.metrics import BaseMetric
 from collie.models.base import CollieModelForCausalLM
 
 
-
 class Trainer:
     r"""
     **CoLLie** 训练器，支持快速分布式训练和验证。
@@ -48,48 +47,51 @@ class Trainer:
     :param model: 用于训练和验证的模型，可以使用 **CoLLie** 实现的模型或 transformers 提供的模型：
 
         * **CoLLie** 实现的模型 :class:`~collie.CollieModelForCausalLM` 可支持的并行方式包括：张量并行、流水线并行、`ZeRO`
-        * transformers 提供的模型 `transformers.PreTrainedModel` 只支持 `ZeRO`
+        * transformers 提供的模型 ``transformers.PreTrainedModel`` 只支持 `ZeRO`
         
     :param config: 用于训练和验证的配置
     :param loss_fn: 用于计算 loss 的函数，默认使用 :meth:`~collie.module.GPTLMLoss`
     :param train_fn: 用于训练的函数，默认使用 :meth:`~collie.trainer.Trainer.train_fn`
     :param eval_fn: 用于验证的函数，默认使用 :meth:`~collie.trainer.Trainer.eval_fn`
-    :param optimizer: 训练过程中的优化器，当为 `None` 的时候会尝试使用 `config.ds_config` 定义的优化器
+    :param optimizer: 训练过程中的优化器，当为 `None` 的时候会尝试使用 ``config.ds_config`` 定义的优化器
     :param lr_scheduler: 训练过程中的学习率调度器；
-    :param train_dataset: 用于训练的数据集
-    :param eval_dataset: 用于验证的数据集
-        **CoLLie** 可接收的 `train_dataset` 和 `eval_dataset` 为可迭代对象，例如 `torch.utils.data.Dataset` 或 `List`
+    :param train_dataset: 用于训练的数据集。
+    :param eval_dataset: 用于验证的数据集。
+        **CoLLie** 可接收的 ``train_dataset`` 和 ``eval_dataset`` 为可迭代对象，例如 ``torch.utils.data.Dataset`` 或 ``List``
         
         .. note::
 
-            当未提供 `train_dataset_collate_fn` 或 `eval_dataset_collate_fn` 时，`train_dataset` 和 `eval_dataset` 的取值应当为长度为 **2** 的 `Tuple` 类型，例如 `(a, b)`，其中:
-                * `a` 即 `input_ids`， 为 `torch.Tensor` 类型，表示模型的的输入
-                * `b` 可以为 `torch.Tensor`，也可以是由 `torch.Tensor` 组成的任意长度的 `Tuple`，此项会作为 `loss_fn` 的第二个参数传入
+            当未提供 ``train_dataset_collate_fn`` 或 ``eval_dataset_collate_fn`` 时，``train_dataset`` 和 ``eval_dataset`` 的取值应当为长度为 **2** 的 `Tuple` 类型，例如 `(a, b)`，其中:
+                
+            * `a` 即 ``input_ids``， 为 ``torch.Tensor`` 类型，表示模型的的输入
+            * `b` 可以为 ``torch.Tensor``，也可以是由 ``torch.Tensor`` 组成的任意长度的 `Tuple`，此项会作为 `loss_fn` 的第二个参数传入
         
-    :param train_dataset_collate_fn: 用于训练数据集的 `collate_fn`
-    :param eval_dataset_collate_fn: 用于验证数据集的 `collate_fn`
-        `train_dataset_collate_fn` 与 `eval_dataset_collate_fn` 只可接受一个参数，为 `train_dataset` 或 `eval_dataset` 迭代值组成的 `List`。
+    :param train_dataset_collate_fn: 用于训练数据集的 `collate_fn`。
+    :param eval_dataset_collate_fn: 用于验证数据集的 `collate_fn`。
+        ``train_dataset_collate_fn`` 与 ``eval_dataset_collate_fn`` 只可接受一个参数，为 ``train_dataset`` 或 ``eval_dataset`` 迭代值组成的 ``List``。
         
         .. note::
 
-        `train_dataset_collate_fn` 和 `eval_dataset_collate_fn` 的返回值必须是为长度为 **2** 的 `Tuple` 类型，，例如 `(a, b)`，其中:
-            * `a` 即 `input_ids`，为 `torch.Tensor` 类型，表示模型的的输入
-            * `b` 可以为 `torch.Tensor`，也可以是由 `torch.Tensor` 组成的任意长度的 `Tuple`，此项会作为 `loss_fn` 的第二个参数传入
+            ``train_dataset_collate_fn`` 和 ``eval_dataset_collate_fn`` 的返回值必须是为长度为 **2** 的 `Tuple` 类型，，例如 `(a, b)`，其中:
+            
+            * `a` 即 ``input_ids``，为 ``torch.Tensor`` 类型，表示模型的的输入
+            * `b` 可以为 ``torch.Tensor``，也可以是由 ``torch.Tensor`` 组成的任意长度的 ``Tuple``，此项会作为 ``loss_fn`` 的第二个参数传入
                 
         例如:
 
-        ..code-block:: python
-        from transformers import AutoTokenizer
-        def collate_fn(batch):
-            # batch = ["样本1", "样本2", ...]
-            tokenizer = AutoTokenizer.from_pretrained("fnlp/moss-moon-003-sft", padding_side="left", trust_remote_code=True)
-            input_ids = tokenizer(batch, return_tensors="pt", padding=True)["input_ids"]
-            # 第二个 input_ids 会被用于 loss_fn 的 label
-            return input_ids, input_ids
+        .. code-block:: python
+    
+            from transformers import AutoTokenizer
+            def collate_fn(batch):
+                # batch = ["样本1", "样本2", ...]
+                tokenizer = AutoTokenizer.from_pretrained("fnlp/moss-moon-003-sft", padding_side="left", trust_remote_code=True)
+                input_ids = tokenizer(batch, return_tensors="pt", padding=True)["input_ids"]
+                # 第二个 input_ids 会被用于 loss_fn 的 label
+                return input_ids, input_ids
             
     :param eval_config: 用于验证的配置
-        **CoLLie** 默认的 `eval_fn` 为进行一次生成过程，因此本项配置主要控制生成过程的参数。当自定义 `eval_fn` 时，本项配置将不会生效
-    :param data_provider: 额外的数据提供器，可在 `eval_dataset` 之外额外注入验证数据，例如通过前端网页或 http 请求等， 详见 :class:`~collie.utils.data_provider.BaseProvider`
+        **CoLLie** 默认的 ``eval_fn`` 为进行一次生成过程，因此本项配置主要控制生成过程的参数。当自定义 ``eval_fn`` 时，本项配置将不会生效
+    :param data_provider: 额外的数据提供器，可在 ``eval_dataset`` 之外额外注入验证数据，例如通过前端网页或 http 请求等， 详见 :class:`~collie.utils.data_provider.BaseProvider`
     :param monitors: 用于监控训练过程的监控器，详见 :class:`~collie.utils.monitor.BaseMonitor`
     :param metrics: 用于传给 ``Trainer`` 内部训练过程中的对 eval_dataset 进行验证。
         其应当为一个字典，其中 key 表示 monitor，value 表示一个
@@ -97,7 +99,7 @@ class Trainer:
 
         目前我们支持的 ``metric`` 的种类有以下几种：
 
-        * Collie 自己的 ``metric``：详见 :class:`.Metric`
+        * Collie 自己的 ``metric``：详见 :class:`.BaseMetric`
         * 继承 Collie 基类的自定义 Metric
     """
     def __init__(self, 
@@ -180,8 +182,8 @@ class Trainer:
         self.batch_idx = state_dict["batch_idx"]
         
     def data_provider_handler(self):
-        """当初始化 :class:`collie.Trainer` 的过程中提供了 `data_provider` 时会使用此方法。
-            `data_provider` 中维持一个异步队列 `queue.Queue`，该方法会不断从中取出数据，放入模型中进行生成
+        """当初始化 :class:`collie.Trainer` 的过程中提供了 ``data_provider`` 时会使用此方法。
+            ``data_provider`` 中维持一个异步队列 ``queue.Queue``，该方法会不断从中取出数据，放入模型中进行生成
         """
         if self.data_provider is None:
             return None
@@ -239,7 +241,8 @@ class Trainer:
         get_accelerator().empty_cache()
                       
     def setup_parallel_model(self):
-        """初始化分布式模型.
+        """
+        初始化分布式模型。
         """
         if dist.get_world_size() != self.config.tp_size * self.config.dp_size * self.config.pp_size:
             logger.rank_zero_warning("The world size is not equal to the product of the parallel sizes set."
@@ -317,7 +320,7 @@ class Trainer:
     def train(self, dataloader: Optional[Iterable] = None):
         """训练循环
         
-        :param dataloader: 用于训练的数据集，为 `Iterable` 对象 ，当为 `None` 时，使用由 `train_dataset` 生成的 `train_dataloader`
+        :param dataloader: 用于训练的数据集，为 ``Iterable`` 对象 ，当为 ``None`` 时，使用由 ``train_dataset`` 生成的 ``train_dataloader``
         """
         train_dataloader = self.train_dataloader
         loss = 0.0
@@ -357,7 +360,7 @@ class Trainer:
              dataloader: Optional[Iterable] = None):
         """验证循环
 
-        :param dataloader: 用于验证的数据集，为 `Iterable` 对象 ，当为 `None` 时，使用 `eval_dataset` 生成的 `eval_dataloader`
+        :param dataloader: 用于验证的数据集，为 ``Iterable`` 对象 ，当为 ``None`` 时，使用 ``eval_dataset`` 生成的 ``eval_dataloader``
         """
         eval_dataloader = self.eval_dataloader
         if dataloader is not None:
@@ -401,9 +404,12 @@ class Trainer:
         """一次训练的基本单元
 
         :param trainer: 训练器
-        :param batch: 一个 batch 的数据，类型为长度为 2 的 `Tuple`，其中第一个元素为 `input_ids`，第二个元素为 `labels`
-            ..note::
-                根据提供的 `train_dataset` 和 `train_dataset_collate_fn` 的不同，`labels` 的类型也会有所不同，详见 :class:`~collie.trainer.Trainer`
+        :param batch: 一个 batch 的数据，类型为长度为 2 的 ``Tuple``，其中第一个元素为 ``input_ids``，第二个元素为 ``labels``
+
+            .. note::
+                
+                根据提供的 ``train_dataset`` 和 ``train_dataset_collate_fn`` 的不同，`labels` 的类型也会有所不同，详见 :class:`~collie.trainer.Trainer`
+    
         :param global_step: 当前的全局步数
         
         :return: 当前 batch 的 loss
@@ -440,9 +446,12 @@ class Trainer:
         """一次验证的基本单元
 
         :param trainer: 训练器
-        :param batch: 一个 batch 的数据，类型为长度为 2 的 `Tuple`，其中第一个元素为 `input_ids`，第二个元素为 `labels`
-            ..note::
-                根据提供的 `eval_dataset` 和 `eval_dataset_collate_fn` 的不同，`labels` 的类型也会有所不同，详见 :class:`~collie.trainer.Trainer`
+        :param batch: 一个 batch 的数据，类型为长度为 2 的 ``Tuple``，其中第一个元素为 ``input_ids``，第二个元素为 ``labels``
+
+            .. note::
+
+                根据提供的 ``eval_dataset`` 和 ``eval_dataset_collate_fn`` 的不同，``labels`` 的类型也会有所不同，详见 :class:`~collie.trainer.Trainer`
+    
         :return: 一次验证的结果，为 `Dict` 类型，该结果会被传入 `metric` 的 `update` 方法中
         """
         input_ids, labels = batch
@@ -462,11 +471,13 @@ class Trainer:
     def save_checkpoint(self, path: str, process_exclusion: bool = False, mode: str = "trainer", 
                         protocol: str="file", **kwargs):
         """保存训练器断点功能
+
         :param path: 断点保存路径
         :param process_exclusion: 是否开启进程互斥，当开启流水线并行时开启此项可以节省内存（仅限 **CoLLie** 内实现的模型，对 `transformers` 提供的模型本项无效）
-        :param mode: 断点保存模式，支持 `trainer` 和 `model` 两种模式
-            * `trainer` 模式下保存的断点包含了训练器的状态，包括模型参数、`epoch_idx` 和 `batch_idx` 等数据集状态、以及优化器的状态等
-            * `model` 模式下保存的断点仅包含模型的状态，不包含训练器的状态
+        :param mode: 断点保存模式，支持 ``'trainer'`` 和 ``'model'`` 两种模式
+
+            * ``'trainer'`` 模式下保存的断点包含了训练器的状态，包括模型参数、`epoch_idx` 和 `batch_idx` 等数据集状态、以及优化器的状态等
+            * ``'model'`` 模式下保存的断点仅包含模型的状态，不包含训练器的状态
         """
         dist.barrier()
         assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
@@ -547,11 +558,13 @@ class Trainer:
     def load_checkpoint(self, path: str, process_exclusion: bool = False, mode: str = "trainer",
                         protocol: str = 'file', **kwargs):
         """训练器断点加载
+
         :param path: 断点保存路径
-        :param process_exclusion: 是否开启进程互斥，当开启流水线并行时开启此项可以节省内存（仅限 **CoLLie** 内实现的模型，对 `transformers` 提供的模型本项无效）
-        :param mode: 断点加载模式，支持 `trainer` 和 `model` 两种模式
-            * `trainer` 模式下加载的断点包含了训练器的状态，包括模型参数、`epoch_idx` 和 `batch_idx` 等数据集状态、以及优化器的状态等
-            * `model` 模式下加载的断点仅包含模型的状态，不包含训练器的状态
+        :param process_exclusion: 是否开启进程互斥，当开启流水线并行时开启此项可以节省内存（仅限 **CoLLie** 内实现的模型，对 ``transformers`` 提供的模型本项无效）
+        :param mode: 断点加载模式，支持 ``'trainer'`` 和 ``'model'`` 两种模式
+
+            * ``'trainer'`` 模式下加载的断点包含了训练器的状态，包括模型参数、``epoch_idx`` 和 ``batch_idx`` 等数据集状态、以及优化器的状态等
+            * ``'model'`` 模式下加载的断点仅包含模型的状态，不包含训练器的状态
         """
         assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
         assert mode in ["trainer", "model"], f"Only support `trainer` and `model` mode, not `{mode}`."

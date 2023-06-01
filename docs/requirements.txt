@@ -1,0 +1,5 @@
+sphinx==5.3.0
+sphinx_autodoc_typehints
+sphinx_copybutton
+nbsphinx
+ -e git+https://github.com/x54-729/pytorch_sphinx_theme.git#egg=pytorch_sphinx_theme

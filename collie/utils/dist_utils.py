@@ -16,7 +16,7 @@ from megatron.core import parallel_state, tensor_parallel
 
 from typing import Union, Optional
 
-from .utils import classproperty, _split_batch
+from .utils import _split_batch
 from collie.config import load_config, CollieConfig
 
 __all__ = [
@@ -72,6 +72,7 @@ def setup_distribution(config) -> None:
     设置分布式环境。
 
     可以支持多机情况下的分布式训练：
+
     1. launch from torchrun
        eg: torchrun --standalone --nproc_per_node=8 train.py
     2. launch from slurm
@@ -286,18 +287,25 @@ def broadcast_tensor(tensor, dtype=None, src=0, shape=None,
     dist.broadcast(tensor, src, group)
     return tensor
 
-class env:
+class Env:
     """
     **CoLLiE** 的环境变量，可以从中获取各种并行的 world_size 和 rank。
+
+    调用时直接导入已经实例化好的对象 ``env`` 即可。
+
+    .. code-block::
+
+        from collie.utils import env
+        print(env.dp_rank)
     """
-    @classproperty
+    @property
     def rank(self):
         """
         Global rank。
         """
         return int(os.getenv("RANK", "0"))
 
-    @classproperty
+    @property
     def local_rank(self):
         """
         Local rank。
@@ -312,14 +320,14 @@ class env:
         if dist.is_initialized():
             torch.distributed.barrier(group)
 
-    @classproperty
+    @property
     def world_size(self):
         """
         分布式训练的 world size。
         """
         return int(os.getenv("WORLD_SIZE", "1"))
 
-    @classproperty
+    @property
     def pp_rank(self):
         """
         流水线并行的 rank。
@@ -328,7 +336,7 @@ class env:
             return 0
         return parallel_state.get_pipeline_model_parallel_rank()
 
-    @classproperty
+    @property
     def dp_rank(self):
         """
         数据并行的 rank。
@@ -337,7 +345,7 @@ class env:
             return 0
         return parallel_state.get_data_parallel_rank()
 
-    @classproperty
+    @property
     def tp_rank(self):
         """
         张量并行的 rank。
@@ -346,7 +354,7 @@ class env:
             return 0
         return parallel_state.get_tensor_model_parallel_rank()
 
-    @classproperty
+    @property
     def mp_rank(self):
         """
         模型并行的 rank。模型并行与数据并行相对，同时包含了张量并行和模型并行。
@@ -355,14 +363,14 @@ class env:
             return 0
         return parallel_state.get_model_parallel_group().rank()
 
-    @classproperty
+    @property
     def is_pipeline(self):
         """
         判断是否是流水线并行。
         """
         return "COLLIE_PP_PARTS" in os.environ.keys()
 
-    @classproperty
+    @property
     def pipline_parts(self):
         """
         返回流水线并行中模型切分的分界点，长度为 ``pp_size + 1``。
@@ -378,7 +386,7 @@ class env:
 
         return parts
 
-    @classproperty
+    @property
     def pipline_layers_idx(self):
         """
         返回流水线并行中当前 rank 切分的模型索引。
@@ -392,28 +400,28 @@ class env:
             stage = self.pp_rank
             return list(range(parts[stage], parts[stage + 1]))
 
-    @classproperty
+    @property
     def tp_group(self):
         """
         张量并行的通信组。
         """
         return parallel_state.get_tensor_model_parallel_group()
 
-    @classproperty
+    @property
     def pp_group(self):
         """
         流水线并行的通信组。
         """
         return parallel_state.get_pipeline_model_parallel_group()
 
-    @classproperty
+    @property
     def dp_group(self):
         """
         数据并行的通信组。
         """
         return parallel_state.get_data_parallel_group()
 
-    @classproperty
+    @property
     def dp_size(self):
         """
         数据并行的 world size。
@@ -422,7 +430,7 @@ class env:
             return 1
         return parallel_state.get_data_parallel_world_size()
 
-    @classproperty
+    @property
     def tp_size(self):
         """
         张量并行的 world size。
@@ -431,7 +439,7 @@ class env:
             return 1
         return parallel_state.get_tensor_model_parallel_world_size()
 
-    @classproperty
+    @property
     def pp_size(self):
         """
         流水线并行的 world size。
@@ -440,7 +448,7 @@ class env:
             return 1
         return parallel_state.get_pipeline_model_parallel_world_size()
 
-    @classproperty
+    @property
     def is_last_stage(self):
         """
         是否是流水线的最后一个阶段。
@@ -449,7 +457,7 @@ class env:
             return True
         return parallel_state.is_pipeline_last_stage()
 
-    @classproperty
+    @property
     def is_first_stage(self):
         """
         是否是流水线的第一个阶段。
@@ -457,3 +465,5 @@ class env:
         if not dist.is_initialized():
             return True
         return parallel_state.is_pipeline_first_stage()
+
+env = Env()
