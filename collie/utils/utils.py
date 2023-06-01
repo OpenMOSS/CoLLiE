@@ -7,23 +7,6 @@ from .rich_progress import f_rich_progress
 
 __all__ = ["find_tensors", "progress", "dictToObj"]
 
-class classproperty:
-    """
-    Reference to https://github.com/hottwaj/classproperties/tree/main
-
-    Decorator for a Class-level property.
-    Credit to Denis Rhyzhkov on Stackoverflow: https://stackoverflow.com/a/13624858/1280629"""
-    def __init__(self, fget, cached=False):
-        self.fget = fget
-        self.cached = cached
-
-    def __get__(self, owner_self, owner_cls):
-        val = self.fget(owner_cls)
-        if self.cached:
-            setattr(owner_cls, self.fget.__name__, val)
-        return val
-
-
 def find_tensors():
     """
     打印出垃圾回收区的所有张量。
@@ -154,7 +137,7 @@ class progress:
             self.bar.update(self.task_id, total=total, completed=completed,
                         advance=advance, description=desc, visible=visible,
                         refresh=refresh, post_desc=post_desc)
-            
+
 def _split_batch(batch, micro_batch_size, micro_batch_num):
     """
     将 ``batch`` 划分为 ``micro_batch_num`` 个 ``micro_batch_size`` 大小。
@@ -167,7 +150,7 @@ def _split_batch(batch, micro_batch_size, micro_batch_num):
     :return: tuple
     """
     # Assume batch first.
-    assert len(batch) >= 2, len(batch)
+    assert len(batch) == 2, len(batch)
     inputs = batch[0]
     labels = batch[1]
     if isinstance(labels, Sequence):
@@ -179,19 +162,13 @@ def _split_batch(batch, micro_batch_size, micro_batch_num):
         inputs_split = torch.split(inputs, micro_batch_size)
         assert len(inputs_split) == micro_batch_num, len(inputs_split)
     else:
-        # tuple of tensor
-        assert isinstance(inputs, (tuple, list))
-        inputs_split = [() for _ in range(micro_batch_num)]
-        for tensor in inputs:
-            assert isinstance(tensor, torch.Tensor), type(tensor)
-            tensor_split = torch.split(inputs, micro_batch_size)
-            assert len(tensor_split) == micro_batch_num, len(tensor_split)
-            for i in range(micro_batch_num):
-                inputs_split[i] += (tensor_split[i], )
+        inputs_split = (torch.split(input_, micro_batch_size) for input_ in inputs)
+        inputs_split = list(zip(*inputs_split))
     
     batch_split = ()
-    for input_split, labels_split in zip(inputs_split, labels_split):
-        batch_split += ((input_split, labels_split), )
+    for input_split, label_split in zip(inputs_split, labels_split):
+        print(label_split)
+        batch_split += ((input_split, label_split), )
 
     return batch_split
 

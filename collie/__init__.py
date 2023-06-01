@@ -29,8 +29,6 @@ __all__ = [
     'LinearWithHiddenStates',
     'ColumnParallelLMHead',
     'GPTLMLoss',
-    'PipelineModel',
-    'MultiParallelGrid',
     "BaseProvider", 
     "GradioProvider", 
     "_GenerationStreamer"

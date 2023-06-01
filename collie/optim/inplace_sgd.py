@@ -7,14 +7,18 @@ import torch.distributed as dist
 class InplaceSGD(Optimizer):
     """
     一个自定义的优化器类InplaceSGD，用于在分布式训练中的梯度更新。
-    该类实现两个梯度更新函数inplace_sgd和inplace_sgd_zero3，分别用于非ZeRO和ZeRO模式下的梯度更新。
+
+    该类实现两个梯度更新函数 :meth:`inplace_sgd` 和 :meth:`inplace_sgd_zero3`，分别用于非ZeRO和ZeRO模式下的梯度更新。
     
     :param model: 待优化的模型
     :param lr: 学习率，默认值为1e-3
-    :param zero_enabled: 是否开启ZeRO，默认值是false，表示不开启ZeRO；否则开启ZeRO
+    :param zero_enabled: 是否开启ZeRO，默认值是 ``False``，表示不开启ZeRO；否则开启ZeRO
     :param clip_grad_norm: 梯度裁剪的范数阈值
+
         .. note::
+
             clip_grad_norm须为正数
+
     :param clip_grad_value: 梯度裁剪的值域阈值
     """
     def __init__(self, model, lr=1e-3, zero_enabled=False, clip_grad_norm=None, clip_grad_value=None):
@@ -44,7 +48,7 @@ class InplaceSGD(Optimizer):
     def inplace_sgd(self):
         """
         在非ZeRO模式下更新模型参数的梯度。
-        
+
         :return: func，一个闭包函数，用于更新模型参数的梯度
         """
         def func(x):
@@ -119,8 +123,8 @@ class InplaceSGD(Optimizer):
         """
         执行一步反向传播更新模型的梯度。
         
-        :param loss:模型的loss值
-        :param lr:学习率
+        :param loss: 模型的loss值
+        :param lr: 学习率
         """
         self.lr = lr
         # User need call grad_norm themselves and then call backward_step
@@ -139,7 +143,7 @@ class InplaceSGD(Optimizer):
         """
         计算梯度的范数。
         
-        :param loss:模型的loss值
+        :param loss: 模型的loss值
         """
         self.gather_norm = True
         self.grad_norms = []
