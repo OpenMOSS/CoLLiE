@@ -5,9 +5,7 @@ __all__ = [
     'ColumnParallelLMHead',
     'RowParallelLinearWithoutBias',
     'GPTLMLoss',
-    'PipelineModel',
     'PipelineGenerationMixin',
-    'MultiParallelGrid'
 ]
 
 import os
@@ -34,11 +32,12 @@ from transformers.modeling_utils import PretrainedConfig
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from collie.log import logger
-from collie.utils import env, broadcast_tensor
+from collie.utils import env
 
 class ColumnParallelLinearWithoutBias(ColumnParallelLinear):
-    """重写 `megatron` 提供的列并行全连接层以去掉结果中的 `bias`
-        并且在 `tp_size` 为 1 时返回普通的全连接层（支持 `peft` 中的 `lora` 方法替换全连接层）
+    """
+    重写 ``megatron`` 提供的列并行全连接层以去掉结果中的 ``bias``。在 ``tp_size``
+    为 1 时可以返回普通的全连接层（支持 `peft` 中的 `lora` 方法替换全连接层）
     """
     def forward(self, input_):
         return super().forward(input_)[0]
@@ -56,7 +55,8 @@ class ColumnParallelLinearWithoutBias(ColumnParallelLinear):
         return super().__new__(cls)
     
 class LinearWithHiddenStates(nn.Linear):
-    """重写 `torch.nn.Linear` 以支持在 `eval` 时保存隐藏状态（用于 `Pipeline` 模式中）
+    """
+    重写 ``torch.nn.Linear`` 以支持在 ``eval`` 时保存隐藏状态（用于流水线并行中）
     """
     def __init__(self, in_features: int, out_features: int, bias: bool = True, device=None, dtype=None) -> None:
         super().__init__(in_features, out_features, bias, device, dtype)
@@ -70,8 +70,10 @@ class LinearWithHiddenStates(nn.Linear):
         return super().forward(input_)
     
 class ColumnParallelLMHead(ColumnParallelLinearWithoutBias):
-    """ 重写 `megatron` 提供的列并行全连接层以支持在 `eval` 时保存隐藏状态（用于 `Pipeline` 模式中）、
-        并且在 `tp_size` 为 1 时返回普通的全连接层（支持 `peft` 中的 `lora` 方法替换全连接层）
+    """
+    重写 ``megatron`` 提供的列并行全连接层以支持在 ``eval`` 时保存隐藏状态（用于流水
+    线并行），在 ``tp_size`` 为 1 时返回普通的全连接层（支持 ``peft`` 中的 ``lora``
+    方法替换全连接层）。
     """
     def __init__(self, *args, **kwargs):
         super(ColumnParallelLMHead, self).__init__(*args, **kwargs)
@@ -97,8 +99,9 @@ class ColumnParallelLMHead(ColumnParallelLinearWithoutBias):
         return super().__new__(cls)
 
 class RowParallelLinearWithoutBias(RowParallelLinear):
-    """重写 `megatron` 提供的行并行全连接层以去掉结果中的 `bias`
-        并且在 `tp_size` 为 1 时返回普通的全连接层（支持 `peft` 中的 `lora` 方法替换全连接层）
+    """
+    重写 ``megatron`` 提供的行并行全连接层以去掉结果中的 ``bias``。在 ``tp_size``
+    为 1 时返回普通的全连接层（支持 ``peft`` 中的 ``lora`` 方法替换全连接层）
     """
     def forward(self, input_):
         return super().forward(input_)[0]
@@ -116,8 +119,10 @@ class RowParallelLinearWithoutBias(RowParallelLinear):
         return super().__new__(cls)
 
 class GPTLMLoss(torch.nn.Module):
-    """ 最基本的 GPT 语言模型的损失函数
-    :param ignore_index: 忽略的标签的 `index`，默认为 `0`
+    """
+    最基本的 GPT 语言模型的损失函数。
+
+    :param ignore_index: 忽略的标签的 ``index``，默认为 **0**
     """
     def __init__(self, ignore_index=0):
         super().__init__()
@@ -137,7 +142,10 @@ class GPTLMLoss(torch.nn.Module):
 
 
 class PipelineModel(PipelineModule):
-    """ 重写 `megatron` 提供的 `PipelineModule` 以支持 **CoLLie** 中的 `Trainer`
+    """
+    重写 ``megatron`` 提供的 ``PipelineModule`` 以支持 **CoLLie** 中的
+    :class:`.Trainer`。
+
     :param layers: 分层化的模型，为 `callable` 组成的 `list`
     :param topology: 模型的拓扑结构
     :param loss_fn: 损失函数
@@ -239,8 +247,12 @@ class PipelineModel(PipelineModule):
 
 
 class PipelineGenerationMixin(nn.Module, GenerationMixin):
-    """ 重写 `transformers` 提供的 `GenerationMixin` 以支持 **CoLLie** 中的流水线模型
-    :param engine: `DeepSpeedEngine` 实例，可由 :meth:`collie.utils.setup_ds_engine` 函数生成
+    """
+    重写 ``transformers`` 提供的 ``GenerationMixin`` 以支持 **CoLLie** 中的流水线
+    模型。
+
+    :param engine: `DeepSpeedEngine` 实例，可由 :meth:`~collie.utils.\
+        setup_ds_engine` 函数生成
     """
     def __init__(self, engine: DeepSpeedEngine) -> None:
         super().__init__()
@@ -372,7 +384,8 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
 
 
 class MultiParallelGrid(PipelineParallelGrid):
-    """ 重写以支持 `megatron` 中的张量并行进程组
+    """
+    重写以支持 ``megatron`` 中的张量并行进程组
     """
     def __init__(self, topology):
         self.global_rank = dist.get_rank()
@@ -411,4 +424,5 @@ class MultiParallelGrid(PipelineParallelGrid):
 
         # Create new ProcessGroup for model (tensor-slicing) collectives
         self.slice_proc_group = parallel_state.get_tensor_model_parallel_group()
-        self.slice_group = dist.get_process_group_ranks(self.slice_proc_group)
+        self.slice_group = list(dist.distributed_c10d._pg_group_ranks[self.slice_proc_group].keys())
+        print(self.slice_group, dist.get_process_group_ranks(self.slice_proc_group))
