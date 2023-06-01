@@ -174,7 +174,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
     #     )
 
     @classmethod
-    def pipline_layers(cls, config: Union[CollieConfig, str]):
+    def pipeline_layers(cls, config: Union[CollieConfig, str]):
         """
         Get layers of pipeline.
 

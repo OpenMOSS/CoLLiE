@@ -16,18 +16,18 @@ tokenizer = LlamaTokenizer.from_pretrained("decapoda-research/llama-7b-hf",
                                            add_eos_token=True)
 tokenizer.bos_token_id = 1
 tokenizer.eos_token_id = 2
-config = CollieConfig.from_pretrained("decapoda-research/llama-65b-hf")
+config = CollieConfig.from_pretrained("decapoda-research/llama-7b-hf")
 config.tp_size = 1
 config.dp_size = 1
-config.pp_size = 16
+config.pp_size = 2
 config.train_epochs = 1000
-config.train_micro_batch_size = 32
+config.train_micro_batch_size = 24
 config.eval_batch_size = 1
 config.eval_per_n_steps = 20
 config.ds_config = {
     "fp16": {"enabled": True},
     "optimizer": {
-        "type": "Adam",
+        "type": "AdamW",
         "params": {
             "lr": 2e-5
         }
@@ -35,6 +35,7 @@ config.ds_config = {
 }
 
 model = LlamaForCausalLM.from_config(config)
+# optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5)
 # state_dict = LlamaForCausalLM.load_parallel_state_dict(
 #     path="hdd:s3://opennlplab_hdd/models/llama/llama-7b-hf",
 #     config=config,
@@ -48,6 +49,7 @@ train_dataset = [(train_sample, train_sample) for _ in range(128000)]
 eval_dataset = [(eval_sample, eval_sample)]
 trainer = Trainer(
     model = model,
+    # optimizer=optimizer,
     config=config,
     train_dataset=train_dataset,
     eval_dataset=eval_dataset,

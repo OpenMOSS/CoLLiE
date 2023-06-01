@@ -52,8 +52,20 @@ More examples are available at [examples](examples).
 CoLLiE offers integration with [torchrun](https://pytorch.org/docs/stable/elastic/run.html) and [slurm](https://github.com/SchedMD/slurm) to enable easy launching of jobs on a single or multiple nodes.
 
 ## Installation
+### 1. Apex
+```bash
+git clone https://github.com/NVIDIA/apex.git
+cd apex
+pip install -v --disable-pip-version-check --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" ./
+```
+### 2. Megatron-LM
+```bash
+pip install git+https://github.com/NVIDIA/Megatron-LM.git@main#egg=megatron.core
+```
+### 3. CoLLie
 ```bash
 git clone https://github.com/OpenLMLab/collie.git
 cd collie
+pip install -r requirements.txt
 python setup.py install
 ```
