@@ -26,16 +26,16 @@ config.eval_batch_size = 1
 config.eval_per_n_steps = 20
 config.ds_config = {
     "fp16": {"enabled": True},
-    # "optimizer": {
-    #     "type": "AdamW",
-    #     "params": {
-    #         "lr": 2e-5
-    #     }
-    # }
+    "optimizer": {
+        "type": "AdamW",
+        "params": {
+            "lr": 2e-5
+        }
+    }
 }
 
 model = LlamaForCausalLM.from_config(config)
-optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5)
+# optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5)
 # state_dict = LlamaForCausalLM.load_parallel_state_dict(
 #     path="hdd:s3://opennlplab_hdd/models/llama/llama-7b-hf",
 #     config=config,
@@ -49,7 +49,7 @@ train_dataset = [(train_sample, train_sample) for _ in range(128000)]
 eval_dataset = [(eval_sample, eval_sample)]
 trainer = Trainer(
     model = model,
-    optimizer=optimizer,
+    # optimizer=optimizer,
     config=config,
     train_dataset=train_dataset,
     eval_dataset=eval_dataset,
