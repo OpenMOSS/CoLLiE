@@ -27,7 +27,7 @@ config.eval_per_n_steps = 20
 config.ds_config = {
     "fp16": {"enabled": True},
     # "optimizer": {
-    #     "type": "Adam",
+    #     "type": "AdamW",
     #     "params": {
     #         "lr": 2e-5
     #     }
@@ -35,7 +35,7 @@ config.ds_config = {
 }
 
 model = LlamaForCausalLM.from_config(config)
-optimizer = torch.optim.Adam(model.parameters(), lr=2e-5)
+optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5)
 # state_dict = LlamaForCausalLM.load_parallel_state_dict(
 #     path="hdd:s3://opennlplab_hdd/models/llama/llama-7b-hf",
 #     config=config,
