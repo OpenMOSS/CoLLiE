@@ -371,7 +371,7 @@ class Env:
         return "COLLIE_PP_PARTS" in os.environ.keys()
 
     @property
-    def pipline_parts(self):
+    def pipeline_parts(self):
         """
         返回流水线并行中模型切分的分界点，长度为 ``pp_size + 1``。
 
@@ -387,13 +387,13 @@ class Env:
         return parts
 
     @property
-    def pipline_layers_idx(self):
+    def pipeline_layers_idx(self):
         """
         返回流水线并行中当前 rank 切分的模型索引。
 
         如果不存在流水线并行返回 ``None``。
         """
-        parts = self.pipline_parts
+        parts = self.pipeline_parts
         if parts is None:
             return None
         else:

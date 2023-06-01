@@ -21,8 +21,8 @@ def apply_rotary_pos_emb(tensor: torch.Tensor, sin: torch.Tensor, cos: torch.Ten
     cos = torch.repeat_interleave(cos[:, :, None, :], 2, 3)
     return (tensor * cos) + (rotate_every_two(tensor) * sin)
 
-def _name_to_pipline(name):
-    max_pipe_idx = max(env.pipline_parts)
+def _name_to_pipeline(name):
+    max_pipe_idx = max(env.pipeline_parts)
     if name.startswith("transformer.wte."):
         pipe_name = name.replace("transformer.wte.", "0.")
     elif name.startswith("lm_head."):
@@ -46,7 +46,7 @@ def _name_to_hf(name):
     Examples: 15.ln_1.bias -> transformer.h.15.ln_1.bias
     """
     name_split = name.split(".")
-    parts = env.pipline_parts
+    parts = env.pipeline_parts
     layer_pipe_idx = int(name_split[0])
     if layer_pipe_idx == 0:
         # 0 -> embedding
@@ -72,8 +72,8 @@ def _name_to_hf(name):
 def _weight_name_in_current_rank(names):
     if not env.is_pipeline:
         return names
-    layers = env.pipline_layers_idx
-    parts = env.pipline_parts
+    layers = env.pipeline_layers_idx
+    parts = env.pipeline_parts
     cur_names = []
     # MossForCausalLM 的模型顺序为：
     # vocab: transformer.wte.weight
@@ -149,7 +149,7 @@ def _state_dict_to_load(state_dict, tp_rank, tp_size, process_exclusion):
         cur_names = _weight_name_in_current_rank(state_dict.keys())
         for name in list(state_dict.keys()):
             if name in cur_names:
-                state_dict[_name_to_pipline(name)] = state_dict[name]
+                state_dict[_name_to_pipeline(name)] = state_dict[name]
             state_dict.pop(name)
     else:
         # collie 中的 MOSS 结构不同，lm_head 与其它层在同一级

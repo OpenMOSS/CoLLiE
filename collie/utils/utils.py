@@ -137,7 +137,7 @@ class progress:
             self.bar.update(self.task_id, total=total, completed=completed,
                         advance=advance, description=desc, visible=visible,
                         refresh=refresh, post_desc=post_desc)
-            
+
 def _split_batch(batch, micro_batch_size, micro_batch_num):
     """
     将 ``batch`` 划分为 ``micro_batch_num`` 个 ``micro_batch_size`` 大小。
@@ -150,30 +150,26 @@ def _split_batch(batch, micro_batch_size, micro_batch_num):
     :return: tuple
     """
     # Assume batch first.
-    assert len(batch) >= 2, len(batch)
+    assert len(batch) == 2, len(batch)
     inputs = batch[0]
     labels = batch[1]
     if isinstance(labels, Sequence):
-        labels_split = [torch.split(label, micro_batch_size) for label in labels]
+        labels_split = (torch.split(label, micro_batch_size) for label in labels)
+        print(labels[0].shape)
+        labels_split = list(zip(*labels_split))
     else:
         labels_split = torch.split(labels, micro_batch_size)
     if isinstance(inputs, torch.Tensor):
         inputs_split = torch.split(inputs, micro_batch_size)
         assert len(inputs_split) == micro_batch_num, len(inputs_split)
     else:
-        # tuple of tensor
-        assert isinstance(inputs, (tuple, list))
-        inputs_split = [() for _ in range(micro_batch_num)]
-        for tensor in inputs:
-            assert isinstance(tensor, torch.Tensor), type(tensor)
-            tensor_split = torch.split(inputs, micro_batch_size)
-            assert len(tensor_split) == micro_batch_num, len(tensor_split)
-            for i in range(micro_batch_num):
-                inputs_split[i] += (tensor_split[i], )
+        inputs_split = (torch.split(input_, micro_batch_size) for input_ in inputs)
+        inputs_split = list(zip(*inputs_split))
     
     batch_split = ()
-    for input_split, labels_split in zip(inputs_split, labels_split):
-        batch_split += ((input_split, labels_split), )
+    for input_split, label_split in zip(inputs_split, labels_split):
+        print(label_split)
+        batch_split += ((input_split, label_split), )
 
     return batch_split
 

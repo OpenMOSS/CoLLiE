@@ -352,7 +352,7 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                 # PP 分层的方法保存在了 os.environ["COLLIE_PP_PARTS"], 格式类似于 [0, 17, 35], 左闭右开
                 if env.is_pipeline:
                     # 保存的是 json 格式
-                    parts = env.pipline_parts
+                    parts = env.pipeline_parts
                 if format == "hf":
                     # 如果存在 pytorch_model.bin.index.json 文件的话，此时不同的 pp 进程可以按需加载自己需要的权重
                     if IODriver.exists(os.path.join(path, "pytorch_model.bin.index.json")) and "COLLIE_PP_PARTS" in os.environ.keys():
@@ -533,8 +533,8 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                                                                     config.hidden_size)
         # gather to tp rank 0
         if env.is_pipeline:
-            layers = env.pipline_layers_idx
-            parts = env.pipline_parts
+            layers = env.pipeline_layers_idx
+            parts = env.pipeline_parts
             for key in list(state_dict.keys()):
                 if key == "tied_modules.embed_tokens.weight":
                     if 0 in layers:
