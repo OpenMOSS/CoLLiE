@@ -84,6 +84,7 @@ class Trainer:
             # batch = ["样本1", "样本2", ...]
             tokenizer = AutoTokenizer.from_pretrained("fnlp/moss-moon-003-sft", padding_side="left", trust_remote_code=True)
             input_ids = tokenizer(batch, return_tensors="pt", padding=True)["input_ids"]
+            # 第二个 input_ids 会被用于 loss_fn 的 label
             return input_ids, input_ids
             
     :param eval_config: 用于验证的配置
@@ -180,7 +181,7 @@ class Trainer:
         
     def data_provider_handler(self):
         """当初始化 :class:`collie.Trainer` 的过程中提供了 `data_provider` 时会使用此方法。
-            `data_provider` 中维持一个异步队列 `queue.Queue`，该方法会不断从中取出数据，放入模型中进行验证
+            `data_provider` 中维持一个异步队列 `queue.Queue`，该方法会不断从中取出数据，放入模型中进行生成
         """
         if self.data_provider is None:
             return None
@@ -316,7 +317,7 @@ class Trainer:
     def train(self, dataloader: Optional[Iterable] = None):
         """训练循环
         
-        :param dataloader: 用于训练的数据集，为 `Iterable` 对象 ，当为 `None` 时，使用 `train_dataset` 生成的 `train_dataloader`
+        :param dataloader: 用于训练的数据集，为 `Iterable` 对象 ，当为 `None` 时，使用由 `train_dataset` 生成的 `train_dataloader`
         """
         train_dataloader = self.train_dataloader
         loss = 0.0

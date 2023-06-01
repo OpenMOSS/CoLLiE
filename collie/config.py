@@ -132,7 +132,7 @@ class CollieConfig:
         }
     )
     use_cpu_initialization: bool = field(
-        default=True,
+        default=False,
         metadata={
             "help": "Whether to initialize model on CPU. Set False to initialize model directly on GPU."
         }

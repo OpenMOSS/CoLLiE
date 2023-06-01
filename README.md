@@ -55,5 +55,6 @@ CoLLiE offers integration with [torchrun](https://pytorch.org/docs/stable/elasti
 ```bash
 git clone https://github.com/OpenLMLab/collie.git
 cd collie
+pip install -r requirements.txt
 python setup.py install
 ```
