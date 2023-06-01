@@ -252,7 +252,8 @@ class Trainer:
         if self.config.pp_size > 1:
             # GPTLMLoss 是 Module，会被 nn.Module 加入 _Modules
             # 如果 loss_fn 是一个函数就会在此时报错
-            del self.model.loss_fn
+            if not isinstance(self.loss_fn, torch.nn.Module):
+                del self.model.loss_fn
             self.model.loss_fn = self.loss_fn
         if isinstance(self.optimizer, InplaceSGD):
             self.engine, _, _, _ = setup_ds_engine(
