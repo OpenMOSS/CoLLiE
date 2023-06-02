@@ -10,7 +10,7 @@ import json
 import logging
 import glob
 import math
-from typing import Optional, Callable, Union, Tuple, Iterable, Any, Dict, Sequence
+from typing import Optional, Callable, Union, Tuple, Iterable, Any, Dict, Sequence, List
 from collections import OrderedDict
 from functools import reduce
 
@@ -39,6 +39,8 @@ from collie.optim import InplaceSGD
 from collie.metrics import BaseMetric
 from collie.models.base import CollieModelForCausalLM
 from collie.data import CollieDataLoader
+from collie.callbacks.callback import Callback
+from collie.callbacks.callback_manager import CallbackManager, prepare_callback
 
 
 class Trainer:
@@ -115,6 +117,7 @@ class Trainer:
                  eval_dataset: Optional[torch.utils.data.Dataset] = None,
                  train_dataset_collate_fn: Optional[Callable] = None,
                  eval_dataset_collate_fn: Optional[Callable] = None,
+                 callbacks: Optional[List[Callback]] = None,
                  eval_config: GenerationConfig = GenerationConfig(),
                  data_provider: Optional[BaseProvider] = None,
                  monitors: Sequence[BaseMonitor] = [],
@@ -147,12 +150,14 @@ class Trainer:
         self.config = config
         self.communicate_buffer_shape = None
         self.setup_parallel_model()
-        # self.init_metrics()
         get_accelerator().empty_cache()
         self.data_provider = data_provider
         self.monitor = MultiMonitors(self, monitors)
         if self.data_provider is not None and dist.get_rank() == 0:
             self.data_provider.start_provider()
+
+        callbacks = prepare_callback(callbacks)
+        self.callback_manager = CallbackManager(callbacks)
         self.checkpoint_file = "collie_dp{}_pp{}_tp{}.pt".format(
             env.dp_rank, env.pp_rank, env.tp_rank
         )
@@ -161,7 +166,8 @@ class Trainer:
         )
 
         self.init_state_dict()
-            
+        self.callback_manager.on_after_trainer_initialized(self)
+
     def init_state_dict(self):
         """初始化优化器的自身状态字典
         """
