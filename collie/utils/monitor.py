@@ -132,6 +132,8 @@ class _MultiMonitors:
         self.item = {}
     
     def __enter__(self):
+        for monitor in self.monitors:
+            monitor.__enter__()
         return self.item
     
     def __exit__(self, exc_type, exc_val, exc_tb):

@@ -148,7 +148,7 @@ class Trainer:
         self.setup_parallel_model()
         get_accelerator().empty_cache()
         self.data_provider = data_provider
-        self.monitor = _MultiMonitors(self, monitors)
+        self.monitor = _MultiMonitors(monitors)
         if self.data_provider is not None and dist.get_rank() == 0:
             self.data_provider.start_provider()
         self.checkpoint_file = "collie_dp{}_pp{}_tp{}.pt".format(
