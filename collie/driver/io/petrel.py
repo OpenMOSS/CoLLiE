@@ -59,10 +59,20 @@ class PetrelIODriver(IODriver):
         return list(client.list(path))
     
     @staticmethod
-    def walk(path: str):
+    def walk(path: str, suffix: str = None):
         from petrel_client.client import Client
         client = Client()
-        
+        if suffix is None:
+            suffix = ""
+        file_list = []
+        for child in PetrelIODriver.list(path):
+            child_path = os.path.join(path, child)
+            if client.contains(child_path) and child_path.endswith(suffix):
+                file_list.append(child_path)
+            if client.isdir(child_path):
+                file_list.extend(PetrelIODriver.walk(child_path, suffix))
+
+        return file_list
     
     @staticmethod
     def delete(path: str):

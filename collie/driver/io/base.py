@@ -34,7 +34,7 @@ class IODriver(ABC):
     
     @staticmethod
     @abstractmethod
-    def walk(path: str):
+    def walk(path: str, suffix: str = None):
         raise NotImplementedError
     
     @staticmethod

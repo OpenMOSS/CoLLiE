@@ -47,6 +47,18 @@ class FileIODriver(IODriver):
         return os.listdir(path)
     
     @staticmethod
+    def walk(path: str, suffix: str = None):
+        if suffix is None:
+            suffix = ""
+        file_list = []
+        for root, dirs, files in os.walk(path):
+            for f in files:
+                if f.endswith(suffix):
+                    file_list.append(os.path.join(root, f))
+
+        return file_list
+    
+    @staticmethod
     def delete(path: str):
         shutil.rmtree(path)
 
