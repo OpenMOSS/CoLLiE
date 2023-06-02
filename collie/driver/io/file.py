@@ -1,6 +1,7 @@
 from collie.driver.io.base import IODriver
 
 import os
+import io
 import torch
 import shutil
 
@@ -13,6 +14,15 @@ class FileIODriver(IODriver):
         else:
             with open(path, 'r') as f:
                 return f.read()
+            
+    @staticmethod
+    def load_buffer(path: str):
+        assert os.path.exists(path), f"File {path} does not exist."
+        buffer = io.BytesIO()
+        with open(path, 'rb') as f:
+            buffer.write(f.read())
+            buffer.seek(0)
+            return buffer
             
     @staticmethod
     def save(obj, path: str, append: bool = False):

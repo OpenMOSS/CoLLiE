@@ -148,7 +148,7 @@ class Trainer:
         self.setup_parallel_model()
         get_accelerator().empty_cache()
         self.data_provider = data_provider
-        self.monitor = _MultiMonitors(self, monitors)
+        self.monitor = _MultiMonitors(monitors)
         if self.data_provider is not None and dist.get_rank() == 0:
             self.data_provider.start_provider()
         self.checkpoint_file = "collie_dp{}_pp{}_tp{}.pt".format(
@@ -476,9 +476,9 @@ class Trainer:
             )
         else:
             generation_model = trainer.model
-        input_ids = generation_model.generate(input_ids=input_ids.cuda(), attention_mask=torch.ones_like(input_ids).cuda(), generation_config=trainer.eval_config)
+        generated_ids = generation_model.generate(input_ids=input_ids.cuda(), attention_mask=torch.ones_like(input_ids).cuda(), generation_config=trainer.eval_config)
         return {
-            "input_ids": input_ids,
+            "generated_ids": generated_ids,
             "labels": labels,
         }
 

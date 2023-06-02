@@ -19,6 +19,16 @@ class PetrelIODriver(IODriver):
             return obj
         else:
             return obj.decode()
+        
+    @staticmethod
+    def load_buffer(path: str):
+        from petrel_client.client import Client
+        client = Client()
+        obj = client.get(path)
+        buffer = BytesIO()
+        buffer.write(obj)
+        buffer.seek(0)
+        return buffer
             
     @staticmethod
     def save(obj, path: str, append: bool = False):
@@ -47,6 +57,12 @@ class PetrelIODriver(IODriver):
         from petrel_client.client import Client
         client = Client()
         return list(client.list(path))
+    
+    @staticmethod
+    def walk(path: str):
+        from petrel_client.client import Client
+        client = Client()
+        
     
     @staticmethod
     def delete(path: str):
