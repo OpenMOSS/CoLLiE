@@ -38,6 +38,7 @@ from collie.utils.rich_progress import f_rich_progress
 from collie.optim import InplaceSGD
 from collie.metrics import BaseMetric
 from collie.models.base import CollieModelForCausalLM
+from collie.data import CollieDataLoader
 
 
 class Trainer:
@@ -274,47 +275,24 @@ class Trainer:
         if self.train_dataset is None:
             self.train_dataloader = None
             self.steps_per_epoch = 0
-        elif self.config.pp_size == 1:
-            self.train_dataloader = self.engine.deepspeed_io(
-                self.train_dataset, collate_fn=self.train_dataset_collate_fn
-            )
-            self.steps_per_epoch = len(self.train_dataloader)
         else:
-            # PipelineModule._build_data_iter
-            # For accumulation step. Batch will be splitted in train()
-            pipe_batch_size = self.config.train_micro_batch_size * self.config.gradient_accumulation_steps
-            sampler = DistributedSampler(
-                self.train_dataset, num_replicas=self.engine.dp_world_size,
-                rank=env.dp_rank, shuffle=False
-            )
-            self.train_dataloader = self.engine.deepspeed_io(
-                self.train_dataset, data_sampler=sampler,
-                collate_fn=self.train_dataset_collate_fn,
-                batch_size=pipe_batch_size
+            self.train_dataloader = CollieDataLoader(
+                self.train_dataset, self.config.train_micro_batch_size,
+                self.config.gradient_accumulation_steps, shuffle=True,
+                collate_fn=self.train_dataset_collate_fn, drop_last=False
             )
             self.steps_per_epoch = len(self.train_dataloader)
-            self.train_dataloader = RepeatingLoader(self.train_dataloader)
-        if self.eval_dataset is not None:
-            eval_batch_size = self.config.eval_batch_size
-            if env.pp_size > 1:
-                # For accumulation step
-                # Batch will be splitted in patched train_batch/eval_batch
-                eval_batch_size *= self.config.gradient_accumulation_steps
-            self.eval_dataloader = self.engine.deepspeed_io(
-                self.eval_dataset,
-                batch_size=eval_batch_size,
-                route=ROUTE_EVAL,
-                pin_memory=True,
-                data_sampler=None,
-                collate_fn=self.eval_dataset_collate_fn,
-                num_local_io_workers=None
+
+        if self.eval_dataset is None:
+            self.eval_dataloader = None
+            self.eval_steps = 0
+        else:
+            self.eval_dataloader = CollieDataLoader(
+                self.eval_dataset, self.config.eval_batch_size,
+                self.config.gradient_accumulation_steps, shuffle=False,
+                collate_fn=self.eval_dataset_collate_fn
             )
             self.eval_steps = len(self.eval_dataloader)
-            if env.pp_size > 1:
-                self.eval_dataloader = RepeatingLoader(self.eval_dataloader)
-        else:
-            self.eval_steps = 0
-            self.eval_dataloader = None
 
         # set logger level
         deepspeed_logging_level = logging.ERROR if 'logging_level' not in self.config.ds_config \
@@ -337,8 +315,6 @@ class Trainer:
 
                 with progress(train_dataloader, desc="Training Batch: ", disable=env.rank != 0, completed=self.batch_idx, total=self.steps_per_epoch) as tqbar_batch:
                     for self.batch_idx, batch in enumerate(tqbar_batch, start=self.batch_idx):
-                        if self.batch_idx >= self.steps_per_epoch:
-                            break
                         tqbar_batch.set_description(f"Training Batch: {self.batch_idx} / {self.steps_per_epoch}")
                         if isinstance(self.engine, PipelineEngine):
                             if self.communicate_buffer_shape is None:
@@ -371,8 +347,6 @@ class Trainer:
             eval_dataloader = dataloader
         with progress(eval_dataloader, desc="Evaluating Batch: ", disable=env.rank != 0, total=self.eval_steps) as tqbar_batch:
             for batch_idx, batch in enumerate(tqbar_batch):
-                if batch_idx >= self.eval_steps:
-                    break
                 tqbar_batch.set_description(f"Evaluating Batch: {batch_idx} / {self.eval_steps}")
                 if isinstance(self.engine, PipelineEngine):
                     self.engine.reset_activation_shape()
