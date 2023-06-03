@@ -325,6 +325,13 @@ class Env:
         print(env.dp_rank)
     """
     @property
+    def seed(self):
+        """
+        随机数种子
+        """
+        return int(os.getenv("COLLIE_SEED"))
+
+    @property
     def rank(self):
         """
         Global rank。
