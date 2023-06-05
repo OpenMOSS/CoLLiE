@@ -45,7 +45,7 @@ def get_monitor(config: CollieConfig):
             config.ds_config["monitor_config"]["csv_monitor"] = {"enabled": False}
         return MonitorMaster(dictToObj(config.ds_config["monitor_config"]))
     else:
-        return DummyDeepSpeedMonitor(config.ds_config["monitor_config"])
+        return DummyDeepSpeedMonitor(config.ds_config)
     
 class BaseMonitor:
     """

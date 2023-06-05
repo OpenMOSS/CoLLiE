@@ -3,13 +3,14 @@ import functools
 import inspect
 import dataclasses
 from typing import (Callable, Any, Dict, Union, Mapping, Sequence, Tuple,
-                    Optional)
+                    Optional, List)
 from collections import defaultdict, OrderedDict
 from operator import length_hint
 from copy import deepcopy
 
 import torch
 
+from collie.log.logger import logger
 from .rich_progress import f_rich_progress
 
 __all__ = ["find_tensors", "progress", "dictToObj", "apply_to_collection"]
@@ -312,3 +313,40 @@ def _get_fun_msg(fn, with_fp=True)->str:
         fp = ''
     msg = f'`{fn_name}`' + fp
     return msg
+
+def _check_valid_parameters_number(fn,
+                                   expected_params: List[str],
+                                   fn_name=None):
+    r"""检查一个函数是否需要 expected_params 参数(检测数量是否匹配)。除掉 self （如
+    果是method），给定默认值的参数等。如果匹配不上，就会进行报错。
+
+    :param fn: 需要检测的函数，可以是 method 或者 function 。
+    :param expected_params: 期待应该支持的参数。
+    :param fn_name: fn 的名字，当传入的 fn 不是 callable 的时候方便报错。
+    :return:
+    """
+    if fn_name is not None:
+        assert callable(
+            fn), f'`{fn_name}` should be callable, instead of `{type(fn)}`.'
+
+    try:
+        args: List[Any] = []
+        kwargs: Dict[str, Any] = {}
+        name = ''
+        if isinstance(fn, functools.partial) and not hasattr(fn, '__name__'):
+            name = 'partial:'
+            f = fn.func
+            while isinstance(f, functools.partial):
+                name += 'partial:'
+                f = f.func
+            fn.__name__ = name + f.__name__  # type: ignore
+        inspect.getcallargs(fn, *args, *expected_params, **kwargs)
+        if name:  # 如果一开始没有name的，需要给人家删除掉
+            delattr(fn, '__name__')
+
+    except TypeError as e:
+        logger.error(
+            f'The function:{_get_fun_msg(fn)} will be provided with '
+            f'parameters:{expected_params}. The following exception will '
+            'happen.')
+        raise e

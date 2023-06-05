@@ -6,17 +6,17 @@
 
 </div>
 
-## Table of Contents
-- [Features](#features)
-- [Benchmark](#benchmark)
-- [Usage](#usage)
-- [Installation](#installation)
+## 目录
+- [特点](#特点)
+- [评测](#评测)
+- [安装](#安装)
+- [使用](#使用)
 
-## Benchmark
-### Throughput
-WIP
+## 评测
+### 吞吐量
+待完成
 
-## Features
+## 特点
 <div align="center">
     <img src="docs/assets/images/features.svg" width="800px">
 </div>

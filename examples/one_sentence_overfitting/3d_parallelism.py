@@ -17,12 +17,12 @@ tokenizer = LlamaTokenizer.from_pretrained("decapoda-research/llama-7b-hf",
                                            add_eos_token=True)
 tokenizer.bos_token_id = 1
 tokenizer.eos_token_id = 2
-config = CollieConfig.from_pretrained("decapoda-research/llama-65b-hf")
+config = CollieConfig.from_pretrained("decapoda-research/llama-7b-hf")
 config.tp_size = 8
 config.dp_size = 1
-config.pp_size = 8
+config.pp_size = 1
 config.train_epochs = 1000
-config.train_micro_batch_size = 50
+config.train_micro_batch_size = 1
 config.gradient_accumulation_steps = 64
 config.eval_batch_size = 1
 config.eval_per_n_steps = 20
@@ -62,6 +62,6 @@ trainer = Trainer(
         EvalMonitor(config)
     ],
     metrics={
-        "decode": DecodeMetric(tokenizer=tokenizer)},
+        "decode": DecodeMetric(tokenizer=tokenizer, save_path="resutl.txt", save_to_file=True)},
 )
 trainer.train()
