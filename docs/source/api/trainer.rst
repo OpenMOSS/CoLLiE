@@ -20,3 +20,4 @@ Trainer
    :template: classtemplate.rst
 
    Trainer
+   Evaluator

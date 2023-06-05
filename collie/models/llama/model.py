@@ -13,7 +13,10 @@ from deepspeed.pipe import LayerSpec, TiedLayerSpec
 from megatron.core import tensor_parallel
 from megatron.core import parallel_state
 
-from apex.normalization.fused_layer_norm import FusedRMSNorm
+try:
+    from apex.normalization.fused_layer_norm import FusedRMSNorm
+except ModuleNotFoundError:
+    FusedRMSNorm = None
 
 import math
 from einops import rearrange
