@@ -1,4 +1,4 @@
-from .base import IODriver
+from collie.driver.io.base import IODriver
 
 import os
 import torch
