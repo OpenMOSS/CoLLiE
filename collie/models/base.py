@@ -20,9 +20,21 @@ from collie.utils import setup_distribution, is_zero3_enabled, env
 
 class CollieModelForCausalLM(nn.Module, GenerationMixin):
     """
-    Base model of CoLLiE.
+    **CoLLiE** 的基础模型。如果要实现新的模型，必须继承该基类。
 
-    Every new model should inherit this class.
+    ``CollieModelForCausalLM`` 统一了非流水线模型和流水线模型的接口，并且可以执行
+    生成任务。
+
+    为了适应流水线线的生成过程，每个新模型除了实现基类中的抽象方法外，还需要满足：
+
+    1. 每一个 layer 包含一个 ``use_cache`` 属性来决定前向传播中是否使用
+       ``past_key_values``。
+    2. 将 Attention 过程中产生的 key 和 value 保存在每一个 layer 的
+       ``past_key_value`` 属性中。
+    3. 将每层的 hidden_states 保存在每一个 layer 的 ``hidden_states`` 属性中。
+    4. 将 lm_head 的输入 hidden_states 保存在 ``hidden_states`` 属性中。也可以使
+       用 :class:`~collie.module.ColumnParallelLMHead` 来自动地保存。
+
     """
     main_input_name = "input_ids"
     def __init__(self, config: CollieConfig) -> None:
@@ -78,6 +90,9 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         return True
 
     def generate(self, *args, **kwargs):
+        """
+        生成函数。用法同 ``huggingface``。
+        """
         res = super().generate(*args, **kwargs)
         self.clean()
         return res
@@ -85,7 +100,10 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
     @classmethod
     def from_config(cls, config: Union[CollieConfig, str], **kwargs):
         """
-        Load arguments from config.
+        从 ``config`` 中加载一个模型。
+
+        :param config: 接受一个字符串或 :class:`.CollieConfig`。为字符串时，会先从
+            该 ``str`` 代表的路径或远程链接中加载 config，再进行初始化
         """
         if isinstance(config, str):
             config = CollieConfig.from_pretrained(config, **kwargs)
@@ -118,6 +136,9 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
     
     @abstractmethod
     def clean(self):
+        """
+        清理 ``past_key_value`` 和 ``hidden_states`` 状态的函数。
+        """
         raise NotImplementedError(
             "`clean` should be implemented to clear caches for generation."
         )
@@ -125,13 +146,19 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
     @classmethod
     def from_pretrained(cls, model_path_or_name: str, config: Optional[Union[CollieConfig, str]] = None, **kwargs):
         """
-        :param model_path_or_name: str
-        :param config: str, CollieConfig or None. If None, we will load
-            arguments from `model_path_or_name`.
+        从 ``model_path_or_name`` 中加载预训练好的模型。
+
+        :param model_path_or_name: ``huggingface`` 格式预训练模型的本地路径或名
+            称。
+        :param config: 可以是字符串或者 :class:`~CollieConfig`。如果为字符串，则会
+            使用该字符串代表的模型设置；如果为 ``None``，从 ``model_path_or_name``
+            中加载模型设置。
+
         :param kwargs:
-            - process_exclusion: Whether to load checkpoints one by one to 
-              save memory.
-            parameters to be set at CollieConfig.
+            * process_exclusion - 是否每个 rank 各自独立、互斥地加载模型权重。在模
+              型规模较大时，该参数可以帮助节省内存。
+
+            其余 ``kwargs`` 的内容会用于设置 :class:`.CollieConfig` 的内容。
         """
         process_exclusion = kwargs.pop("process_exclusion", False)
         if dist.is_initialized() and process_exclusion:
@@ -176,9 +203,10 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
     @classmethod
     def pipeline_layers(cls, config: Union[CollieConfig, str]):
         """
-        Get layers of pipeline.
+        获取流水线模型。
 
-        :return: list
+        :return: 一个列表，包含一系列层；这些模型会用于初始化流水线并行模型并且
+            进行划分。
         """
         raise NotImplementedError(
             "To use pipeline parallelism, you need to implement "
@@ -190,17 +218,13 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
     def load_parallel_state_dict(path: str, config: Union[CollieConfig, str],
                                  process_exclusion: bool = False, **kwargs):
         """
-        Load state_dict from ``path``.
-
-        The format of pretrained model should be the same as that of
-        `huggingface`.
+        从 ``path`` 中加载模型权重。``path`` 中的模型权重应当是 huggingface 格式。
 
         :param path:
         :param config:
-        :param process_exclusion: Whether to load checkpoints one by one to 
-            save memory.
-        :return: state_dict. Note that the state_dict should be processed
-            properly to match the current rank.
+        :param process_exclusion: 是否每个 rank 各自独立、互斥地加载模型权重。在模
+            型规模较大时，该参数可以帮助节省内存。
+        :return: 一个字典，每个字典都包含当前 rank 上模型需要的权重。
         """
         raise NotImplementedError(
             "Every model should implement `load_parallel_state_dict` "
@@ -213,10 +237,13 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                                  config: CollieConfig,
                                  process_exclusion: bool = False, **kwargs):
         """
-        Save ``state_dict`` to ``path``.
+        将模型权重保存到 ``path`` 路径。保存的格式同 ``huggingface`` 格式。
 
-        The format of saved state dict should be the same as that of
-        `huggingface`.
+        :param state_dict: 模型权重
+        :param path:
+        :param config:
+        :param process_exclusion: 是否每个 rank 各自独立、互斥地保存模型权重。在模
+            型规模较大时，该参数可以帮助节省内存。
         """
         raise NotImplementedError(
             "Every model should implement `save_parallel_state_dict` "

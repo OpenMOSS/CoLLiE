@@ -413,10 +413,13 @@ class MossForCausalLM(CollieModelForCausalLM):
                                  protocol: str = 'file',
                                  format: str = 'hf', **kwargs):
         """
-        Load state_dict from ``path``.
+        从 ``path`` 中加载模型权重。``path`` 中的模型权重应当是 huggingface 格式。
 
-        :return: state_dict. Note that the state_dict should be processed
-            properly to match the current rank.
+        :param path:
+        :param config:
+        :param process_exclusion: 是否每个 rank 各自独立、互斥地加载模型权重。在模
+            型规模较大时，该参数可以帮助节省内存。
+        :return: 一个字典，每个字典都包含当前 rank 上模型需要的权重。
         """
         assert format in ["hf", "meta"], f"Only support hf and meta , not `{format}`."
         assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
@@ -475,7 +478,16 @@ class MossForCausalLM(CollieModelForCausalLM):
                                  process_exclusion: bool = False,
                                  protocol: str = 'file'):
         """
-        Save state_dict to ``path``.
+        将模型权重保存到 ``path`` 路径。保存的格式同 ``huggingface`` 格式。
+
+        在保存时会在 dp rank 0 上将所有张量并行的权重合并至 tp_rank 0，然后按照流水
+        线的各个阶段分别保存为 sharded checkpoint 的形式。
+
+        :param state_dict: 模型权重
+        :param path:
+        :param config:
+        :param process_exclusion: 是否每个 rank 各自独立、互斥地保存模型权重。在模
+            型规模较大时，该参数可以帮助节省内存。
         """
         assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
         IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
