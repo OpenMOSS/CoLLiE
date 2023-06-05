@@ -104,23 +104,29 @@ class Evaluator:
         if self.engine is None:
             self.init_engine()
         if self.eval_dataloader is None:
-            eval_batch_size = self.config.eval_batch_size
-            if env.pp_size > 1:
-                # For accumulation step
-                # Batch will be splitted in patched train_batch/eval_batch
-                eval_batch_size *= self.config.gradient_accumulation_steps
-            self.eval_dataloader = self.engine.deepspeed_io(
-                self.dataset,
-                batch_size=eval_batch_size,
-                route=ROUTE_EVAL,
-                pin_memory=True,
-                data_sampler=None,
-                collate_fn=self.collate_fn,
-                num_local_io_workers=None
+            self.eval_dataloader = CollieDataLoader(
+                self.eval_dataset, self.config.eval_batch_size,
+                self.config.gradient_accumulation_steps, shuffle=False,
+                collate_fn=self.eval_dataset_collate_fn
             )
             self.eval_steps = len(self.eval_dataloader)
-            if env.pp_size > 1:
-                self.eval_dataloader = RepeatingLoader(self.eval_dataloader)
+            # eval_batch_size = self.config.eval_batch_size
+            # if env.pp_size > 1:
+            #     # For accumulation step
+            #     # Batch will be splitted in patched train_batch/eval_batch
+            #     eval_batch_size *= self.config.gradient_accumulation_steps
+            # self.eval_dataloader = self.engine.deepspeed_io(
+            #     self.dataset,
+            #     batch_size=eval_batch_size,
+            #     route=ROUTE_EVAL,
+            #     pin_memory=True,
+            #     data_sampler=None,
+            #     collate_fn=self.collate_fn,
+            #     num_local_io_workers=None
+            # )
+            # self.eval_steps = len(self.eval_dataloader)
+            # if env.pp_size > 1:
+            #     self.eval_dataloader = RepeatingLoader(self.eval_dataloader)
 
         eval_dataloader = self.eval_dataloader
         if dataloader is not None:

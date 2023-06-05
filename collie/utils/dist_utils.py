@@ -189,16 +189,32 @@ def patch_pipeline_engine(config):
 
     用于适应 **CoLLiE** 的训练和生成过程。
     """
+    PipelineEngine.buffer_shape = None
     raw_train_batch = copy.deepcopy(PipelineEngine.train_batch)
     raw_eval_batch = copy.deepcopy(PipelineEngine.eval_batch)
     def train_batch(self, batch):
         # batch tuple, batch_size is micro_batch * accumulate_steps
+        if self.buffer_shape is None:
+            self.buffer_shape = batch[0].shape
+        elif self.buffer_shape != batch[0].shape:
+            self.buffer_shape = batch[0].shape
+            self.reset_activation_shape()
         batch = _split_batch(batch, self.train_micro_batch_size_per_gpu(),
                              self.gradient_accumulation_steps())
         data_iter = iter(batch)
         return raw_train_batch(self, data_iter)
 
     def eval_batch(self, batch):
+        if self.buffer_shape is None:
+            self.buffer_shape = batch[0].shape
+        elif self.buffer_shape != batch[0].shape:
+            self.buffer_shape = batch[0].shape
+            self.reset_activation_shape()
+        if self.total_loss is not None:
+            total_loss = self.total_loss.detach().clone()
+        else:
+            total_loss = None
+        self.total_loss = None
         batch = _split_batch(batch, config.eval_batch_size,
                              self.gradient_accumulation_steps())
         data_iter = iter(batch)
@@ -213,8 +229,9 @@ def patch_pipeline_engine(config):
         src_rank = self.grid.stage_to_global(self.num_stages - 1)
         logits = broadcast_tensor(logits, src=src_rank,
                                   group=env.pp_group)
+        self.total_loss = total_loss
         return logits
-    
+
     PipelineEngine.train_batch = train_batch
     PipelineEngine.eval_batch = eval_batch
 
@@ -324,6 +341,13 @@ class Env:
         from collie.utils import env
         print(env.dp_rank)
     """
+    @property
+    def seed(self):
+        """
+        随机数种子
+        """
+        return int(os.getenv("COLLIE_SEED"))
+
     @property
     def rank(self):
         """

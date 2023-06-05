@@ -1,11 +1,18 @@
-from typing import Optional, Sequence
+import os
+import functools
+import inspect
+import dataclasses
+from typing import (Callable, Any, Dict, Union, Mapping, Sequence, Tuple,
+                    Optional)
+from collections import defaultdict, OrderedDict
 from operator import length_hint
+from copy import deepcopy
 
 import torch
 
 from .rich_progress import f_rich_progress
 
-__all__ = ["find_tensors", "progress", "dictToObj"]
+__all__ = ["find_tensors", "progress", "dictToObj", "apply_to_collection"]
 
 def find_tensors():
     """
@@ -167,7 +174,6 @@ def _split_batch(batch, micro_batch_size, micro_batch_num):
     
     batch_split = ()
     for input_split, label_split in zip(inputs_split, labels_split):
-        print(label_split)
         batch_split += ((input_split, label_split), )
 
     return batch_split
@@ -183,3 +189,126 @@ def dictToObj(dictObj):
     for k, v in dictObj.items():
         d[k] = dictToObj(v)
     return d
+
+def _is_namedtuple(obj: object) -> bool:
+    # https://github.com/pytorch/pytorch/blob/v1.8.1/torch/nn/parallel/scatter_gather.py#L4-L8
+    return isinstance(obj, tuple) and hasattr(obj, "_asdict") and hasattr(obj, "_fields")
+
+
+def _is_dataclass_instance(obj: object) -> bool:
+    # https://docs.python.org/3/library/dataclasses.html#module-level-decorators-classes-and-functions
+    return dataclasses.is_dataclass(obj) and not isinstance(obj, type)
+
+
+def apply_to_collection(
+        data: Any,
+        dtype: Union[type, Any, Tuple[Union[type, Any]]],
+        function: Callable,
+        *args: Any,
+        wrong_dtype: Optional[Union[type, Tuple[type]]] = None,
+        include_none: bool = True,
+        **kwargs: Any,
+) -> Any:
+    """
+    递归地对 ``data`` 中的元素执行函数 ``function``，且仅在满足元素为 ``dtype`` 时执行。
+
+    该函数参考了 `pytorch-lightning <https://github.com/PyTorchLightning/pytorch-lightning>`_ 的实现
+
+    :param data: 需要进行处理的数据集合或数据；
+    :param dtype: 数据的类型，函数 ``function`` 只会被应用于 ``data`` 中类型为 ``dtype`` 的数据；
+    :param function: 对数据进行处理的函数；
+    :param args: ``function`` 所需要的其它参数；
+    :param wrong_dtype: ``function`` 一定不会生效的数据类型。
+        如果数据既是 ``wrong_dtype`` 类型又是 ``dtype`` 类型那么也不会生效；
+    :param include_none: 是否包含执行结果为 ``None`` 的数据，默认为 ``True``；
+    :param kwargs: ``function`` 所需要的其它参数；
+    :return: 经过 ``function`` 处理后的数据集合；
+    """
+    # Breaking condition
+    if isinstance(data, dtype) and (wrong_dtype is None or not isinstance(data, wrong_dtype)):
+        return function(data, *args, **kwargs)
+
+    elem_type = type(data)
+
+    # Recursively apply to collection items
+    if isinstance(data, Mapping):
+        out = []
+        for k, v in data.items():
+            v = apply_to_collection(
+                v, dtype, function, *args, wrong_dtype=wrong_dtype, include_none=include_none, **kwargs
+            )
+            if include_none or v is not None:
+                out.append((k, v))
+        if isinstance(data, defaultdict):
+            return elem_type(data.default_factory, OrderedDict(out))
+        return elem_type(OrderedDict(out))
+
+    is_namedtuple = _is_namedtuple(data)
+    is_sequence = isinstance(data, Sequence) and not isinstance(data, str)
+    if is_namedtuple or is_sequence:
+        out = []
+        for d in data:
+            v = apply_to_collection(
+                d, dtype, function, *args, wrong_dtype=wrong_dtype, include_none=include_none, **kwargs
+            )
+            if include_none or v is not None:
+                out.append(v)
+        return elem_type(*out) if is_namedtuple else elem_type(out)
+
+    if _is_dataclass_instance(data):
+        # make a deepcopy of the data,
+        # but do not deepcopy mapped fields since the computation would
+        # be wasted on values that likely get immediately overwritten
+        fields = {}
+        memo = {}
+        for field in dataclasses.fields(data):
+            field_value = getattr(data, field.name)
+            fields[field.name] = (field_value, field.init)
+            memo[id(field_value)] = field_value
+        result = deepcopy(data, memo=memo)
+        # apply function to each field
+        for field_name, (field_value, field_init) in fields.items():
+            if field_init:
+                v = apply_to_collection(
+                    field_value,
+                    dtype,
+                    function,
+                    *args,
+                    wrong_dtype=wrong_dtype,
+                    include_none=include_none,
+                    **kwargs,
+                )
+            if not field_init or (not include_none and v is None):  # retain old value
+                v = getattr(data, field_name)
+            setattr(result, field_name, v)
+        return result
+
+    # data is neither of dtype, nor a collection
+    return data
+
+def _get_fun_msg(fn, with_fp=True)->str:
+    """
+    获取函数的基本信息，帮助报错::
+
+        >>>> print(_get_fun_msg(_get_fun_msg))
+        `_get_fun_msg(fn) -> str`(In file:/Users/hnyan/Desktop/projects/fastNLP/fastNLP/fastNLP/core/utils/utils.py)
+
+    :param callable fn:
+    :param with_fp: 是否包含函数所在的文件信息；
+    :return:
+    """
+    if isinstance(fn, functools.partial):
+        return _get_fun_msg(fn.func)
+    try:
+        fn_name = fn.__qualname__ + str(inspect.signature(fn))
+    except:
+        fn_name = str(fn)
+    if with_fp:
+        try:
+            fp = '(In file:' + os.path.abspath(inspect.getfile(fn)) + ')'
+        except:
+            fp = ''
+    else:
+        fp = ''
+    msg = f'`{fn_name}`' + fp
+    return msg

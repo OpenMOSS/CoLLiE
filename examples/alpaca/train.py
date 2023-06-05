@@ -15,40 +15,13 @@ from collie.module import GPTLMLoss, PipelineGenerationMixin
 from collie.config import CollieConfig
 from collie.trainer.trainer import Trainer
 from collie.log import logger
-from collie.utils import env, setup_distribution
+from collie.utils import env, setup_distribution, StepTimeMonitor
 
 from alpaca_metric import AlpacaDecodeMetric
 from alpaca import AlpacaDataset, train_collate_fn, eval_collate_fn
 
 
 pretrained_model = 'decapoda-research/llama-7b-hf'
-
-
-DS_CONFIG = {
-    "fp16": {
-        "enabled": False
-    },
-    "zero_allow_untested_optimizer": True,
-    "zero_force_ds_cpu_optimizer": False,
-
-    "optimizer": {
-        "type": "AdamW",
-        "params": {
-            "lr": 9e-6,
-            "weight_decay": 0.1
-        }
-    },
-
-    "zero_optimization": {
-        "stage": 1,
-        "offload_optimizer": {
-            "device": "cpu",
-            "pin_memory": False
-        }
-    },
-    "steps_per_print": 2000,
-}
-
 
 generate_config = GenerationConfig(
     max_new_tokens=128,
@@ -61,7 +34,7 @@ config = CollieConfig.from_pretrained("decapoda-research/llama-7b-hf")
 config.tp_size = 2
 config.dp_size = 2
 config.pp_size = 2
-config.train_epochs = 3
+config.train_epochs = 1
 config.train_micro_batch_size = 16
 config.eval_batch_size = 32
 config.eval_per_n_steps = 100
@@ -71,6 +44,14 @@ config.ds_config = {
         "type": "Adam",
         "params": {
             "lr": 2e-5
+        }
+    },
+    "monitor_config": {
+        "enabled": True,
+        "tensorboard": {
+            "enabled": True,
+            "output_path": "./ds_logs/",
+            "job_name": "alpaca_monitor"
         }
     }
 }
@@ -120,6 +101,9 @@ state_dict = LlamaForCausalLM.load_parallel_state_dict(
 )
 model.load_state_dict(state_dict)
 
+# monitor
+monitors = [StepTimeMonitor(config=config)]
+
 # metric
 metrics = {'decode': AlpacaDecodeMetric(tokenizer=tokenizer)}
 
@@ -134,6 +118,7 @@ trainer = Trainer(
     train_dataset_collate_fn=lambda x:train_collate_fn(x, tokenizer=tokenizer),
     eval_dataset_collate_fn=lambda x:eval_collate_fn(x, tokenizer=tokenizer),
     eval_config = generate_config,
+    monitors = monitors,
     metrics = metrics
 )
 
