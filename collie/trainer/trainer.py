@@ -144,8 +144,7 @@ class Trainer(TrainerEventTrigger):
         self.train_dataset_collate_fn = train_dataset_collate_fn
         self.eval_dataset_collate_fn = eval_dataset_collate_fn
         self.eval_config = eval_config
-        # self.metrics = metrics
-        # self.metric_wrapper = _MetricsWrapper(self.metrics, self)
+
         self.config = config
         self.communicate_buffer_shape = None
         self.setup_parallel_model()
@@ -156,18 +155,16 @@ class Trainer(TrainerEventTrigger):
             self.data_provider.start_provider()
 
         if evaluators is None or (hasattr(evaluators, "__len__") and len(evaluators) == 0):
-            evaluator = Evaluator(model=model, dataset=eval_dataset, metrics=metrics, eval_fn=None,
+            evaluators = Evaluator(model=model, dataset=eval_dataset, metrics=metrics, eval_fn=eval_fn,
                  config=config, collate_fn=eval_dataset_collate_fn, data_provider=None,
                  eval_config=eval_config)
+            evaluators.engine = self.engine
+            evaluators.monitor = self.monitor
+            evaluators.data_provider = self.data_provider
+        if not isinstance(evaluators, Sequence):
+            evaluators = [evaluators]
+        for evaluator in evaluators:
             evaluator.engine = self.engine
-            evaluator.monitor = self.monitor
-            evaluator.data_provider = self.data_provider
-        else:
-            if isinstance(evaluators, List):
-                for evaluator in evaluators:
-                    evaluator.engine = self.engine
-            else:
-                evaluators.engine = self.engine
 
         self.evaluators = evaluators
 
@@ -301,18 +298,6 @@ class Trainer(TrainerEventTrigger):
             )
             self.steps_per_epoch = len(self.train_dataloader)
 
-        # Move to Evaluator
-        # if self.eval_dataset is None:
-        #     self.eval_dataloader = None
-        #     self.eval_steps = 0
-        # else:
-        #     self.eval_dataloader = CollieDataLoader(
-        #         self.eval_dataset, self.config.eval_batch_size,
-        #         self.config.gradient_accumulation_steps, shuffle=False,
-        #         collate_fn=self.eval_dataset_collate_fn
-        #     )
-        #     self.eval_steps = len(self.eval_dataloader)
-
         # set logger level
         deepspeed_logging_level = logging.ERROR if 'logging_level' not in self.config.ds_config \
             else self.config.ds_config['logging_level']
@@ -364,44 +349,12 @@ class Trainer(TrainerEventTrigger):
 
         :param dataloader: 用于验证的数据集，为 ``Iterable`` 对象 ，当为 ``None`` 时，使用 ``eval_dataset`` 生成的 ``eval_dataloader``
         """
-
-        # if isinstance(self.evaluators, List):
-        #     for evaluator in self.evaluators:
-        #         evaluator.eval(dataloader)
-        # else:
-        #     self.evaluators.eval(dataloader)
-                
-
-        # eval_dataloader = self.eval_dataloader
-        # if dataloader is not None:
-        #     eval_dataloader = dataloader
-        # self.on_evaluate_begin()
-        # with progress(eval_dataloader, desc="Evaluating Batch: ", disable=env.rank != 0, total=self.eval_steps) as tqbar_batch:
-        #     for batch_idx, batch in enumerate(tqbar_batch):
-        #         tqbar_batch.set_description(f"Evaluating Batch: {batch_idx} / {self.eval_steps}")
-        #         if isinstance(self.engine, PipelineEngine):
-        #             self.engine.reset_activation_shape()
-        #             if self.engine.total_loss is not None:
-        #                 total_loss = self.engine.total_loss.detach().clone()
-        #             else:
-        #                 total_loss = None
-        #             self.engine.total_loss = None
-        #         self.data_provider_handler()
-        #         self.engine.eval()
-        #         result = self.eval_fn(self, batch)
-        #         get_accelerator().empty_cache()
-        #         if isinstance(self.engine, PipelineEngine):
-        #             self.engine.total_loss = total_loss
-        #         self.metric_wrapper.update(result)
-        # with self.monitor as item:
-        #     metric_results = self.metric_wrapper.get_metric()
-        #     item.update({"eval_result": metric_results, "mode": "eval"})
-        # self.metric_wrapper.reset()
-        # self.on_evaluate_end(metric_results)
-
-        # if len(metric_results) > 0:  # 如果 metric 不为 None 需要 print 。
-        #     f_rich_progress.print_json(metric_results)
-
+        self.on_evaluate_begin()
+        eval_results = []
+        for evaluator in self.evaluators:
+            results = evaluator.eval(dataloader)
+            eval_results.append(results)
+        self.on_evaluate_end(results)
 
     @staticmethod
     def train_fn(trainer, batch: Tuple, global_step: int) -> float:

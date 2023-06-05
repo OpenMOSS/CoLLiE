@@ -38,6 +38,7 @@ Utils
    :nosignatures:
 
    find_tensors
+   apply_to_collection
 
 .. autosummary::
    :toctree: generated

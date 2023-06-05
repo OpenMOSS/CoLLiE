@@ -2,17 +2,16 @@ from typing import Optional, Dict, Callable, Sequence, Tuple, Any, List, Iterabl
 
 import torch
 import torch.distributed as dist
-from deepspeed.runtime.constants import ROUTE_EVAL
 from deepspeed.runtime.pipe.engine import PipelineEngine
-from deepspeed.runtime.dataloader import RepeatingLoader
 from deepspeed.accelerator import get_accelerator
 from transformers.generation.utils import GenerationConfig
 
-from collie.module import PipelineModel
-from collie.utils import env
+from collie.module import PipelineGenerationMixin
+from collie.data.dataloader import CollieDataLoader
+from collie.utils.rich_progress import f_rich_progress
 from collie.log import logger
 from collie.config import CollieConfig
-from collie.utils import progress, env, setup_ds_engine, BaseProvider, _GenerationStreamer, _MetricsWrapper, is_zero3_enabled, BaseMonitor, _MultiMonitors
+from collie.utils import progress, env, setup_ds_engine, BaseProvider, _GenerationStreamer, _MetricsWrapper, BaseMonitor, _MultiMonitors
 
 class Evaluator:
     """
@@ -105,66 +104,35 @@ class Evaluator:
             self.init_engine()
         if self.eval_dataloader is None:
             self.eval_dataloader = CollieDataLoader(
-                self.eval_dataset, self.config.eval_batch_size,
+                self.dataset, self.config.eval_batch_size,
                 self.config.gradient_accumulation_steps, shuffle=False,
-                collate_fn=self.eval_dataset_collate_fn
+                collate_fn=self.collate_fn
             )
             self.eval_steps = len(self.eval_dataloader)
-            # eval_batch_size = self.config.eval_batch_size
-            # if env.pp_size > 1:
-            #     # For accumulation step
-            #     # Batch will be splitted in patched train_batch/eval_batch
-            #     eval_batch_size *= self.config.gradient_accumulation_steps
-            # self.eval_dataloader = self.engine.deepspeed_io(
-            #     self.dataset,
-            #     batch_size=eval_batch_size,
-            #     route=ROUTE_EVAL,
-            #     pin_memory=True,
-            #     data_sampler=None,
-            #     collate_fn=self.collate_fn,
-            #     num_local_io_workers=None
-            # )
-            # self.eval_steps = len(self.eval_dataloader)
-            # if env.pp_size > 1:
-            #     self.eval_dataloader = RepeatingLoader(self.eval_dataloader)
 
         eval_dataloader = self.eval_dataloader
         if dataloader is not None:
-            train_dataloader = dataloader
+            eval_dataloader = dataloader
 
         with progress(eval_dataloader, desc="Evaluating Batch: ", disable=env.rank != 0, total=self.eval_steps) as tqbar_batch:
             for batch_idx, batch in enumerate(tqbar_batch):
                 if batch_idx >= self.eval_steps:
                     break
                 tqbar_batch.set_description(f"Evaluating Batch: {batch_idx} / {self.eval_steps}")
-                if isinstance(self.engine, PipelineEngine):
-                    self.engine.reset_activation_shape()
-                    if self.engine.total_loss is not None:
-                        total_loss = self.engine.total_loss.detach().clone()
-                    else:
-                        total_loss = None
-                    self.engine.total_loss = None
                 self.data_provider_handler()
                 self.engine.eval()
                 result = self.eval_fn(self, batch)
                 get_accelerator().empty_cache()
-                if isinstance(self.engine, PipelineEngine):
-                    self.engine.total_loss = total_loss
-                if env.pp_rank == 0 and env.tp_rank == 0:
-                    self.metric_wrapper.update(result)
-        if env.pp_rank == 0 and env.tp_rank == 0:
-            with self.monitor as item:
-                metric_results = self.metric_wrapper.get_metric()
-                item.update({"eval_result": metric_results, "mode": "eval"})
-            self.metric_wrapper.reset()
+                self.metric_wrapper.update(result)
+        with self.monitor as item:
+            metric_results = self.metric_wrapper.get_metric()
+            item.update({"eval_result": metric_results, "mode": "eval"})
+        self.metric_wrapper.reset()
 
-            if len(metric_results) > 0:  # 如果 metric 不为 None 需要 print 。
-                f_rich_progress.print_json(metric_results)
-
-        if isinstance(self.engine, PipelineEngine):
-            self.engine.reset_activation_shape()
-            # self.communicate_buffer_shape = None
-        
+        if len(metric_results) > 0:  # 如果 metric 不为 None 需要 print 。
+            f_rich_progress.print_json(metric_results)
+            
+        return metric_results
     
     @staticmethod
     def eval_fn(evaluator, batch: Tuple) -> Any:
@@ -230,13 +198,6 @@ class Evaluator:
             generation_model = self.engine.module
         if not generation_model.can_generate():
             return
-        if isinstance(self.engine, PipelineEngine):
-            self.engine.reset_activation_shape()
-            if self.engine.total_loss is not None:
-                total_loss = self.engine.total_loss.detach().clone()
-            else:
-                total_loss = None
-            self.engine.total_loss = None
         use_stream = self.data_provider.stream
         streamer = _GenerationStreamer(server=self.data_provider)
         input_ids = generation_model.generate(
@@ -247,7 +208,4 @@ class Evaluator:
         )
         if not use_stream:
             self.data_provider.put_feedback(input_ids[0].cpu())
-        if isinstance(self.engine, PipelineEngine):
-            self.engine.reset_activation_shape()
-            self.engine.total_loss = total_loss
         get_accelerator().empty_cache()
