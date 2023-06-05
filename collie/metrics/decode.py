@@ -35,7 +35,7 @@ class DecodeMetric(BaseMetric):
         """
         :meth:`update` 函数将针对一个批次的预测结果做评价指标的累计。
         """
-        generated_ids = result['input_ids']
+        generated_ids = result['generated_ids']
         decode_list = []
         for i in range(len(generated_ids)):
             if isinstance(generated_ids[i], torch.Tensor):
