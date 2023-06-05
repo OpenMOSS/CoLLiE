@@ -88,7 +88,7 @@ class Trainer(TrainerEventTrigger):
                 # 第二个 input_ids 会被用于 loss_fn 的 label
                 return input_ids, input_ids
             
-    :param eval_config: 用于验证的配置
+    :param generation_config: 用于验证的配置
         **CoLLie** 默认的 ``eval_fn`` 为进行一次生成过程，因此本项配置主要控制生成过程的参数。当自定义 ``eval_fn`` 时，本项配置将不会生效
     :param data_provider: 额外的数据提供器，可在 ``eval_dataset`` 之外额外注入验证数据，例如通过前端网页或 http 请求等， 详见 :class:`~collie.utils.data_provider.BaseProvider`
     :param monitors: 用于监控训练过程的监控器，详见 :class:`~collie.utils.monitor.BaseMonitor`
@@ -114,7 +114,7 @@ class Trainer(TrainerEventTrigger):
                  callbacks: Optional[Union[Callback, List[Callback]]] = None,
                  train_dataset_collate_fn: Optional[Callable] = None,
                  eval_dataset_collate_fn: Optional[Callable] = None,
-                 eval_config: GenerationConfig = GenerationConfig(),
+                 generation_config: GenerationConfig = GenerationConfig(),
                  data_provider: Optional[BaseProvider] = None,
                  monitors: Sequence[BaseMonitor] = [],
                  metrics: Optional[Dict] = None,
@@ -141,7 +141,7 @@ class Trainer(TrainerEventTrigger):
             self.eval_fn = eval_fn
         self.train_dataset_collate_fn = train_dataset_collate_fn
         self.eval_dataset_collate_fn = eval_dataset_collate_fn
-        self.eval_config = eval_config
+        self.generation_config = generation_config
 
         self.config = config
         self.communicate_buffer_shape = None
@@ -161,7 +161,7 @@ class Trainer(TrainerEventTrigger):
         if evaluators is None or (hasattr(evaluators, "__len__") and len(evaluators) == 0):
             evaluators = Evaluator(model=model, dataset=eval_dataset, metrics=metrics, eval_fn=eval_fn,
                  config=config, collate_fn=eval_dataset_collate_fn, data_provider=None,
-                 eval_config=eval_config)
+                 generation_config=generation_config)
             evaluators.engine = self.engine
             evaluators.monitor = self.monitor
             evaluators.data_provider = self.data_provider
@@ -253,7 +253,7 @@ class Trainer(TrainerEventTrigger):
         input_ids = generation_model.generate(
             input_ids=input_ids.cuda(), 
             attention_mask=torch.ones_like(input_ids).cuda(), 
-            generation_config=self.eval_config,
+            generation_config=self.generation_config,
             streamer=streamer if use_stream else None
         )
         if not use_stream:
@@ -344,9 +344,9 @@ class Trainer(TrainerEventTrigger):
                         if self.config.eval_per_n_steps > 0 and (self.batch_idx + 1) % self.config.eval_per_n_steps == 0:
                             self.eval()
                 self.batch_idx = 0
-            self.on_train_epoch_end()
-            if self.config.eval_per_n_epochs > 0 and (self.epoch_idx + 1) % self.config.eval_per_n_epochs == 0:
-                self.eval()
+                if self.config.eval_per_n_epochs > 0 and (self.epoch_idx + 1) % self.config.eval_per_n_epochs == 0:
+                    self.eval()
+                self.on_train_epoch_end()
         self.epoch_idx = 0
                 
     def eval(self, dataloader: Optional[Iterable] = None):
@@ -402,7 +402,7 @@ class Trainer(TrainerEventTrigger):
                 trainer.optimizer.backward_step(loss, lr)
                 if trainer.optimizer.zero_enabled:  # TODO: should tp do this too?
                     trainer.engine.optimizer.get_param_coordinator(training=True).reset_step()
-        return loss.item()
+        return loss.detach().cpu().item()
 
     def save_checkpoint(self, path: str, process_exclusion: bool = False, mode: str = "trainer", **kwargs):...
     def save_checkpoint(self, path: str, process_exclusion: bool = False, mode: str = "trainer", 

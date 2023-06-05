@@ -55,20 +55,20 @@ class Evaluator:
                 # 第二个 input_ids 会被用于 loss_fn 的 label
                 return input_ids, input_ids
     :param data_provider: 额外的数据提供器，可在 ``dataset`` 之外额外注入验证数据，例如通过前端网页或 http 请求等， 详见 :class:`~collie.utils.data_provider.BaseProvider`
-    :param eval_config: 用于验证的配置
+    :param generation_config: 用于验证的配置
         **CoLLie** 默认的 ``eval_fn`` 为进行一次生成过程，因此本项配置主要控制生成过程的参数。当自定义 ``eval_fn`` 时，本项配置将不会生效
     :param monitors: 用于监控训练过程的监控器，详见 :class:`~collie.utils.monitor.BaseMonitor`
     """
 
     def __init__(self, model, dataset: torch.utils.data.Dataset, metrics: Optional[Dict] = None, eval_fn: Optional[Callable]=None,
                  config: Optional[CollieConfig] = None, collate_fn: Optional[Callable] = None, data_provider: Optional[BaseProvider] = None,
-                 eval_config: GenerationConfig = GenerationConfig(), monitors: Sequence[BaseMonitor] = []):
+                 generation_config: GenerationConfig = GenerationConfig(), monitors: Sequence[BaseMonitor] = []):
         self.engine = None
         self.model = model
         self.metrics = metrics
         self.metric_wrapper = _MetricsWrapper(self.metrics, self)
         self.config = config
-        self.eval_config = eval_config
+        self.generation_config = generation_config
         self.eval_fn = self.eval_fn if eval_fn is None else eval_fn
         self.dataset = dataset
         self.collate_fn = collate_fn
@@ -155,7 +155,7 @@ class Evaluator:
         else:
             generation_model = evaluator.engine.module
         generated_ids = generation_model.generate(input_ids=input_ids.cuda(), attention_mask=torch.ones_like(input_ids).cuda(), 
-                                              generation_config=evaluator.eval_config)
+                                              generation_config=evaluator.generation_config)
         return {
             "generated_ids": generated_ids,
             "labels": labels,
@@ -204,7 +204,7 @@ class Evaluator:
         input_ids = generation_model.generate(
             input_ids=input_ids.cuda(), 
             attention_mask=torch.ones_like(input_ids).cuda(), 
-            generation_config=self.eval_config,
+            generation_config=self.generation_config,
             streamer=streamer if use_stream else None
         )
         if not use_stream:
