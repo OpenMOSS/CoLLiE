@@ -162,13 +162,12 @@ class Trainer(TrainerEventTrigger):
             evaluators = Evaluator(model=model, dataset=eval_dataset, metrics=metrics, eval_fn=eval_fn,
                  config=config, collate_fn=eval_dataset_collate_fn, data_provider=None,
                  eval_config=eval_config)
-            evaluators.engine = self.engine
             evaluators.monitor = self.monitor
-            evaluators.data_provider = self.data_provider
         if not isinstance(evaluators, Sequence):
             evaluators = [evaluators]
         for evaluator in evaluators:
             evaluator.engine = self.engine
+            evaluator.data_provider = self.data_provider
 
         self.evaluators = evaluators
 
