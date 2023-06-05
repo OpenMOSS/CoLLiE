@@ -1,8 +1,6 @@
 from torch.utils.data import Dataset
 import torch
-from transformers import PreTrainedTokenizer
-from huggingface_hub import snapshot_download
-from torch.utils.data.dataset import ConcatDataset, Dataset
+from torch.utils.data.dataset import Dataset
 from collie.driver.io import FileIODriver, PetrelIODriver
 
 import os
@@ -14,7 +12,7 @@ import random
 import threading
 import numpy as np
 from functools import reduce
-from typing import Optional, Dict, List, Sequence, Union
+from typing import Optional, Dict, List
 
 class _ShardContainer(list):
     def __init__(self, path, shuffle: bool=False, seed: int = 1024, protocol: str="file") -> None:
@@ -196,8 +194,6 @@ class CollieDataset(Dataset):
                 meta = np.empty((0, 2), int)
                 shard_idx += 1
             
-            
-    
     @classmethod
     def from_processed(cls, 
                        path: str, 

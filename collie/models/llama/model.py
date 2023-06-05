@@ -175,7 +175,7 @@ class LlamaLayer(nn.Module):
         query, key, value = rearrange(query, "b n (h d) -> b n h d", d=head_dim), \
             rearrange(key, "b n (h d) -> b n h d", d=head_dim), \
             rearrange(value, "b n (h d) -> b n h d", d=head_dim)
-        if not self.training and self.past_key_values is not None:
+        if not self.training and self.past_key_values is not None and self.use_cache:
             start_pos = self.past_key_values[0].shape[1]
         else:
             self.past_key_values = None
@@ -259,9 +259,6 @@ class LlamaForCausalLM(CollieModelForCausalLM):
         self.main_input_name = "input_ids"
 
     def forward(self, input_ids: torch.Tensor, **kwargs):
-        past_key_values=self._get_past_key_values(self.layers)
-        if past_key_values is not None and not self.training:
-            input_ids = input_ids[:, -1:]
         assert input_ids.ndim == 2, f"input_ids.shape must be (B, N), but got {input_ids.shape}"
         hidden_states = self.embed_tokens(input_ids)
         all_hidden_states = ()

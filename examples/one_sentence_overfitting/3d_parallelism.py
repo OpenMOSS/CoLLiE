@@ -17,18 +17,18 @@ tokenizer = LlamaTokenizer.from_pretrained("decapoda-research/llama-7b-hf",
                                            add_eos_token=False)
 tokenizer.bos_token_id = 1
 tokenizer.eos_token_id = 2
+tokenizer.eos_token = "</s>"
 config = CollieConfig.from_pretrained("decapoda-research/llama-7b-hf")
 config.tp_size = 1
-config.dp_size = 2
-config.pp_size = 1
+config.dp_size = 1
+config.pp_size = 2
 config.train_epochs = 1000
 config.train_micro_batch_size = 2
 config.gradient_accumulation_steps = 1
 # config.eval_batch_size = 1
 # config.eval_per_n_steps = 20
 config.ds_config = {
-    "fp16": {"enabled": True},
-    "zero_optimization": {"stage": 3}
+    "fp16": {"enabled": True}
 }
 
 model = LlamaForCausalLM.from_pretrained("/mnt/petrelfs/zhangshuo/model/llama-7b-hf", config=config)
@@ -47,7 +47,7 @@ trainer = Trainer(
                                  eos_token_id=2, 
                                  pad_token_id=0, 
                                  bos_token_id=1,
-                                 use_cache=True),
+                                 use_cache=False),
     monitors=[
         TGSMonitor(config),
         MemoryMonitor(config),
