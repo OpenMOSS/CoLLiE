@@ -34,6 +34,7 @@ from collie.utils import progress, env, setup_ds_engine, BaseProvider, _Generati
 from collie.utils.rich_progress import f_rich_progress
 from collie.optim import InplaceSGD
 from collie.models.base import CollieModelForCausalLM
+from .evaluator import Evaluator
 from collie.data import CollieDataLoader
 from collie.callbacks.callback import Callback
 from collie.callbacks.callback_manager import CallbackManager, prepare_callback
@@ -104,7 +105,7 @@ class Trainer(TrainerEventTrigger):
     """
     def __init__(self, 
                  model: torch.nn.Module,
-                 config: Union[CollieConfig, str],
+                 config: CollieConfig,
                  loss_fn: Callable = GPTLMLoss(),
                  train_fn: Optional[Callable] = None,
                  eval_fn: Optional[Callable] = None,
@@ -118,7 +119,8 @@ class Trainer(TrainerEventTrigger):
                  eval_config: GenerationConfig = GenerationConfig(),
                  data_provider: Optional[BaseProvider] = None,
                  monitors: Sequence[BaseMonitor] = [],
-                 metrics: Optional[Dict] = None) -> None:
+                 metrics: Optional[Dict] = None,
+                 evaluators: Optional[List] = None) -> None:
         if isinstance(optimizer, InplaceSGD):
             if config.pp_size > 1:
                 raise ValueError("InplaceSGD is incompatible with pipeline parallelism.")
@@ -142,8 +144,8 @@ class Trainer(TrainerEventTrigger):
         self.train_dataset_collate_fn = train_dataset_collate_fn
         self.eval_dataset_collate_fn = eval_dataset_collate_fn
         self.eval_config = eval_config
-        self.metrics = metrics
-        self.metric_wrapper = _MetricsWrapper(self.metrics, self)
+        # self.metrics = metrics
+        # self.metric_wrapper = _MetricsWrapper(self.metrics, self)
         self.config = config
         self.communicate_buffer_shape = None
         self.setup_parallel_model()
@@ -153,8 +155,25 @@ class Trainer(TrainerEventTrigger):
         if self.data_provider is not None and dist.get_rank() == 0:
             self.data_provider.start_provider()
 
+        if evaluators is None or (hasattr(evaluators, "__len__") and len(evaluators) == 0):
+            evaluator = Evaluator(model=model, dataset=eval_dataset, metrics=metrics, eval_fn=None,
+                 config=config, collate_fn=eval_dataset_collate_fn, data_provider=None,
+                 eval_config=eval_config)
+            evaluator.engine = self.engine
+            evaluator.monitor = self.monitor
+            evaluator.data_provider = self.data_provider
+        else:
+            if isinstance(evaluators, List):
+                for evaluator in evaluators:
+                    evaluator.engine = self.engine
+            else:
+                evaluators.engine = self.engine
+
+        self.evaluators = evaluators
+
         callbacks = prepare_callback(callbacks)
         self.callback_manager = CallbackManager(callbacks)
+
         self.checkpoint_file = "collie_dp{}_pp{}_tp{}.pt".format(
             env.dp_rank, env.pp_rank, env.tp_rank
         )
@@ -190,7 +209,7 @@ class Trainer(TrainerEventTrigger):
         """获取当前全局步数
         """
         return self.epoch_idx * self.steps_per_epoch + self.batch_idx
-        
+
     def data_provider_handler(self):
         """当初始化 :class:`collie.Trainer` 的过程中提供了 ``data_provider`` 时会使用此方法。
             ``data_provider`` 中维持一个异步队列 ``queue.Queue``，该方法会不断从中取出数据，放入模型中进行生成
@@ -239,7 +258,7 @@ class Trainer(TrainerEventTrigger):
         if not use_stream:
             self.data_provider.put_feedback(input_ids[0].cpu())
         get_accelerator().empty_cache()
-                      
+
     def setup_parallel_model(self):
         """
         初始化分布式模型。
@@ -282,16 +301,17 @@ class Trainer(TrainerEventTrigger):
             )
             self.steps_per_epoch = len(self.train_dataloader)
 
-        if self.eval_dataset is None:
-            self.eval_dataloader = None
-            self.eval_steps = 0
-        else:
-            self.eval_dataloader = CollieDataLoader(
-                self.eval_dataset, self.config.eval_batch_size,
-                self.config.gradient_accumulation_steps, shuffle=False,
-                collate_fn=self.eval_dataset_collate_fn
-            )
-            self.eval_steps = len(self.eval_dataloader)
+        # Move to Evaluator
+        # if self.eval_dataset is None:
+        #     self.eval_dataloader = None
+        #     self.eval_steps = 0
+        # else:
+        #     self.eval_dataloader = CollieDataLoader(
+        #         self.eval_dataset, self.config.eval_batch_size,
+        #         self.config.gradient_accumulation_steps, shuffle=False,
+        #         collate_fn=self.eval_dataset_collate_fn
+        #     )
+        #     self.eval_steps = len(self.eval_dataloader)
 
         # set logger level
         deepspeed_logging_level = logging.ERROR if 'logging_level' not in self.config.ds_config \
@@ -339,41 +359,49 @@ class Trainer(TrainerEventTrigger):
                         self.eval()
         self.epoch_idx = 0
                 
-    def eval(self, 
-             dataloader: Optional[Iterable] = None):
+    def eval(self, dataloader: Optional[Iterable] = None):
         """验证循环
 
         :param dataloader: 用于验证的数据集，为 ``Iterable`` 对象 ，当为 ``None`` 时，使用 ``eval_dataset`` 生成的 ``eval_dataloader``
         """
-        eval_dataloader = self.eval_dataloader
-        if dataloader is not None:
-            eval_dataloader = dataloader
-        self.on_evaluate_begin()
-        with progress(eval_dataloader, desc="Evaluating Batch: ", disable=env.rank != 0, total=self.eval_steps) as tqbar_batch:
-            for batch_idx, batch in enumerate(tqbar_batch):
-                tqbar_batch.set_description(f"Evaluating Batch: {batch_idx} / {self.eval_steps}")
-                if isinstance(self.engine, PipelineEngine):
-                    self.engine.reset_activation_shape()
-                    if self.engine.total_loss is not None:
-                        total_loss = self.engine.total_loss.detach().clone()
-                    else:
-                        total_loss = None
-                    self.engine.total_loss = None
-                self.data_provider_handler()
-                self.engine.eval()
-                result = self.eval_fn(self, batch)
-                get_accelerator().empty_cache()
-                if isinstance(self.engine, PipelineEngine):
-                    self.engine.total_loss = total_loss
-                self.metric_wrapper.update(result)
-        with self.monitor as item:
-            metric_results = self.metric_wrapper.get_metric()
-            item.update({"eval_result": metric_results, "mode": "eval"})
-        self.metric_wrapper.reset()
-        self.on_evaluate_end(metric_results)
 
-        if len(metric_results) > 0:  # 如果 metric 不为 None 需要 print 。
-            f_rich_progress.print_json(metric_results)
+        # if isinstance(self.evaluators, List):
+        #     for evaluator in self.evaluators:
+        #         evaluator.eval(dataloader)
+        # else:
+        #     self.evaluators.eval(dataloader)
+                
+
+        # eval_dataloader = self.eval_dataloader
+        # if dataloader is not None:
+        #     eval_dataloader = dataloader
+        # self.on_evaluate_begin()
+        # with progress(eval_dataloader, desc="Evaluating Batch: ", disable=env.rank != 0, total=self.eval_steps) as tqbar_batch:
+        #     for batch_idx, batch in enumerate(tqbar_batch):
+        #         tqbar_batch.set_description(f"Evaluating Batch: {batch_idx} / {self.eval_steps}")
+        #         if isinstance(self.engine, PipelineEngine):
+        #             self.engine.reset_activation_shape()
+        #             if self.engine.total_loss is not None:
+        #                 total_loss = self.engine.total_loss.detach().clone()
+        #             else:
+        #                 total_loss = None
+        #             self.engine.total_loss = None
+        #         self.data_provider_handler()
+        #         self.engine.eval()
+        #         result = self.eval_fn(self, batch)
+        #         get_accelerator().empty_cache()
+        #         if isinstance(self.engine, PipelineEngine):
+        #             self.engine.total_loss = total_loss
+        #         self.metric_wrapper.update(result)
+        # with self.monitor as item:
+        #     metric_results = self.metric_wrapper.get_metric()
+        #     item.update({"eval_result": metric_results, "mode": "eval"})
+        # self.metric_wrapper.reset()
+        # self.on_evaluate_end(metric_results)
+
+        # if len(metric_results) > 0:  # 如果 metric 不为 None 需要 print 。
+        #     f_rich_progress.print_json(metric_results)
+
 
     @staticmethod
     def train_fn(trainer, batch: Tuple, global_step: int) -> float:
@@ -416,32 +444,6 @@ class Trainer(TrainerEventTrigger):
                 if trainer.optimizer.zero_enabled:  # TODO: should tp do this too?
                     trainer.engine.optimizer.get_param_coordinator(training=True).reset_step()
         return loss.item()
-
-    @staticmethod
-    def eval_fn(trainer, batch: Tuple) -> Any:
-        """一次验证的基本单元
-
-        :param trainer: 训练器
-        :param batch: 一个 batch 的数据，类型为长度为 2 的 ``Tuple``，其中第一个元素为 ``input_ids``，第二个元素为 ``labels``
-
-            .. note::
-
-                根据提供的 ``eval_dataset`` 和 ``eval_dataset_collate_fn`` 的不同，``labels`` 的类型也会有所不同，详见 :class:`~collie.trainer.Trainer`
-    
-        :return: 一次验证的结果，为 `Dict` 类型，该结果会被传入 `metric` 的 `update` 方法中
-        """
-        input_ids, labels = batch
-        if isinstance(trainer.engine, PipelineEngine):
-            generation_model = PipelineGenerationMixin(
-                engine=trainer.engine
-            )
-        else:
-            generation_model = trainer.model
-        generated_ids = generation_model.generate(input_ids=input_ids.cuda(), attention_mask=torch.ones_like(input_ids).cuda(), generation_config=trainer.eval_config)
-        return {
-            "generated_ids": generated_ids,
-            "labels": labels,
-        }
 
     def save_checkpoint(self, path: str, process_exclusion: bool = False, mode: str = "trainer", **kwargs):...
     def save_checkpoint(self, path: str, process_exclusion: bool = False, mode: str = "trainer", 
