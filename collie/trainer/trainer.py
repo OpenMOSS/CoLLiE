@@ -345,7 +345,7 @@ class Trainer(TrainerEventTrigger):
                 self.batch_idx = 0
             self.on_train_epoch_end()
             if self.config.eval_per_n_epochs > 0 and (self.epoch_idx + 1) % self.config.eval_per_n_epochs == 0:
-                        self.eval()
+                self.eval()
         self.epoch_idx = 0
                 
     def eval(self, dataloader: Optional[Iterable] = None):
@@ -354,11 +354,12 @@ class Trainer(TrainerEventTrigger):
         :param dataloader: 用于验证的数据集，为 ``Iterable`` 对象 ，当为 ``None`` 时，使用 ``eval_dataset`` 生成的 ``eval_dataloader``
         """
         self.on_evaluate_begin()
-        eval_results = []
+        eval_results = {}
         for evaluator in self.evaluators:
             results = evaluator.eval(dataloader)
-            eval_results.append(results)
-        self.on_evaluate_end(results)
+            eval_results.update(results)
+        self.on_evaluate_end(eval_results)
+        return eval_results
 
     @staticmethod
     def train_fn(trainer, batch: Tuple, global_step: int) -> float:
