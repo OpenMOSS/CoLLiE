@@ -86,7 +86,7 @@ class GradioProvider(BaseProvider):
 
         interface = gr.Interface(fn=submit, inputs="textbox", outputs="text")
         interface.queue()
-        interface.launch(server_name="0.0.0.0", server_port=self.port, share=True)
+        interface.launch(server_name="0.0.0.0", server_port=self.port)
         
 class _GenerationStreamer(BaseStreamer):
     """ 重写 `transformers` 的 `BaseStreamer` 类以兼容 **CoLLie** 的异步数据提供器

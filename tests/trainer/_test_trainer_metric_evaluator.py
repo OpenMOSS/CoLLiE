@@ -65,7 +65,7 @@ def _test_gpt2():
         model = model,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
-        eval_config=GenerationConfig(max_new_tokens=32, 
+        generation_config=GenerationConfig(max_new_tokens=32, 
                                     eos_token_id=2, 
                                     pad_token_id=0, 
                                     bos_token_id=1),
@@ -121,7 +121,7 @@ def _test_init_engine():
     evaluator_config.ds_config.pop("optimizer")
     evaluator = Evaluator(model, dataset=eval_dataset, metrics={"decodeMetric": DecodeMetric(tokenizer=tokenizer, gather_result=True),
                  "decodeMetric1": DecodeMetric(tokenizer=tokenizer, gather_result=True)}, config=config,
-                  eval_config=GenerationConfig(max_new_tokens=32, 
+                  generation_config=GenerationConfig(max_new_tokens=32, 
                                     eos_token_id=2, 
                                     pad_token_id=0, 
                                     bos_token_id=1))
@@ -178,7 +178,7 @@ def _test_only_evaluator():
     evaluator_config.ds_config.pop("optimizer")
     evaluator = Evaluator(model, dataset=eval_dataset, metrics={"decodeMetric": DecodeMetric(tokenizer=tokenizer, gather_result=True),
                  "decodeMetric1": DecodeMetric(tokenizer=tokenizer, gather_result=True)}, config=config,
-                  eval_config=GenerationConfig(max_new_tokens=32, 
+                  generation_config=GenerationConfig(max_new_tokens=32, 
                                     eos_token_id=2, 
                                     pad_token_id=0, 
                                     bos_token_id=1))

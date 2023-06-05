@@ -56,7 +56,7 @@ class BaseAlpaca:
         gen_res = generation_model.generate(
             input_ids=input_ids.cuda(),
             attention_mask=torch.ones_like(input_ids).cuda(),
-            generation_config=trainer.eval_config
+            generation_config=trainer.generation_config
         )
         return {
             "generate": gen_res,
@@ -114,7 +114,7 @@ class BaseAlpaca:
             eval_dataset = eval_dataset,
             train_dataset_collate_fn=lambda x:train_collate_fn(x, tokenizer=tokenizer),
             eval_dataset_collate_fn=lambda x:eval_collate_fn(x, tokenizer=tokenizer),
-            eval_config = self.generationConfig,
+            generation_config = self.generationConfig,
             monitors = monitors,
             metrics = metrics
         )

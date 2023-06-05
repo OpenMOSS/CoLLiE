@@ -82,7 +82,7 @@ trainer = Trainer(
     optimizer=optimizer,
     train_dataset=train_dataset,
     eval_dataset=eval_dataset,
-    eval_config=GenerationConfig(max_new_tokens=128,
+    generation_config=GenerationConfig(max_new_tokens=128,
                                  eos_token_id=2,
                                  pad_token_id=0,
                                  bos_token_id=1,

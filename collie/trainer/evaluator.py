@@ -11,7 +11,7 @@ from collie.data.dataloader import CollieDataLoader
 from collie.utils.rich_progress import f_rich_progress
 from collie.log import logger
 from collie.config import CollieConfig
-from collie.utils import progress, env, setup_ds_engine, BaseProvider, _GenerationStreamer, _MetricsWrapper, BaseMonitor, _MultiMonitors
+from collie.utils import progress, env, setup_ds_engine, BaseProvider, _GenerationStreamer, _MetricsWrapper, BaseMonitor, _MultiMonitors, broadcast_tensor
 
 class Evaluator:
     """
@@ -55,20 +55,20 @@ class Evaluator:
                 # 第二个 input_ids 会被用于 loss_fn 的 label
                 return input_ids, input_ids
     :param data_provider: 额外的数据提供器，可在 ``dataset`` 之外额外注入验证数据，例如通过前端网页或 http 请求等， 详见 :class:`~collie.utils.data_provider.BaseProvider`
-    :param eval_config: 用于验证的配置
+    :param generation_config: 用于验证的配置
         **CoLLie** 默认的 ``eval_fn`` 为进行一次生成过程，因此本项配置主要控制生成过程的参数。当自定义 ``eval_fn`` 时，本项配置将不会生效
     :param monitors: 用于监控训练过程的监控器，详见 :class:`~collie.utils.monitor.BaseMonitor`
     """
 
     def __init__(self, model, dataset: torch.utils.data.Dataset, metrics: Optional[Dict] = None, eval_fn: Optional[Callable]=None,
                  config: Optional[CollieConfig] = None, collate_fn: Optional[Callable] = None, data_provider: Optional[BaseProvider] = None,
-                 eval_config: GenerationConfig = GenerationConfig(), monitors: Sequence[BaseMonitor] = []):
+                 generation_config: GenerationConfig = GenerationConfig(), monitors: Sequence[BaseMonitor] = []):
         self.engine = None
         self.model = model
         self.metrics = metrics
         self.metric_wrapper = _MetricsWrapper(self.metrics, self)
         self.config = config
-        self.eval_config = eval_config
+        self.generation_config = generation_config
         self.eval_fn = self.eval_fn if eval_fn is None else eval_fn
         self.dataset = dataset
         self.collate_fn = collate_fn
@@ -155,16 +155,15 @@ class Evaluator:
         else:
             generation_model = evaluator.engine.module
         generated_ids = generation_model.generate(input_ids=input_ids.cuda(), attention_mask=torch.ones_like(input_ids).cuda(), 
-                                              generation_config=evaluator.eval_config)
+                                              generation_config=evaluator.generation_config)
         return {
             "generated_ids": generated_ids,
             "labels": labels,
         }
 
     def data_provider_handler(self):
-        """
-        当初始化 :class:`collie.Evaluator` 的过程中提供了 ``data_provider`` 时会使用此方法。
-        ``data_provider`` 中维持一个异步队列 ``queue.Queue``，该方法会不断从中取出数据，放入模型中进行生成
+        """当初始化 :class:`collie.Evaluator` 的过程中提供了 ``data_provider`` 时会使用此方法。
+            ``data_provider`` 中维持一个异步队列 ``queue.Queue``，该方法会不断从中取出数据，放入模型中进行生成
         """
         if self.data_provider is None:
             return None
@@ -178,19 +177,7 @@ class Evaluator:
         dist.broadcast(has_data, 0)
         if not has_data:
             return
-        ndim = torch.zeros(1, dtype=torch.int64).cuda()
-        if dist.get_rank() == 0 and input_ids is not None:
-            ndim[0] = input_ids.dim()
-        dist.broadcast(ndim, 0)
-        if ndim[0] == 0:
-            return
-        shape = torch.zeros(ndim[0], dtype=torch.int64).cuda()
-        if dist.get_rank() == 0 and input_ids is not None:
-            shape[:] = torch.tensor(input_ids.shape, dtype=torch.int64)
-        dist.broadcast(shape, 0)
-        if input_ids is None:
-            input_ids = torch.zeros(tuple(shape), dtype=torch.int64).cuda()
-        dist.broadcast(input_ids, 0)
+        input_ids = broadcast_tensor(input_ids, src=0)
         if isinstance(self.engine, PipelineEngine):
             generation_model = PipelineGenerationMixin(
                 engine=self.engine
@@ -201,12 +188,12 @@ class Evaluator:
             return
         use_stream = self.data_provider.stream
         streamer = _GenerationStreamer(server=self.data_provider)
-        input_ids = generation_model.generate(
+        generated_ids = generation_model.generate(
             input_ids=input_ids.cuda(), 
             attention_mask=torch.ones_like(input_ids).cuda(), 
-            generation_config=self.eval_config,
+            generation_config=self.generation_config,
             streamer=streamer if use_stream else None
         )
         if not use_stream:
-            self.data_provider.put_feedback(input_ids[0].cpu())
+            self.data_provider.put_feedback(generated_ids[0].cpu())
         get_accelerator().empty_cache()

@@ -52,6 +52,10 @@ def setup_ds_engine(
         optimizer: Optional[Union[torch.optim.Optimizer, DeepSpeedOptimizerCallable]] = None,
         lr_scheduler: Optional[Union[torch.optim.lr_scheduler._LRScheduler, DeepSpeedSchedulerCallable]] = None
 ):
+    if "train_micro_batch_size_per_gpu" not in config.ds_config.keys():
+        config.ds_config["train_micro_batch_size_per_gpu"] = config.train_micro_batch_size
+    if "gradient_accumulation_steps" not in config.ds_config.keys():
+        config.ds_config["gradient_accumulation_steps"] = config.gradient_accumulation_steps
     if config.pp_size != 1 or config.tp_size != 1:
         from collie.models import CollieModelForCausalLM
         from collie.module import PipelineModel
@@ -111,10 +115,6 @@ def setup_distribution(config) -> None:
         config = load_config(config)
     if isinstance(config.ds_config, str):
         config.ds_config = load_config(config.ds_config)
-    if "train_micro_batch_size_per_gpu" not in config.ds_config.keys():
-        config.ds_config["train_micro_batch_size_per_gpu"] = config.train_micro_batch_size
-    if "gradient_accumulation_steps" not in config.ds_config.keys():
-        config.ds_config["gradient_accumulation_steps"] = config.gradient_accumulation_steps
     patch_deepspeed(config)
     patch_megatron()
     if "WORLD_SIZE" in os.environ.keys():
