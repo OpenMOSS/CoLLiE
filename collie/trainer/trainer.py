@@ -337,7 +337,7 @@ class Trainer(TrainerEventTrigger):
                                          "batch_idx": self.batch_idx,
                                          "epoch_idx": self.epoch_idx,
                                          "global_batch_idx": self.global_batch_idx,
-                                         "memory_allocated": torch.cuda.memory_allocated(),
+                                         "memory_allocated": torch.cuda.max_memory_allocated(),
                                          "mode": "train"})
                         tqbar_batch.set_postfix(Loss=round(loss, 4))
                         self.on_train_batch_end(loss)
