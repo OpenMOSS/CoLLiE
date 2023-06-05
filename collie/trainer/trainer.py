@@ -29,7 +29,7 @@ from collie.module import PipelineGenerationMixin, GPTLMLoss, PipelineModel
 from collie.driver.io.file import FileIODriver
 from collie.driver.io.petrel import PetrelIODriver
 from collie.log import logger
-from collie.utils import progress, env, setup_ds_engine, BaseProvider, _GenerationStreamer, is_zero3_enabled, BaseMonitor, _MultiMonitors
+from collie.utils import progress, env, setup_ds_engine, BaseProvider, _GenerationStreamer, is_zero3_enabled, BaseMonitor, _MultiMonitors, broadcast_tensor
 from collie.optim import InplaceSGD
 from collie.models.base import CollieModelForCausalLM
 from .evaluator import Evaluator
@@ -227,19 +227,7 @@ class Trainer(TrainerEventTrigger):
         dist.broadcast(has_data, 0)
         if not has_data:
             return
-        ndim = torch.zeros(1, dtype=torch.int64).cuda()
-        if dist.get_rank() == 0 and input_ids is not None:
-            ndim[0] = input_ids.dim()
-        dist.broadcast(ndim, 0)
-        if ndim[0] == 0:
-            return
-        shape = torch.zeros(ndim[0], dtype=torch.int64).cuda()
-        if dist.get_rank() == 0 and input_ids is not None:
-            shape[:] = torch.tensor(input_ids.shape, dtype=torch.int64)
-        dist.broadcast(shape, 0)
-        if input_ids is None:
-            input_ids = torch.zeros(tuple(shape), dtype=torch.int64).cuda()
-        dist.broadcast(input_ids, 0)
+        input_ids = broadcast_tensor(input_ids, src=0)
         if isinstance(self.engine, PipelineEngine):
             generation_model = PipelineGenerationMixin(
                 engine=self.engine
@@ -250,14 +238,14 @@ class Trainer(TrainerEventTrigger):
             return
         use_stream = self.data_provider.stream
         streamer = _GenerationStreamer(server=self.data_provider)
-        input_ids = generation_model.generate(
+        generated_ids = generation_model.generate(
             input_ids=input_ids.cuda(), 
             attention_mask=torch.ones_like(input_ids).cuda(), 
             generation_config=self.generation_config,
             streamer=streamer if use_stream else None
         )
         if not use_stream:
-            self.data_provider.put_feedback(input_ids[0].cpu())
+            self.data_provider.put_feedback(generated_ids[0].cpu())
         get_accelerator().empty_cache()
 
     def setup_parallel_model(self):

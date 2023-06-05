@@ -47,14 +47,14 @@ trainer = Trainer(
                                  eos_token_id=2, 
                                  pad_token_id=0, 
                                  bos_token_id=1,
-                                 use_cache=False),
+                                 use_cache=True),
     monitors=[
         TGSMonitor(config),
         MemoryMonitor(config),
         LossMonitor(config),
         EvalMonitor(config)
     ],
-    data_provider=GradioProvider(tokenizer=tokenizer, stream=True) ,
+    data_provider=GradioProvider(tokenizer=tokenizer, stream=True),
     metrics={
         "decode": DecodeMetric(tokenizer=tokenizer)},
 )
