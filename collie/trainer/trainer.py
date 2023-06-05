@@ -164,11 +164,11 @@ class Trainer(TrainerEventTrigger):
                  generation_config=generation_config)
             evaluators.engine = self.engine
             evaluators.monitor = self.monitor
-            evaluators.data_provider = self.data_provider
         if not isinstance(evaluators, Sequence):
             evaluators = [evaluators]
         for evaluator in evaluators:
             evaluator.engine = self.engine
+            evaluator.data_provider = self.data_provider
 
         self.evaluators = evaluators
 
@@ -343,6 +343,9 @@ class Trainer(TrainerEventTrigger):
                         self.on_train_batch_end(loss)
                         if self.config.eval_per_n_steps > 0 and (self.batch_idx + 1) % self.config.eval_per_n_steps == 0:
                             self.eval()
+                if self.config.eval_per_n_epochs > 0 and (self.epoch_idx + 1) % self.config.eval_per_n_epochs == 0:
+                        self.eval()
+                self.on_train_epoch_end()
                 self.batch_idx = 0
                 if self.config.eval_per_n_epochs > 0 and (self.epoch_idx + 1) % self.config.eval_per_n_epochs == 0:
                     self.eval()
