@@ -18,7 +18,6 @@ import torch
 import deepspeed
 import torch.distributed as dist
 from torch.optim.lr_scheduler import _LRScheduler
-import deepspeed
 from deepspeed.accelerator import get_accelerator
 from deepspeed.runtime.pipe.engine import PipelineEngine
 from deepspeed.runtime.engine import DeepSpeedSchedulerCallable
@@ -30,8 +29,7 @@ from collie.module import PipelineGenerationMixin, GPTLMLoss, PipelineModel
 from collie.driver.io.file import FileIODriver
 from collie.driver.io.petrel import PetrelIODriver
 from collie.log import logger
-from collie.utils import progress, env, setup_ds_engine, BaseProvider, _GenerationStreamer, _MetricsWrapper, is_zero3_enabled, BaseMonitor, _MultiMonitors
-from collie.utils.rich_progress import f_rich_progress
+from collie.utils import progress, env, setup_ds_engine, BaseProvider, _GenerationStreamer, is_zero3_enabled, BaseMonitor, _MultiMonitors
 from collie.optim import InplaceSGD
 from collie.models.base import CollieModelForCausalLM
 from .evaluator import Evaluator
@@ -153,6 +151,12 @@ class Trainer(TrainerEventTrigger):
         self.monitor = _MultiMonitors(monitors)
         if self.data_provider is not None and dist.get_rank() == 0:
             self.data_provider.start_provider()
+
+        if evaluators is not None and eval_dataset is not None:
+            logger.rank_zero_warning(
+                "Note that you have set both `evaluators` and `eval_dataset` "
+                "and the later will not take effect."
+            )
 
         if evaluators is None or (hasattr(evaluators, "__len__") and len(evaluators) == 0):
             evaluators = Evaluator(model=model, dataset=eval_dataset, metrics=metrics, eval_fn=eval_fn,
@@ -333,11 +337,12 @@ class Trainer(TrainerEventTrigger):
                                          "batch_idx": self.batch_idx,
                                          "epoch_idx": self.epoch_idx,
                                          "global_batch_idx": self.global_batch_idx,
-                                         "memory_allocated": torch.cuda.memory_allocated(),
+                                         "memory_allocated": torch.cuda.max_memory_allocated(),
                                          "mode": "train"})
                         tqbar_batch.set_postfix(Loss=round(loss, 4))
                         self.on_train_batch_end(loss)
-                        self.eval()
+                        if self.config.eval_per_n_steps > 0 and (self.batch_idx + 1) % self.config.eval_per_n_steps == 0:
+                            self.eval()
                 self.batch_idx = 0
             self.on_train_epoch_end()
             if self.config.eval_per_n_epochs > 0 and (self.epoch_idx + 1) % self.config.eval_per_n_epochs == 0:
