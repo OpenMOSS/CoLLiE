@@ -62,6 +62,6 @@ trainer = Trainer(
         EvalMonitor(config)
     ],
     metrics={
-        "decode": DecodeMetric(tokenizer=tokenizer)},
+        "decode": DecodeMetric(tokenizer=tokenizer, save_path="resutl.txt", save_to_file=True)},
 )
 trainer.train()
