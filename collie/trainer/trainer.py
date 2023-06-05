@@ -164,11 +164,11 @@ class Trainer(TrainerEventTrigger):
                  generation_config=generation_config)
             evaluators.engine = self.engine
             evaluators.monitor = self.monitor
+            evaluators.data_provider = self.data_provider
         if not isinstance(evaluators, Sequence):
             evaluators = [evaluators]
         for evaluator in evaluators:
             evaluator.engine = self.engine
-            evaluator.data_provider = self.data_provider
 
         self.evaluators = evaluators
 
@@ -346,12 +346,12 @@ class Trainer(TrainerEventTrigger):
         :param dataloader: 用于验证的数据集，为 ``Iterable`` 对象 ，当为 ``None`` 时，使用 ``eval_dataset`` 生成的 ``eval_dataloader``
         """
         self.on_evaluate_begin()
-        eval_results = {}
+        eval_results = []
         for evaluator in self.evaluators:
             results = evaluator.eval(dataloader)
-            eval_results.update(results)
-        self.on_evaluate_end(eval_results)
-        return eval_results
+            eval_results.append(results)
+        # TODO deal with results
+        self.on_evaluate_end(results)
 
     @staticmethod
     def train_fn(trainer, batch: Tuple, global_step: int) -> float:
