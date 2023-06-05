@@ -3,7 +3,6 @@ from typing import Sequence
 from collie.utils.utils import _get_fun_msg
 from collie.log import logger
 from .callback import Callback
-from .progress_callback import ProgressCallback
 
 def prepare_callback(callbacks):
     """
@@ -20,15 +19,6 @@ def prepare_callback(callbacks):
             if not isinstance(_callback, Callback):
                 raise TypeError(f"callbacks must be of Callback type, instead of `{type(_callback)}`")
         _callbacks += callbacks
-
-    # has_no_progress = True
-    # for _callback in _callbacks:
-    #     if isinstance(_callback, ProgressCallback):
-    #         has_no_progress = False
-    # if has_no_progress:
-    #     callback = ProgressCallback()
-    #     if callback is not None:
-    #         _callbacks = [callback] + _callbacks  # 放在最前面，方便分割不同 epoch
 
     return _callbacks
 
