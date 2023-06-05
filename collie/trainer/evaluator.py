@@ -75,9 +75,6 @@ class Evaluator:
         self.eval_dataloader = None
         self.data_provider = data_provider
         self.monitor = _MultiMonitors(monitors)
-        
-        if self.data_provider is not None and dist.get_rank() == 0:
-            self.data_provider.start_provider()
 
     def init_engine(self):
         """
@@ -102,6 +99,9 @@ class Evaluator:
     def eval(self, dataloader: Optional[Iterable] = None):
         if self.engine is None:
             self.init_engine()
+        if self.data_provider is not None and dist.get_rank() == 0:
+            if not self.data_provider.provider_started:
+                self.data_provider.start_provider()
         if self.eval_dataloader is None:
             self.eval_dataloader = CollieDataLoader(
                 self.dataset, self.config.eval_batch_size,
@@ -154,10 +154,10 @@ class Evaluator:
             )
         else:
             generation_model = evaluator.engine.module
-        input_ids = generation_model.generate(input_ids=input_ids.cuda(), attention_mask=torch.ones_like(input_ids).cuda(), 
+        generated_ids = generation_model.generate(input_ids=input_ids.cuda(), attention_mask=torch.ones_like(input_ids).cuda(), 
                                               generation_config=evaluator.eval_config)
         return {
-            "input_ids": input_ids,
+            "generated_ids": generated_ids,
             "labels": labels,
         }
 
