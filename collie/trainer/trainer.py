@@ -341,7 +341,8 @@ class Trainer(TrainerEventTrigger):
                                          "mode": "train"})
                         tqbar_batch.set_postfix(Loss=round(loss, 4))
                         self.on_train_batch_end(loss)
-                        self.eval()
+                        if self.config.eval_per_n_steps > 0 and (self.batch_idx + 1) % self.config.eval_per_n_steps == 0:
+                            self.eval()
                 self.batch_idx = 0
             self.on_train_epoch_end()
             if self.config.eval_per_n_epochs > 0 and (self.epoch_idx + 1) % self.config.eval_per_n_epochs == 0:
