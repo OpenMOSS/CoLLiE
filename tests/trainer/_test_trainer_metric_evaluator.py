@@ -200,12 +200,12 @@ def _test_gpt2_data_provider():
     config.eval_per_n_steps = 20
     config.ds_config = {
         "fp16": {"enabled": True},
-        "optimizer": {
-            "type": "Adam",
-            "params": {
-                "lr": 2e-5
-            }
-        },
+        # "optimizer": {
+        #     "type": "Adam",
+        #     "params": {
+        #         "lr": 2e-5
+        #     }
+        # },
         "zero_optimization": {
             "stage": 3,
         },
@@ -236,7 +236,8 @@ def _test_gpt2_data_provider():
                  "decodeMetric1": DecodeMetric(tokenizer=tokenizer, gather_result=True)},
         config=config,
         monitors=[LossMonitor(config), MemoryMonitor(config)],
-        data_provider=GradioProvider(tokenizer, 20000)
+        data_provider=GradioProvider(tokenizer),
+        optimizer=torch.optim.Adam(model.parameters(), lr=2e-5)
     )
     trainer.train()
 
