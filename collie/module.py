@@ -282,13 +282,6 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
         if past_key_values is not None:
             input_ids = input_ids[:, -1:]
         batch = (input_ids, input_ids)
-        if self.communicate_buffer_shape is None:
-            self.communicate_buffer_shape = batch[0].shape
-        else:
-            if self.communicate_buffer_shape != batch[0].shape:
-                self.engine.reset_activation_shape()
-                self.engine.total_loss = None
-                self.communicate_buffer_shape = batch[0].shape
         logits = self.engine.eval_batch(batch)
         return CausalLMOutputWithPast(
             loss=None,

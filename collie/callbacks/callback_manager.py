@@ -1,10 +1,36 @@
-from typing import Dict
+from typing import Sequence
 
 from collie.utils.utils import _get_fun_msg
 from collie.log import logger
+from .callback import Callback
+from .progress_callback import ProgressCallback
 
-def prepare_callback(self, callbacks):
-    return callbacks
+def prepare_callback(callbacks):
+    """
+    遍历 callbacks，并且加入 :class:`.ProgressCallback`。
+    """
+    _callbacks = []
+    if callbacks is not None:
+        if isinstance(callbacks, Callback):
+            callbacks = [callbacks]
+        if not isinstance(callbacks, Sequence):
+            raise ValueError("Parameter `callbacks` should be type 'List' or 'Tuple'.")
+        callbacks = list(callbacks)
+        for _callback in callbacks:
+            if not isinstance(_callback, Callback):
+                raise TypeError(f"callbacks must be of Callback type, instead of `{type(_callback)}`")
+        _callbacks += callbacks
+
+    # has_no_progress = True
+    # for _callback in _callbacks:
+    #     if isinstance(_callback, ProgressCallback):
+    #         has_no_progress = False
+    # if has_no_progress:
+    #     callback = ProgressCallback()
+    #     if callback is not None:
+    #         _callbacks = [callback] + _callbacks  # 放在最前面，方便分割不同 epoch
+
+    return _callbacks
 
 def _exec_callback(func):
 
@@ -51,7 +77,7 @@ class CallbackManager:
         pass
 
     @_exec_callback
-    def on_train_batch_end(self, trainer):
+    def on_train_batch_end(self, trainer, loss):
         pass
 
     @_exec_callback
@@ -63,7 +89,7 @@ class CallbackManager:
         pass
 
     @_exec_callback
-    def on_save_checkpoint(self, trainer) -> Dict:
+    def on_save_checkpoint(self, trainer):
         pass
 
     @_exec_callback

@@ -3,8 +3,6 @@ __all__ = [
     'Callback',
 ]
 
-from typing import Dict
-
 class Callback:
     """
     回调机制的基类，包含了数个回调时机。所有的 ``Callback`` 都应该继承该类。
@@ -43,7 +41,7 @@ class Callback:
 
     def on_train_epoch_end(self, trainer):
         r"""
-        在训练过程中的每一个 epoch 完成后会被触发；此时 trainer.epoch_idx 已经完成加 1 操作。
+        在训练过程中的每一个 epoch 完成后会被触发。
 
         :param trainer: :class:`.Trainer` 实例。
         """
@@ -58,10 +56,10 @@ class Callback:
         """
         pass
 
-    def on_train_batch_end(self, trainer):
+    def on_train_batch_end(self, trainer, loss):
         r"""
         完成一个 batch 的训练（forward）、梯度回传（backward）、梯度更新（step）、
-        梯度置零、batch_idx 加一后会触发。
+        梯度置零后会触发。
 
         :param trainer: :class:`.Trainer` 实例；
         """
@@ -83,7 +81,7 @@ class Callback:
         """
         pass
 
-    def on_save_checkpoint(self, trainer) -> Dict:
+    def on_save_checkpoint(self, trainer):
         r"""
         当 Trainer 将要保存 checkpoint 的时候触发 (即调用 :meth:`Trainer.save_checkpoint() <collie.trainer.Trainer.save_checkpoint>`
         函数时)，该函数用于保存当前 callback 在恢复时需要的相关数据。
@@ -129,5 +127,3 @@ class Callback:
         :return: 用于区分该 ``callback`` 实例的名称；
         """
         return self.__class__.__name__
-
-
