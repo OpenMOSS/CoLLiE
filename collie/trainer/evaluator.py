@@ -138,12 +138,12 @@ class Evaluator:
     def eval_fn(evaluator, batch: Tuple) -> Any:
         """一次验证的基本单元
 
-        :param trainer: 训练器
+        :param evaluator: 训练器
         :param batch: 一个 batch 的数据，类型为长度为 2 的 ``Tuple``，其中第一个元素为 ``input_ids``，第二个元素为 ``labels``
 
             .. note::
 
-                根据提供的 ``eval_dataset`` 和 ``eval_dataset_collate_fn`` 的不同，``labels`` 的类型也会有所不同，详见 :class:`~collie.trainer.Trainer`
+                根据提供的 ``dataset`` 和 ``collate_fn`` 的不同，``labels`` 的类型也会有所不同。
     
         :return: 一次验证的结果，为 `Dict` 类型，该结果会被传入 `metric` 的 `update` 方法中
         """
@@ -162,8 +162,9 @@ class Evaluator:
         }
 
     def data_provider_handler(self):
-        """当初始化 :class:`collie.Trainer` 的过程中提供了 ``data_provider`` 时会使用此方法。
-            ``data_provider`` 中维持一个异步队列 ``queue.Queue``，该方法会不断从中取出数据，放入模型中进行生成
+        """
+        当初始化 :class:`collie.Evaluator` 的过程中提供了 ``data_provider`` 时会使用此方法。
+        ``data_provider`` 中维持一个异步队列 ``queue.Queue``，该方法会不断从中取出数据，放入模型中进行生成
         """
         if self.data_provider is None:
             return None
