@@ -2,6 +2,10 @@ from abc import ABC, abstractmethod
 import torch.distributed as dist
 from typing import Any, Dict, List, Optional
 
+import torch
+
+from collie.utils import apply_to_collection
+
 class BaseMetric(ABC):
     """
     **Metric** 的基类。
@@ -69,11 +73,16 @@ class BaseMetric(ABC):
                 }
 
         """
+        def _to_device(tensor, device):
+            return tensor.contiguous().to(device)
+
         gather_result = {key_name: [] for key_name in result.keys()}
         if self.trainer.config.dp_size == 1:
             result_list = [result]
         else:
             group = self.trainer.engine.mpu.get_data_parallel_group()
+            result = apply_to_collection(result, torch.Tensor, _to_device,
+                                         device=torch.device("cpu"))
             result_list = [None for _ in range(self.trainer.config.dp_size)]
             dist.all_gather_object(result_list, result, group=group)
         for result_dp in result_list:
