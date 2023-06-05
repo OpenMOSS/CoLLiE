@@ -4,16 +4,15 @@ import json
 
 import torch
 from torch import nn
+import torch.utils.checkpoint
 import torch.nn.functional as F
 import torch.distributed as dist
-import torch.utils.checkpoint
+
+from megatron.core import parallel_state
+from megatron.core import tensor_parallel
 
 from deepspeed.pipe import LayerSpec, TiedLayerSpec
-
-from megatron.core import tensor_parallel
-from megatron.core import parallel_state
-
-from apex.normalization.fused_layer_norm import FusedRMSNorm
+from deepspeed.accelerator import get_accelerator
 
 import math
 from einops import rearrange
@@ -24,13 +23,13 @@ except ModuleNotFoundError:
     FlashAttention = None
 
 from collie.log.logger import logger
-from collie.config import CollieConfig
-from collie.models.base import CollieModelForCausalLM
-from collie.driver.io.file import FileIODriver
 from collie.config import load_config
-from collie.driver.io.petrel import PetrelIODriver
-from collie.module import ColumnParallelLinearWithoutBias, RowParallelLinearWithoutBias, ColumnParallelLMHead
+from collie.config import CollieConfig
 from collie.utils import progress, env
+from collie.driver.io.file import FileIODriver
+from collie.driver.io.petrel import PetrelIODriver
+from collie.models.base import CollieModelForCausalLM
+from collie.module import ColumnParallelLinearWithoutBias, RowParallelLinearWithoutBias, ColumnParallelLMHead
 
 from typing import Union, Optional
 from collections import OrderedDict
@@ -66,6 +65,20 @@ class RotaryPositionEmbedding(nn.Module):
         key = torch.view_as_real(key * freqs_cis).flatten(3)
         return query.type(t), key.type(t)
 
+class RMSNormalize(nn.Module):
+    def __init__(self, dim=None, dtype=torch.float, eps=1e-5, weight=None):
+        super(RMSNormalize, self).__init__()
+        if weight is not None:
+            self.weight = weight
+        else:
+            self.weight = nn.Parameter(torch.ones(dim, dtype=dtype, device=get_accelerator().current_device_name()))
+        self.eps = eps
+    def forward(self, hidden_states):
+        variance = hidden_states.to(torch.float32).pow(2).mean(-1, keepdim=True)
+        hidden_states = hidden_states * torch.rsqrt(variance + self.eps)
+        if self.weight.dtype in [torch.float16, torch.bfloat16]:
+            hidden_states = hidden_states.to(self.weight.dtype)
+        return hidden_states * self.weight
 
 class LlamaLayer(nn.Module):
     def __init__(self, config: CollieConfig) -> None:
@@ -109,8 +122,8 @@ class LlamaLayer(nn.Module):
                     self.config.hidden_size // self.config.num_attention_heads)
             }
         )
-        self.input_layernorm = FusedRMSNorm(
-            normalized_shape=config.hidden_size,
+        self.input_layernorm = RMSNormalize(
+            dim=config.hidden_size,
             eps=config.rms_norm_eps
         )
         self.mlp = nn.ModuleDict({
@@ -139,8 +152,8 @@ class LlamaLayer(nn.Module):
                 use_cpu_initialization=config.use_cpu_initialization
             )
         })
-        self.post_attention_layernorm = FusedRMSNorm(
-            normalized_shape=config.hidden_size,
+        self.post_attention_layernorm = RMSNormalize(
+            dim=config.hidden_size,
             eps=config.rms_norm_eps
         )
         # 务必保持变量名一致
@@ -231,8 +244,8 @@ class LlamaForCausalLM(CollieModelForCausalLM):
         )
         self.layers = nn.Sequential(
             *[LlamaLayer(self.config) for _ in range(self.config.num_hidden_layers)])
-        self.norm = FusedRMSNorm(
-            normalized_shape=self.config.hidden_size,
+        self.norm = RMSNormalize(
+            dim=self.config.hidden_size,
             eps=self.config.rms_norm_eps
         )
         self.lm_head = ColumnParallelLMHead(
@@ -299,8 +312,8 @@ class LlamaForCausalLM(CollieModelForCausalLM):
             config.hidden_size),
             *[LayerSpec(LlamaLayer, config)
               for _ in range(config.num_hidden_layers)],
-            LayerSpec(FusedRMSNorm,
-                      normalized_shape=config.hidden_size,
+            LayerSpec(RMSNormalize,
+                      dim=config.hidden_size,
                       eps=config.rms_norm_eps),
             TiedLayerSpec(
             "embed_tokens",

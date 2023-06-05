@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass, field
 from typing import Any, Union
 
@@ -187,6 +188,7 @@ class CollieConfig:
         if isinstance(self.ds_config, str):
             self.ds_config = load_config(self.ds_config)
         assert isinstance(self.ds_config, dict), self.ds_config
+        os.environ["COLLIE_SEED"] = str(self.seed)
 
     def __str__(self) -> str:        
         title = self.__class__.__name__

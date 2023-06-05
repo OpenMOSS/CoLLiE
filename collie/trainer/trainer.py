@@ -17,14 +17,11 @@ from functools import reduce
 import torch
 import deepspeed
 import torch.distributed as dist
-from torch.utils.data import DistributedSampler
 from torch.optim.lr_scheduler import _LRScheduler
 import deepspeed
 from deepspeed.accelerator import get_accelerator
-from deepspeed.runtime.constants import ROUTE_EVAL
 from deepspeed.runtime.pipe.engine import PipelineEngine
 from deepspeed.runtime.engine import DeepSpeedSchedulerCallable
-from deepspeed.runtime.dataloader import RepeatingLoader
 from transformers.generation.utils import GenerationConfig
 from transformers.modeling_utils import PreTrainedModel
 
@@ -36,14 +33,14 @@ from collie.log import logger
 from collie.utils import progress, env, setup_ds_engine, BaseProvider, _GenerationStreamer, _MetricsWrapper, is_zero3_enabled, BaseMonitor, _MultiMonitors
 from collie.utils.rich_progress import f_rich_progress
 from collie.optim import InplaceSGD
-from collie.metrics import BaseMetric
 from collie.models.base import CollieModelForCausalLM
+from .evaluator import Evaluator
 from collie.data import CollieDataLoader
 from collie.callbacks.callback import Callback
 from collie.callbacks.callback_manager import CallbackManager, prepare_callback
+from .utils import TrainerEventTrigger
 
-
-class Trainer:
+class Trainer(TrainerEventTrigger):
     r"""
     **CoLLie** 训练器，支持快速分布式训练和验证。
 
@@ -68,7 +65,8 @@ class Trainer:
                 
             * `a` 即 ``input_ids``， 为 ``torch.Tensor`` 类型，表示模型的的输入
             * `b` 可以为 ``torch.Tensor``，也可以是由 ``torch.Tensor`` 组成的任意长度的 `Tuple`，此项会作为 `loss_fn` 的第二个参数传入
-        
+    
+    :param callbacks: 训练中触发的 :class:`.Callback` 类，可以是列表。
     :param train_dataset_collate_fn: 用于训练数据集的 `collate_fn`。
     :param eval_dataset_collate_fn: 用于验证数据集的 `collate_fn`。
         ``train_dataset_collate_fn`` 与 ``eval_dataset_collate_fn`` 只可接受一个参数，为 ``train_dataset`` 或 ``eval_dataset`` 迭代值组成的 ``List``。
@@ -107,7 +105,7 @@ class Trainer:
     """
     def __init__(self, 
                  model: torch.nn.Module,
-                 config: Union[CollieConfig, str],
+                 config: CollieConfig,
                  loss_fn: Callable = GPTLMLoss(),
                  train_fn: Optional[Callable] = None,
                  eval_fn: Optional[Callable] = None,
@@ -115,13 +113,14 @@ class Trainer:
                  lr_scheduler: Optional[Union[_LRScheduler, DeepSpeedSchedulerCallable]] = None,
                  train_dataset: Optional[torch.utils.data.Dataset] = None,
                  eval_dataset: Optional[torch.utils.data.Dataset] = None,
+                 callbacks: Optional[Union[Callback, List[Callback]]] = None,
                  train_dataset_collate_fn: Optional[Callable] = None,
                  eval_dataset_collate_fn: Optional[Callable] = None,
-                 callbacks: Optional[List[Callback]] = None,
                  eval_config: GenerationConfig = GenerationConfig(),
                  data_provider: Optional[BaseProvider] = None,
                  monitors: Sequence[BaseMonitor] = [],
-                 metrics: Optional[Dict] = None) -> None:
+                 metrics: Optional[Dict] = None,
+                 evaluators: Optional[List] = None) -> None:
         if isinstance(optimizer, InplaceSGD):
             if config.pp_size > 1:
                 raise ValueError("InplaceSGD is incompatible with pipeline parallelism.")
@@ -145,8 +144,7 @@ class Trainer:
         self.train_dataset_collate_fn = train_dataset_collate_fn
         self.eval_dataset_collate_fn = eval_dataset_collate_fn
         self.eval_config = eval_config
-        self.metrics = metrics
-        self.metric_wrapper = _MetricsWrapper(self.metrics, self)
+
         self.config = config
         self.communicate_buffer_shape = None
         self.setup_parallel_model()
@@ -156,8 +154,23 @@ class Trainer:
         if self.data_provider is not None and dist.get_rank() == 0:
             self.data_provider.start_provider()
 
+        if evaluators is None or (hasattr(evaluators, "__len__") and len(evaluators) == 0):
+            evaluators = Evaluator(model=model, dataset=eval_dataset, metrics=metrics, eval_fn=eval_fn,
+                 config=config, collate_fn=eval_dataset_collate_fn, data_provider=None,
+                 eval_config=eval_config)
+            evaluators.engine = self.engine
+            evaluators.monitor = self.monitor
+            evaluators.data_provider = self.data_provider
+        if not isinstance(evaluators, Sequence):
+            evaluators = [evaluators]
+        for evaluator in evaluators:
+            evaluator.engine = self.engine
+
+        self.evaluators = evaluators
+
         callbacks = prepare_callback(callbacks)
         self.callback_manager = CallbackManager(callbacks)
+
         self.checkpoint_file = "collie_dp{}_pp{}_tp{}.pt".format(
             env.dp_rank, env.pp_rank, env.tp_rank
         )
@@ -166,7 +179,7 @@ class Trainer:
         )
 
         self.init_state_dict()
-        self.callback_manager.on_after_trainer_initialized(self)
+        self.on_after_trainer_initialized()
 
     def init_state_dict(self):
         """初始化优化器的自身状态字典
@@ -193,7 +206,7 @@ class Trainer:
         """获取当前全局步数
         """
         return self.epoch_idx * self.steps_per_epoch + self.batch_idx
-        
+
     def data_provider_handler(self):
         """当初始化 :class:`collie.Trainer` 的过程中提供了 ``data_provider`` 时会使用此方法。
             ``data_provider`` 中维持一个异步队列 ``queue.Queue``，该方法会不断从中取出数据，放入模型中进行生成
@@ -231,13 +244,6 @@ class Trainer:
             generation_model = self.engine.module
         if not generation_model.can_generate():
             return
-        if isinstance(self.engine, PipelineEngine):
-            self.engine.reset_activation_shape()
-            if self.engine.total_loss is not None:
-                total_loss = self.engine.total_loss.detach().clone()
-            else:
-                total_loss = None
-            self.engine.total_loss = None
         use_stream = self.data_provider.stream
         streamer = _GenerationStreamer(server=self.data_provider)
         input_ids = generation_model.generate(
@@ -248,11 +254,8 @@ class Trainer:
         )
         if not use_stream:
             self.data_provider.put_feedback(input_ids[0].cpu())
-        if isinstance(self.engine, PipelineEngine):
-            self.engine.reset_activation_shape()
-            self.engine.total_loss = total_loss
         get_accelerator().empty_cache()
-                      
+
     def setup_parallel_model(self):
         """
         初始化分布式模型。
@@ -295,17 +298,6 @@ class Trainer:
             )
             self.steps_per_epoch = len(self.train_dataloader)
 
-        if self.eval_dataset is None:
-            self.eval_dataloader = None
-            self.eval_steps = 0
-        else:
-            self.eval_dataloader = CollieDataLoader(
-                self.eval_dataset, self.config.eval_batch_size,
-                self.config.gradient_accumulation_steps, shuffle=False,
-                collate_fn=self.eval_dataset_collate_fn
-            )
-            self.eval_steps = len(self.eval_dataloader)
-
         # set logger level
         deepspeed_logging_level = logging.ERROR if 'logging_level' not in self.config.ds_config \
             else self.config.ds_config['logging_level']
@@ -321,23 +313,19 @@ class Trainer:
         if dataloader is not None:
             train_dataloader = dataloader
 
+        self.on_train_begin()
         with progress(range(self.epoch_idx, self.config.train_epochs), desc="Training Epoch", disable=env.rank != 0, completed=self.epoch_idx, total=self.config.train_epochs) as tqbar_epoch:
             for self.epoch_idx in tqbar_epoch:
+                self.on_train_epoch_begin()
                 tqbar_epoch.set_description(f"Training Epoch: {self.epoch_idx} / {self.config.train_epochs}")
 
                 with progress(train_dataloader, desc="Training Batch: ", disable=env.rank != 0, completed=self.batch_idx, total=self.steps_per_epoch) as tqbar_batch:
                     for self.batch_idx, batch in enumerate(tqbar_batch, start=self.batch_idx):
                         tqbar_batch.set_description(f"Training Batch: {self.batch_idx} / {self.steps_per_epoch}")
-                        if isinstance(self.engine, PipelineEngine):
-                            if self.communicate_buffer_shape is None:
-                                self.communicate_buffer_shape = batch[0].shape
-                            else:
-                                if self.communicate_buffer_shape != batch[0].shape:
-                                    self.engine.reset_activation_shape()
-                                    self.communicate_buffer_shape = batch[0].shape
                         self.data_provider_handler()
                         self.engine.train()
                         get_accelerator().empty_cache()
+                        self.on_train_batch_begin(batch)
                         with self.monitor as item:
                             loss = self.train_fn(self, batch, self.epoch_idx * self.steps_per_epoch + self.batch_idx)
                             item.update({"loss": loss,
@@ -348,53 +336,26 @@ class Trainer:
                                          "memory_allocated": torch.cuda.max_memory_allocated(),
                                          "mode": "train"})
                         tqbar_batch.set_postfix(Loss=round(loss, 4))
-                        if self.config.eval_per_n_steps > 0 and (self.batch_idx + 1) % self.config.eval_per_n_steps == 0:
-                            self.eval()
-                    self.batch_idx = 0
-                if self.config.eval_per_n_epochs > 0 and (self.epoch_idx + 1) % self.config.eval_per_n_epochs == 0:
-                            self.eval()
-            self.epoch_idx = 0
+                        self.on_train_batch_end(loss)
+                        self.eval()
+                self.batch_idx = 0
+            self.on_train_epoch_end()
+            if self.config.eval_per_n_epochs > 0 and (self.epoch_idx + 1) % self.config.eval_per_n_epochs == 0:
+                        self.eval()
+        self.epoch_idx = 0
                 
-    def eval(self, 
-             dataloader: Optional[Iterable] = None):
+    def eval(self, dataloader: Optional[Iterable] = None):
         """验证循环
 
         :param dataloader: 用于验证的数据集，为 ``Iterable`` 对象 ，当为 ``None`` 时，使用 ``eval_dataset`` 生成的 ``eval_dataloader``
         """
-        eval_dataloader = self.eval_dataloader
-        if dataloader is not None:
-            eval_dataloader = dataloader
-        with progress(eval_dataloader, desc="Evaluating Batch: ", disable=env.rank != 0, total=self.eval_steps) as tqbar_batch:
-            for batch_idx, batch in enumerate(tqbar_batch):
-                tqbar_batch.set_description(f"Evaluating Batch: {batch_idx} / {self.eval_steps}")
-                if isinstance(self.engine, PipelineEngine):
-                    self.engine.reset_activation_shape()
-                    if self.engine.total_loss is not None:
-                        total_loss = self.engine.total_loss.detach().clone()
-                    else:
-                        total_loss = None
-                    self.engine.total_loss = None
-                self.data_provider_handler()
-                self.engine.eval()
-                result = self.eval_fn(self, batch)
-                get_accelerator().empty_cache()
-                if isinstance(self.engine, PipelineEngine):
-                    self.engine.total_loss = total_loss
-                if env.pp_rank == 0 and env.tp_rank == 0:
-                    self.metric_wrapper.update(result)
-        if env.pp_rank == 0 and env.tp_rank == 0:
-            with self.monitor as item:
-                metric_results = self.metric_wrapper.get_metric()
-                item.update({"eval_result": metric_results, "mode": "eval"})
-            self.metric_wrapper.reset()
+        self.on_evaluate_begin()
+        eval_results = []
+        for evaluator in self.evaluators:
+            results = evaluator.eval(dataloader)
+            eval_results.append(results)
+        self.on_evaluate_end(results)
 
-            if len(metric_results) > 0:  # 如果 metric 不为 None 需要 print 。
-                f_rich_progress.print_json(metric_results)
-
-        if isinstance(self.engine, PipelineEngine):
-            self.engine.reset_activation_shape()
-            self.communicate_buffer_shape = None
-                
     @staticmethod
     def train_fn(trainer, batch: Tuple, global_step: int) -> float:
         """一次训练的基本单元
@@ -436,32 +397,6 @@ class Trainer:
                 if trainer.optimizer.zero_enabled:  # TODO: should tp do this too?
                     trainer.engine.optimizer.get_param_coordinator(training=True).reset_step()
         return loss.item()
-
-    @staticmethod
-    def eval_fn(trainer, batch: Tuple) -> Any:
-        """一次验证的基本单元
-
-        :param trainer: 训练器
-        :param batch: 一个 batch 的数据，类型为长度为 2 的 ``Tuple``，其中第一个元素为 ``input_ids``，第二个元素为 ``labels``
-
-            .. note::
-
-                根据提供的 ``eval_dataset`` 和 ``eval_dataset_collate_fn`` 的不同，``labels`` 的类型也会有所不同，详见 :class:`~collie.trainer.Trainer`
-    
-        :return: 一次验证的结果，为 `Dict` 类型，该结果会被传入 `metric` 的 `update` 方法中
-        """
-        input_ids, labels = batch
-        if isinstance(trainer.engine, PipelineEngine):
-            generation_model = PipelineGenerationMixin(
-                engine=trainer.engine
-            )
-        else:
-            generation_model = trainer.model
-        generated_ids = generation_model.generate(input_ids=input_ids.cuda(), attention_mask=torch.ones_like(input_ids).cuda(), generation_config=trainer.eval_config)
-        return {
-            "generated_ids": generated_ids,
-            "labels": labels,
-        }
 
     def save_checkpoint(self, path: str, process_exclusion: bool = False, mode: str = "trainer", **kwargs):...
     def save_checkpoint(self, path: str, process_exclusion: bool = False, mode: str = "trainer", 
