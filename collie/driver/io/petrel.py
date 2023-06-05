@@ -1,8 +1,9 @@
-from collie.driver.io.base import IODriver
+from base import IODriver
 
 import os
 import torch
 from io import BytesIO
+from typing import Optional
 
 class PetrelIODriver(IODriver):
     @staticmethod
@@ -59,20 +60,19 @@ class PetrelIODriver(IODriver):
         return list(client.list(path))
     
     @staticmethod
-    def walk(path: str, suffix: str = None):
-        from petrel_client.client import Client
-        client = Client()
-        if suffix is None:
-            suffix = ""
+    def walk(path: str, suffix: Optional[str]=None):
+        if not path.endswith("/"):
+            path += "/"
         file_list = []
-        for child in PetrelIODriver.list(path):
-            child_path = os.path.join(path, child)
-            if client.contains(child_path) and child_path.endswith(suffix):
-                file_list.append(child_path)
-            if client.isdir(child_path):
-                file_list.extend(PetrelIODriver.walk(child_path, suffix))
-
+        dir_list = PetrelIODriver.list(path)
+        for sub_path in dir_list:
+            if sub_path.endswith("/"):
+                file_list += list(map(lambda x: sub_path + x, PetrelIODriver.walk(path + sub_path, suffix)))
+            else:
+                if suffix is None or sub_path.endswith(suffix):
+                    file_list.append(sub_path)
         return file_list
+        
     
     @staticmethod
     def delete(path: str):

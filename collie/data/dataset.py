@@ -72,6 +72,8 @@ class CollieDataset(Dataset, ABC):
                  protocol: str="file") -> None:
         super().__init__()
         self.path = path
+        self.tokenizer = tokenizer
+        self.template = template
         self.shuffle = shuffle
         self.seed = seed
         self.protocol = protocol
@@ -85,9 +87,8 @@ class CollieDataset(Dataset, ABC):
     def _load_all(self):
         assert self.protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{self.protocol}`."
         self.IODriver = FileIODriver if self.protocol == 'file' else PetrelIODriver
-        for file in self.IODriver.list(self.path):
-            if self.suffix is None or file.endswith(self.suffix):
-                self.data.extend(self.load(os.path.join(self.path, file), protocol=self.protocol))
+        for file in self.IODriver.walk(self.path, self.suffix):
+            self.data.extend(self.load(os.path.join(self.path, file), protocol=self.protocol))
         if self.shuffle:
             random.seed(self.seed)
             random.shuffle(self.data)

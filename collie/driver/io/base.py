@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from typing import Optional
 import io
 
 class IODriver(ABC):
@@ -34,7 +35,7 @@ class IODriver(ABC):
     
     @staticmethod
     @abstractmethod
-    def walk(path: str, suffix: str = None):
+    def walk(path: str, suffix: Optional[str]):
         raise NotImplementedError
     
     @staticmethod
