@@ -475,7 +475,8 @@ class Trainer(TrainerEventTrigger):
                         global_steps=engine.global_steps,
                         global_samples=engine.global_samples)
 
-            IODriver.save(state, os.path.join(path, self.checkpoint_file))
+            if env.rank == 0 or engine.zero_optimization_partition_weights():
+                IODriver.save(state, os.path.join(path, self.checkpoint_file))
 
             if engine.save_zero_checkpoint:
                 self._save_zero_checkpoint(path, IODriver)
@@ -540,7 +541,7 @@ class Trainer(TrainerEventTrigger):
                     else:
                         with deepspeed.zero.GatheredParameters(list(self.engine.module.parameters(recurse=True)), modifier_rank=0):
                             if env.dp_rank == 0:
-                                state_dict = reduce(lambda x, y: {**x, **y}, [IODriver.load(os.path.join(path, file), mode="rb") for file in glob.glob(os.path.join(path, "*.bin"))])
+                                state_dict = reduce(lambda x, y: {**x, **y}, [IODriver.load(file, mode="rb") for file in glob.glob(os.path.join(path, "*.bin"))])
                                 self.engine.module.load_state_dict(state_dict)
                 else:
                     index = None
@@ -558,7 +559,7 @@ class Trainer(TrainerEventTrigger):
                             for attr in value:
                                 self.engine.module.state_dict()[attr].copy_(state_dict[attr])
                     else:
-                        state_dict = reduce(lambda x, y: {**x, **y}, [IODriver.load(os.path.join(path, file)) for file in glob.glob(os.path.join(path, "*.bin"))])
+                        state_dict = reduce(lambda x, y: {**x, **y}, [IODriver.load(file, "b") for file in glob.glob(os.path.join(path, "*.bin"))])
                         self.engine.module.load_state_dict(state_dict)
         if mode == "trainer":
             # check
@@ -573,12 +574,11 @@ class Trainer(TrainerEventTrigger):
 
             # DeepSpeed.load_checkpoint
             if engine.zero_optimization_partition_weights():
-                # Prepare for checkpoint load by ensuring all parameters are partitioned
-                engine.optimizer.checkpoint_event_prologue()
+                ckpt_file = self.checkpoint_file
+            else:
+                ckpt_file = "collie_dp0_pp0_tp0.pt"
+            checkpoint = IODriver.load(os.path.join(path, ckpt_file), "b")
 
-            ## DeepSpeed._load_checkpoint
-            checkpoint = IODriver.load(os.path.join(path, self.checkpoint_file), "b")
-            
             module = checkpoint["module"]
             engine.module.load_state_dict(module)
 
