@@ -204,9 +204,26 @@ class PeftModel(PushToHubMixin, torch.nn.Module):
             config.num_transformer_submodules = 2 if config.task_type == TaskType.SEQ_2_SEQ_LM else 1
 
         for named_param, value in list(transformer_backbone.named_parameters()):
-            if value.shape[0] == self.base_model.config.vocab_size:
-                self.word_embeddings = transformer_backbone.get_submodule(named_param.replace(".weight", ""))
-                break
+            if hasattr(value, "ds_shape"):
+                if value.ds_shape[0] == self.base_model.config.vocab_size:
+                    self.word_embeddings = transformer_backbone.get_submodule(named_param.replace(".weight", ""))
+
+                    # all gather word_embeddings weights
+                    device = torch.device(f"cuda:{os.getenv('LOCAL_RANK')}")
+                    word_embeddings_weights = torch.zeros(
+                        int(os.getenv('WORLD_SIZE')) * value.ds_tensor.shape[0],
+                        dtype=value.ds_tensor.dtype,
+                        device=device
+                    )
+                    torch.distributed.all_gather_into_tensor(word_embeddings_weights, value.ds_tensor)
+                    word_embeddings_weights = word_embeddings_weights[:value.ds_numel].view(value.ds_shape)
+                    self.word_embeddings.weight = torch.nn.Parameter(word_embeddings_weights)
+                    self.word_embeddings.weight.requires_grad = False
+                    break
+            else:
+                if value.shape[0] == self.base_model.config.vocab_size:
+                    self.word_embeddings = transformer_backbone.get_submodule(named_param.replace(".weight", ""))
+                    break
 
         if config.peft_type == PeftType.PROMPT_TUNING:
             prompt_encoder = PromptEmbedding(config, self.word_embeddings)
