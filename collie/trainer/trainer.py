@@ -159,12 +159,15 @@ class Trainer(TrainerEventTrigger):
             )
 
         if evaluators is None or (hasattr(evaluators, "__len__") and len(evaluators) == 0):
-            evaluators = Evaluator(model=model, dataset=eval_dataset, metrics=metrics, eval_fn=eval_fn,
-                 config=config, collate_fn=eval_dataset_collate_fn, data_provider=None,
-                 generation_config=generation_config)
-            evaluators.engine = self.engine
-            evaluators.monitor = self.monitor
-            evaluators.data_provider = self.data_provider
+            if eval_dataset is not None:
+                evaluators = Evaluator(model=model, dataset=eval_dataset, metrics=metrics, eval_fn=eval_fn,
+                    config=config, collate_fn=eval_dataset_collate_fn, data_provider=None,
+                    generation_config=generation_config)
+                evaluators.engine = self.engine
+                evaluators.monitor = self.monitor
+                evaluators.data_provider = self.data_provider
+            else:
+                evaluators = []
         if not isinstance(evaluators, Sequence):
             evaluators = [evaluators]
         for evaluator in evaluators:
@@ -345,6 +348,8 @@ class Trainer(TrainerEventTrigger):
 
         :param dataloader: 用于验证的数据集，为 ``Iterable`` 对象 ，当为 ``None`` 时，使用 ``eval_dataset`` 生成的 ``eval_dataloader``
         """
+        if len(self.evaluators) == 0:
+            return
         self.on_evaluate_begin()
         eval_results = []
         for evaluator in self.evaluators:
