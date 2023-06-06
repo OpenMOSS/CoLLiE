@@ -3,6 +3,8 @@ from typing import Any, Union
 
 from transformers import PretrainedConfig, AutoConfig
 
+from .peft.utils import PeftConfig
+
 __all__ = ["CollieConfig"]
 
 @dataclass
@@ -147,6 +149,12 @@ class CollieConfig:
         default=None,
         metadata={
             "help": "Model configuration."
+        }
+    )
+    peft_config: PeftConfig = field(
+        default=None,
+        metadata={
+            "help": "PEFT configuration."
         }
     )
 
