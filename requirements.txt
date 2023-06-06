@@ -9,3 +9,5 @@ protobuf==3.20.1
 websockets
 fastapi
 megatron-core
+tensorboard
+google

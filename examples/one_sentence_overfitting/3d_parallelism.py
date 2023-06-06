@@ -17,18 +17,18 @@ tokenizer = LlamaTokenizer.from_pretrained("decapoda-research/llama-7b-hf",
                                            add_eos_token=False)
 tokenizer.bos_token_id = 1
 tokenizer.eos_token_id = 2
-tokenizer.eos_token = "</s>"
 config = CollieConfig.from_pretrained("decapoda-research/llama-7b-hf")
 config.tp_size = 1
-config.dp_size = 1
-config.pp_size = 2
+config.dp_size = 3
+config.pp_size = 1
 config.train_epochs = 1000
 config.train_micro_batch_size = 2
 config.gradient_accumulation_steps = 1
 # config.eval_batch_size = 1
 # config.eval_per_n_steps = 20
 config.ds_config = {
-    "fp16": {"enabled": True}
+    "fp16": {"enabled": True},
+    "zero_optimization": {"stage": 3}
 }
 
 model = LlamaForCausalLM.from_pretrained("/mnt/petrelfs/zhangshuo/model/llama-7b-hf", config=config)
@@ -37,6 +37,9 @@ train_sample = tokenizer("Collie is a python package for finetuning large langua
 eval_sample = tokenizer("Collie is", return_tensors="pt").input_ids.squeeze(0)
 train_dataset = [(train_sample, train_sample) for _ in range(128000)]
 eval_dataset = [(eval_sample, eval_sample)]
+# sample1 = torch.ones((100,), dtype=torch.long)
+# sample2 = torch.ones((200,), dtype=torch.long)
+# dataset = [(sample1, sample1), (sample2, sample2)]
 trainer = Trainer(
     model = model,
     optimizer=optimizer,
@@ -54,8 +57,8 @@ trainer = Trainer(
         LossMonitor(config),
         EvalMonitor(config)
     ],
-    data_provider=GradioProvider(tokenizer=tokenizer, stream=True),
     metrics={
         "decode": DecodeMetric(tokenizer=tokenizer)},
 )
-trainer.train()
+# trainer.train()
+trainer.save_checkpoint("/mnt/petrelfs/zhangshuo/model/llama-7b-hf-3d-parallelism", mode="model")

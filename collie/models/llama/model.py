@@ -618,6 +618,7 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                         IODriver.save(state_dict, ckpt_path)
                 if dist.is_initialized() and process_exclusion:
                     dist.barrier()
+        dist.barrier()
         if env.rank == 0:
             config.save_pretrained(path)
         if env.rank == 0 and env.is_pipeline:
@@ -638,4 +639,3 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                 json.dumps(merged_dict, indent=2, sort_keys=True) + "\n",
                 os.path.join(path, "pytorch_model.bin.index.json")
             )
-        dist.barrier()

@@ -415,15 +415,14 @@ class Trainer(TrainerEventTrigger):
         if mode == "model":
             if isinstance(self.engine.module, CollieModelForCausalLM) or isinstance(self.engine.module, PipelineModel):
                 if is_zero3_enabled(self.config):
-                    with deepspeed.zero.GatheredParameters(list(self.engine.module.parameters(recurse=True)), modifier_rank=0):
-                        if env.dp_rank == 0:
-                            self.engine.module.save_parallel_state_dict(
-                                state_dict=self.engine.module.state_dict(),
-                                path=path,
-                                config=self.config,
-                                process_exclusion=process_exclusion,
-                                protocol=protocol
-                            )
+                    with deepspeed.zero.GatheredParameters(list(self.engine.module.parameters(recurse=True))):
+                        self.engine.module.save_parallel_state_dict(
+                            state_dict=self.engine.module.state_dict(),
+                            path=path,
+                            config=self.config,
+                            process_exclusion=process_exclusion,
+                            protocol=protocol
+                        )
                 else:
                     self.engine.module.save_parallel_state_dict(
                         state_dict=self.engine.module.state_dict(),
@@ -434,12 +433,11 @@ class Trainer(TrainerEventTrigger):
                     )
             elif isinstance(self.engine.module, PreTrainedModel):
                 if is_zero3_enabled(self.config):
-                    with deepspeed.zero.GatheredParameters(list(self.engine.module.parameters(recurse=True)), modifier_rank=0):
-                        if env.dp_rank == 0:
-                            self.engine.module.save_pretrained(
-                                save_directory=path,
-                                **kwargs
-                            )
+                    with deepspeed.zero.GatheredParameters(list(self.engine.module.parameters(recurse=True))):
+                        self.engine.module.save_pretrained(
+                            save_directory=path,
+                            **kwargs
+                        )
                 else:
                     self.engine.module.save_pretrained(
                         save_directory=path,
