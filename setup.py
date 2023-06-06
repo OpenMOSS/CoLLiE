@@ -4,5 +4,9 @@ with open('requirements.txt', encoding='utf-8') as f:
     reqs = f.read()
     
 setup(name='collie',
-      version='0.1.1',
-      packages=find_packages())
+      version='1.0.0',
+      description="CoLLiE: Collaborative Tuning of Large Language Models in an Efficient Way",
+      author="OpenLMLab",
+      packages=find_packages(),
+      install_requires=reqs.splitlines(),
+      python_requires='>=3.8')
