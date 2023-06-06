@@ -3,7 +3,7 @@ from typing import Any, Union
 
 from transformers import PretrainedConfig, AutoConfig
 
-from .peft.utils import PeftConfig
+from peft.utils import PeftConfig
 
 __all__ = ["CollieConfig"]
 
