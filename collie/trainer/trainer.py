@@ -159,12 +159,15 @@ class Trainer(TrainerEventTrigger):
             )
 
         if evaluators is None or (hasattr(evaluators, "__len__") and len(evaluators) == 0):
-            evaluators = Evaluator(model=model, dataset=eval_dataset, metrics=metrics, eval_fn=eval_fn,
-                 config=config, collate_fn=eval_dataset_collate_fn, data_provider=None,
-                 generation_config=generation_config)
-            evaluators.engine = self.engine
-            evaluators.monitor = self.monitor
-            evaluators.data_provider = self.data_provider
+            if eval_dataset is not None:
+                evaluators = Evaluator(model=model, dataset=eval_dataset, metrics=metrics, eval_fn=eval_fn,
+                    config=config, collate_fn=eval_dataset_collate_fn, data_provider=None,
+                    generation_config=generation_config)
+                evaluators.engine = self.engine
+                evaluators.monitor = self.monitor
+                evaluators.data_provider = self.data_provider
+            else:
+                evaluators = []
         if not isinstance(evaluators, Sequence):
             evaluators = [evaluators]
         for evaluator in evaluators:
@@ -346,6 +349,8 @@ class Trainer(TrainerEventTrigger):
 
         :param dataloader: 用于验证的数据集，为 ``Iterable`` 对象 ，当为 ``None`` 时，使用 ``eval_dataset`` 生成的 ``eval_dataloader``
         """
+        if len(self.evaluators) == 0:
+            return
         self.on_evaluate_begin()
         eval_results = []
         for evaluator in self.evaluators:
@@ -471,7 +476,8 @@ class Trainer(TrainerEventTrigger):
                         global_steps=engine.global_steps,
                         global_samples=engine.global_samples)
 
-            IODriver.save(state, os.path.join(path, self.checkpoint_file))
+            if env.rank == 0 or engine.zero_optimization_partition_weights():
+                IODriver.save(state, os.path.join(path, self.checkpoint_file))
 
             if engine.save_zero_checkpoint:
                 self._save_zero_checkpoint(path, IODriver)
@@ -536,7 +542,7 @@ class Trainer(TrainerEventTrigger):
                     else:
                         with deepspeed.zero.GatheredParameters(list(self.engine.module.parameters(recurse=True)), modifier_rank=0):
                             if env.dp_rank == 0:
-                                state_dict = reduce(lambda x, y: {**x, **y}, [IODriver.load(os.path.join(path, file), mode="rb") for file in glob.glob(os.path.join(path, "*.bin"))])
+                                state_dict = reduce(lambda x, y: {**x, **y}, [IODriver.load(file, mode="rb") for file in glob.glob(os.path.join(path, "*.bin"))])
                                 self.engine.module.load_state_dict(state_dict)
                 else:
                     index = None
@@ -554,7 +560,7 @@ class Trainer(TrainerEventTrigger):
                             for attr in value:
                                 self.engine.module.state_dict()[attr].copy_(state_dict[attr])
                     else:
-                        state_dict = reduce(lambda x, y: {**x, **y}, [IODriver.load(os.path.join(path, file)) for file in glob.glob(os.path.join(path, "*.bin"))])
+                        state_dict = reduce(lambda x, y: {**x, **y}, [IODriver.load(file, "b") for file in glob.glob(os.path.join(path, "*.bin"))])
                         self.engine.module.load_state_dict(state_dict)
         if mode == "trainer":
             # check
@@ -569,12 +575,11 @@ class Trainer(TrainerEventTrigger):
 
             # DeepSpeed.load_checkpoint
             if engine.zero_optimization_partition_weights():
-                # Prepare for checkpoint load by ensuring all parameters are partitioned
-                engine.optimizer.checkpoint_event_prologue()
+                ckpt_file = self.checkpoint_file
+            else:
+                ckpt_file = "collie_dp0_pp0_tp0.pt"
+            checkpoint = IODriver.load(os.path.join(path, ckpt_file), "b")
 
-            ## DeepSpeed._load_checkpoint
-            checkpoint = IODriver.load(os.path.join(path, self.checkpoint_file), "b")
-            
             module = checkpoint["module"]
             engine.module.load_state_dict(module)
 
