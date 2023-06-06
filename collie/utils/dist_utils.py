@@ -18,6 +18,7 @@ from typing import Union, Optional
 
 from .utils import _split_batch
 from collie.config import load_config, CollieConfig
+from .peft_utils import patch_peft
 
 __all__ = [
     "env", "setup_distribution", "set_seed", "setup_ds_engine",
@@ -92,6 +93,7 @@ def setup_distribution(config) -> None:
         config.ds_config["gradient_accumulation_steps"] = config.gradient_accumulation_steps
     patch_deepspeed(config)
     patch_megatron()
+    patch_peft()
     if "WORLD_SIZE" in os.environ.keys():
         # launch from pytorch
         master_addr = os.environ.get("MASTER_ADDR", "localhost")
