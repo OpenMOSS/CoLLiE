@@ -15,7 +15,7 @@ class ColliePadder:
     :param padding_left: 是否在左侧填充
     """
     def __init__(self, 
-                 padding_token: int=0,
+                 padding_token: int=-100,
                  padding_left: bool = False) -> None:
         self.padding_token = padding_token
         self.padding_left = padding_left
