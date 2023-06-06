@@ -25,6 +25,7 @@ def patch_peft_model():
             config.num_transformer_submodules = 2 if config.task_type == TaskType.SEQ_2_SEQ_LM else 1
 
         for named_param, value in list(transformer_backbone.named_parameters()):
+            # patched for zero3
             if hasattr(value, "ds_shape"):
                 if value.ds_shape[0] == self.base_model.config.vocab_size:
                     self.word_embeddings = transformer_backbone.get_submodule(named_param.replace(".weight", ""))
@@ -83,8 +84,8 @@ def patch_prompt_tuning():
                 init_token_ids = init_token_ids * num_reps
             init_token_ids = init_token_ids[:total_virtual_tokens]
 
-            word_embeddings.cuda()
-            word_embedding_weights = word_embeddings(torch.LongTensor(init_token_ids).cuda()).detach().clone()
+            word_embeddings.cuda() # patched here
+            word_embedding_weights = word_embeddings(torch.LongTensor(init_token_ids).cuda()).detach().clone() # patched here
             word_embedding_weights = word_embedding_weights.to(torch.float32)
             self.embedding.weight = torch.nn.Parameter(word_embedding_weights)
 
@@ -92,5 +93,10 @@ def patch_prompt_tuning():
 
 
 def patch_peft():
+    """
+        改写 ``peft`` 的 `PeftModel` 和 `PromptEmbedding`。
+
+        用于适应 **CoLLiE** 的训练和过程。
+    """
     patch_peft_model()
     patch_prompt_tuning()
