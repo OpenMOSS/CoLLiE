@@ -126,6 +126,7 @@ class GPTLMLoss(torch.nn.Module):
     """
     def __init__(self, ignore_index=0):
         super().__init__()
+        self.ignore_index = ignore_index
         self.loss = torch.nn.CrossEntropyLoss(ignore_index=ignore_index)  # ignore <pad> when compute loss
 
     def forward(self, logits: torch.Tensor, labels: Union[torch.Tensor, Tuple[torch.Tensor]], *args):
@@ -134,7 +135,13 @@ class GPTLMLoss(torch.nn.Module):
         :param labels: 真实标签
         """
         if isinstance(labels, Sequence):
-            labels = labels[0]
+            if len(labels) == 1:
+                labels = labels[0]
+                label_mask = None
+            elif len(labels) == 2:
+                label_mask = labels[1]
+                labels = labels[0].masked_fill(label_mask, value=self.ignore_index)
+            
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous().to(logits.device)
         # Flatten the tokens
