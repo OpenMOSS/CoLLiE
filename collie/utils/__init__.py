@@ -5,6 +5,7 @@ from .utils import find_tensors, progress, dictToObj, apply_to_collection
 from .data_provider import BaseProvider, GradioProvider, _GenerationStreamer
 from .metric_wrapper import _MetricsWrapper
 from .monitor import BaseMonitor, StepTimeMonitor, _MultiMonitors, TGSMonitor, MemoryMonitor, LossMonitor, EvalMonitor
+from .padder import ColliePadder
 
 __all__ = [
     "setup_distribution",
@@ -27,5 +28,6 @@ __all__ = [
     "TGSMonitor",
     "MemoryMonitor",
     "LossMonitor",
-    "EvalMonitor"
+    "EvalMonitor",
+    "ColliePadder",
 ]

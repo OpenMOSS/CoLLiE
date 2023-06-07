@@ -28,7 +28,7 @@ from collie.module import PipelineGenerationMixin, GPTLMLoss, PipelineModel
 from collie.driver.io.file import FileIODriver
 from collie.driver.io.petrel import PetrelIODriver
 from collie.log import logger
-from collie.utils import progress, env, setup_ds_engine, BaseProvider, _GenerationStreamer, is_zero3_enabled, BaseMonitor, _MultiMonitors, broadcast_tensor
+from collie.utils import progress, env, setup_ds_engine, BaseProvider, _GenerationStreamer, is_zero3_enabled, BaseMonitor, _MultiMonitors, broadcast_tensor, ColliePadder
 from collie.optim import InplaceSGD
 from collie.models.base import CollieModelForCausalLM
 from .evaluator import Evaluator
@@ -111,8 +111,8 @@ class Trainer(TrainerEventTrigger):
                  train_dataset: Optional[torch.utils.data.Dataset] = None,
                  eval_dataset: Optional[torch.utils.data.Dataset] = None,
                  callbacks: Optional[Union[Callback, List[Callback]]] = None,
-                 train_dataset_collate_fn: Optional[Callable] = None,
-                 eval_dataset_collate_fn: Optional[Callable] = None,
+                 train_dataset_collate_fn: Optional[Callable] = ColliePadder(),
+                 eval_dataset_collate_fn: Optional[Callable] = ColliePadder(padding_left=True),
                  generation_config: GenerationConfig = GenerationConfig(),
                  data_provider: Optional[BaseProvider] = None,
                  monitors: Sequence[BaseMonitor] = [],
@@ -321,6 +321,7 @@ class Trainer(TrainerEventTrigger):
                         get_accelerator().empty_cache()
                         self.on_train_batch_begin(batch)
                         with self.monitor as item:
+                            print(batch)
                             loss = self.train_fn(self, batch, self.epoch_idx * self.steps_per_epoch + self.batch_idx)
                             item.update({"loss": loss,
                                          "batch": batch,
@@ -376,6 +377,12 @@ class Trainer(TrainerEventTrigger):
             loss = trainer.engine.train_batch(batch)
         else:
             input_ids, labels = batch
+            # concat prompt labels for p-tuning
+            if trainer.config.peft_config and trainer.config.peft_config.peft_type in ["PROMPT_TUNING", "P_TUNING"]:
+                batch_size = input_ids.shape[0]
+                prefix_labels = torch.full((batch_size, trainer.config.peft_config.num_virtual_tokens), -100).to(labels.device)
+                labels = torch.cat((prefix_labels, labels), dim=1)
+
             logits = trainer.engine(input_ids=input_ids.cuda()).logits
             loss = trainer.loss_fn(logits, labels)
             if not isinstance(trainer.optimizer, InplaceSGD):
