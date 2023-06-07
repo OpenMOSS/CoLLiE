@@ -56,7 +56,7 @@ model = LlamaForCausalLM.from_pretrained("/mnt/lustre/zhangshuo/model/test/", co
 trainer = Trainer(model=model,
                   config=config,
                   eval_dataset=dataset,
-                  eval_config=GenerationConfig(max_new_tokens=100),
+                  generation_config=GenerationConfig(max_new_tokens=100),
                   metrics=[DecodeMetric(tokenizer=tokenizer)],
                   eval_dataset_collate_fn=collate_fn)
 trainer.eval()

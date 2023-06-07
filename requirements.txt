@@ -1,6 +1,6 @@
 rich
 tqdm
-torch >= 1.13.0
+torch>=1.13.0
 einops
 deepspeed
 transformers
@@ -8,3 +8,6 @@ sentencepiece
 protobuf==3.20.1
 websockets
 fastapi
+megatron-core
+tensorboard
+google

@@ -35,16 +35,16 @@ class DecodeMetric(BaseMetric):
         """
         :meth:`update` 函数将针对一个批次的预测结果做评价指标的累计。
         """
-        input_ids = result['input_ids']
+        generated_ids = result['generated_ids']
         decode_list = []
-        for i in range(len(input_ids)):
-            if isinstance(input_ids[i], torch.Tensor):
-                if input_ids[i].ndim == 2:
-                    decode_list.extend(list(map(lambda x: x.detach().cpu().tolist(), [*input_ids[i]])))
+        for i in range(len(generated_ids)):
+            if isinstance(generated_ids[i], torch.Tensor):
+                if generated_ids[i].ndim == 2:
+                    decode_list.extend(list(map(lambda x: x.detach().cpu().tolist(), [*generated_ids[i]])))
                 else:
-                    decode_list.append(input_ids[i].detach().cpu().tolist())
+                    decode_list.append(generated_ids[i].detach().cpu().tolist())
             else:
-                decode_list.append(input_ids[i])
+                decode_list.append(generated_ids[i])
         sentences = []
         for ids in decode_list:
             sentences.append(self.tokenizer.decode(ids))

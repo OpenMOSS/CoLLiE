@@ -20,6 +20,7 @@ class BaseProvider:
         self.data = Queue()
         self.feedback = Queue()
         self.stream = stream
+        self.provider_started = False
         
     def provider_handler(self):
         """ provider_handler 为异步数据提供器的主要逻辑，需要被子类重写，主要功能为异步地收集数据并放入队列 `self.data` 中
@@ -33,6 +34,7 @@ class BaseProvider:
         """
         process = Process(target=self.provider_handler)
         process.start()
+        self.provider_started = True
         
     def get_data(self):
         """ get_data 为异步数据提供器的数据获取函数，会从队列 `self.data` 中获取数据
@@ -81,10 +83,9 @@ class GradioProvider(BaseProvider):
                     yield self.tokenizer.decode(output_cache)
                     if not self.stream:
                         break
-
         interface = gr.Interface(fn=submit, inputs="textbox", outputs="text")
         interface.queue()
-        interface.launch(server_name="0.0.0.0", server_port=self.port)
+        interface.launch(server_name="0.0.0.0", server_port=self.port, share=True)
         
 class _GenerationStreamer(BaseStreamer):
     """ 重写 `transformers` 的 `BaseStreamer` 类以兼容 **CoLLie** 的异步数据提供器

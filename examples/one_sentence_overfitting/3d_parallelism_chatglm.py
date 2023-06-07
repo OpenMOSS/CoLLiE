@@ -42,7 +42,7 @@ trainer = Trainer(
     config=config,
     train_dataset=train_dataset,
     eval_dataset=eval_dataset,
-    eval_config=GenerationConfig(max_new_tokens=128, 
+    generation_config=GenerationConfig(max_new_tokens=128, 
                                  eos_token_id=tokenizer.eos_token_id, 
                                  use_cache=False),
     metrics={

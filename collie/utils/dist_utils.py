@@ -1,3 +1,5 @@
+""" **CoLLie** 中的分布式工具。
+"""
 import os
 import copy
 import json
@@ -6,6 +8,7 @@ import subprocess
 
 import torch
 from torch import distributed as dist
+from torch.multiprocessing import Process
 import deepspeed
 from deepspeed.runtime.utils import set_random_seed
 from deepspeed.runtime.zero.stage_1_and_2 import DeepSpeedZeroOptimizer
@@ -16,13 +19,15 @@ from megatron.core import parallel_state, tensor_parallel
 
 from typing import Union, Optional
 
-from .utils import _split_batch
+from collie.utils.utils import _split_batch
 from collie.config import load_config, CollieConfig
 from .peft_utils import patch_peft
 
 __all__ = [
     "env", "setup_distribution", "set_seed", "setup_ds_engine",
-    "zero3_load_state_dict", "is_zero3_enabled", "broadcast_tensor"
+    "zero3_load_state_dict", "is_zero3_enabled", "broadcast_tensor",
+    "patch_deepspeed", "patch_megatron", "patch_pipeline_engine",
+    "launch"
 ]
 
 DTYPE_ENUM = [
@@ -31,11 +36,15 @@ DTYPE_ENUM = [
 ]
 
 def zero3_load_state_dict(model: torch.nn.Module, state_dict: dict):
+    """ 用于加载 ZeRO stage 3 的模型参数。
+    """
     for name, param in model.named_parameters():
         with deepspeed.zero.GatheredParameters(param, modifier_rank=0):
             param.data = state_dict[name].data.to(param.device).to(param.dtype)
 
 def is_zero3_enabled(config: CollieConfig):
+    """ 判断是否启用了 ZeRO stage 3。
+    """
     if isinstance(config.ds_config, str) and os.path.exists(config.ds_config):
         config.ds_config = load_config(config.ds_config)
     if isinstance(config.ds_config, dict) \
@@ -52,6 +61,17 @@ def setup_ds_engine(
         optimizer: Optional[Union[torch.optim.Optimizer, DeepSpeedOptimizerCallable]] = None,
         lr_scheduler: Optional[Union[torch.optim.lr_scheduler._LRScheduler, DeepSpeedSchedulerCallable]] = None
 ):
+    """ 启动 DeepSpeed 引擎。
+    :param config: **CoLLie** 的配置
+    :param model: 模型
+    :param optimizer: 优化器
+    :param lr_scheduler: 学习率调度器
+    :return: DeepSpeed 引擎、优化器、dataloader (为 None)、学习率调度器
+    """
+    if "train_micro_batch_size_per_gpu" not in config.ds_config.keys():
+        config.ds_config["train_micro_batch_size_per_gpu"] = config.train_micro_batch_size
+    if "gradient_accumulation_steps" not in config.ds_config.keys():
+        config.ds_config["gradient_accumulation_steps"] = config.gradient_accumulation_steps
     if config.pp_size != 1 or config.tp_size != 1:
         from collie.models import CollieModelForCausalLM
         from collie.module import PipelineModel
@@ -66,6 +86,30 @@ def setup_ds_engine(
         config=config.ds_config
     )
     return engine, optimizer, _, lr_scheduler
+
+def _decompose_slurm_nodes(s):
+    # 使用正则表达式找到所有符合模式的子串
+    sub_strings = re.findall(r'[\w-]+\-\[[^\]]*\]|[\w-]+\-\d+', s)
+
+    results = []
+
+    for sub_s in sub_strings:
+        # 搜索括号内的元素
+        bracket_content = re.search('\[([^\]]+)\]', sub_s)
+        if bracket_content:
+            # 获取前缀部分
+            prefix = sub_s.split('[')[0]
+            # 获取括号内的所有元素
+            elements = bracket_content.group(1).split(',')
+            for element in elements:
+                if '-' in element:  # 如果元素是一个范围
+                    start, end = [int(i) for i in element.split('-')]
+                    results.extend(f'{prefix}{i}' for i in range(start, end+1))
+                else:  # 如果元素是一个单独的数字
+                    results.append(prefix + element)
+        else:  # 如果没有括号，直接添加到结果中
+            results.append(sub_s)
+    return results
 
 
 def setup_distribution(config) -> None:
@@ -87,10 +131,6 @@ def setup_distribution(config) -> None:
         config = load_config(config)
     if isinstance(config.ds_config, str):
         config.ds_config = load_config(config.ds_config)
-    if "train_micro_batch_size_per_gpu" not in config.ds_config.keys():
-        config.ds_config["train_micro_batch_size_per_gpu"] = config.train_micro_batch_size
-    if "gradient_accumulation_steps" not in config.ds_config.keys():
-        config.ds_config["gradient_accumulation_steps"] = config.gradient_accumulation_steps
     patch_deepspeed(config)
     patch_megatron()
     patch_peft()
@@ -102,20 +142,21 @@ def setup_distribution(config) -> None:
         # launch from slurm
         if "SLURM_JOB_NODELIST" in os.environ.keys():
             node_list_str = os.environ["SLURM_JOB_NODELIST"]
-            node_list = []
-            result = re.search(r"\[(.*?)\]", node_list_str)
-            if result is None:
-                node_list.append(node_list_str)
-            else:
-                node_list.extend([item for item in result.groups(1)[0].split(",")])
-                for i in node_list:
-                    if "-" in i:
-                        node_list.extend(
-                            list(map(lambda x: f"{x}", range(int(i.split("-")[0]), int(i.split("-")[1]) + 1))))
-                        node_list.remove(i)
-                node_list = list(map(lambda x: re.sub(r"\[(.*?)\]", x, node_list_str), node_list))
+            node_list = _decompose_slurm_nodes(node_list_str)
+            # result = re.search(r"\[(.*?)\]", node_list_str)
+            # if result is None:
+            #     node_list.extend(node_list_str.split(","))
+            # else:
+            #     node_list.extend([item for item in result.groups(1)[0].split(",")])
+            #     for i in node_list:
+            #         if "-" in i:
+            #             node_list.extend(
+            #                 list(map(lambda x: f"{x}", range(int(i.split("-")[0]), int(i.split("-")[1]) + 1))))
+            #             node_list.remove(i)
+            #     node_list = list(map(lambda x: re.sub(r"\[(.*?)\]", x, node_list_str), node_list))
             node_list = sorted(node_list)
             master_addr = node_list[0]
+            
             os.environ["MASTER_ADDR"] = f"{master_addr}"
             result = subprocess.run(["scontrol", "show", "node", master_addr], capture_output=True)
             result = re.search(r"NodeAddr=(.*?)\s", result.stdout.decode())
@@ -165,16 +206,32 @@ def patch_pipeline_engine(config):
 
     用于适应 **CoLLiE** 的训练和生成过程。
     """
+    PipelineEngine.buffer_shape = None
     raw_train_batch = copy.deepcopy(PipelineEngine.train_batch)
     raw_eval_batch = copy.deepcopy(PipelineEngine.eval_batch)
     def train_batch(self, batch):
         # batch tuple, batch_size is micro_batch * accumulate_steps
+        if self.buffer_shape is None:
+            self.buffer_shape = batch[0].shape
+        elif self.buffer_shape != batch[0].shape:
+            self.buffer_shape = batch[0].shape
+            self.reset_activation_shape()
         batch = _split_batch(batch, self.train_micro_batch_size_per_gpu(),
                              self.gradient_accumulation_steps())
         data_iter = iter(batch)
         return raw_train_batch(self, data_iter)
 
     def eval_batch(self, batch):
+        if self.buffer_shape is None:
+            self.buffer_shape = batch[0].shape
+        elif self.buffer_shape != batch[0].shape:
+            self.buffer_shape = batch[0].shape
+            self.reset_activation_shape()
+        if self.total_loss is not None:
+            total_loss = self.total_loss.detach().clone()
+        else:
+            total_loss = None
+        self.total_loss = None
         batch = _split_batch(batch, config.eval_batch_size,
                              self.gradient_accumulation_steps())
         data_iter = iter(batch)
@@ -189,8 +246,9 @@ def patch_pipeline_engine(config):
         src_rank = self.grid.stage_to_global(self.num_stages - 1)
         logits = broadcast_tensor(logits, src=src_rank,
                                   group=env.pp_group)
+        self.total_loss = total_loss
         return logits
-    
+
     PipelineEngine.train_batch = train_batch
     PipelineEngine.eval_batch = eval_batch
 
@@ -300,6 +358,13 @@ class Env:
         from collie.utils import env
         print(env.dp_rank)
     """
+    @property
+    def seed(self):
+        """
+        随机数种子
+        """
+        return int(os.getenv("COLLIE_SEED"))
+
     @property
     def rank(self):
         """
@@ -469,3 +534,27 @@ class Env:
         return parallel_state.is_pipeline_first_stage()
 
 env = Env()
+
+def launch(target: callable,
+           devices: str,
+           port: int=12701):
+    """ 在一台节点上以 torchrun 风格启动多进程
+    :param target: 启动的函数
+    :param devices: 启动的设备，以逗号分隔
+    :param port: 启动的端口
+    """
+    def _wrapper(environ):
+        os.environ.update(environ)
+        target()
+    processes = []
+    for rank in range(len(devices.split(","))):
+        environ = copy.deepcopy(os.environ)
+        environ["MASTER_ADDR"] = "localhost"
+        environ["MASTER_PORT"] = str(port)
+        environ["WORLD_SIZE"] = str(len(devices.split(",")))
+        environ["RANK"] = str(rank)
+        environ["LOCAL_RANK"] = str(rank)
+        environ["CUDA_VISIBLE_DEVICES"] = devices
+        processes.append(Process(target=_wrapper, args=(environ,)))
+    [p.start() for p in processes]
+    [p.join() for p in processes]
