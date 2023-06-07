@@ -1,3 +1,5 @@
+""" **CoLLie** 中的分布式工具。
+"""
 import os
 import copy
 import json
@@ -6,6 +8,7 @@ import subprocess
 
 import torch
 from torch import distributed as dist
+from torch.multiprocessing import Process
 import deepspeed
 from deepspeed.runtime.utils import set_random_seed
 from deepspeed.runtime.zero.stage_1_and_2 import DeepSpeedZeroOptimizer
@@ -16,13 +19,15 @@ from megatron.core import parallel_state, tensor_parallel
 
 from typing import Union, Optional
 
-from .utils import _split_batch
+from collie.utils.utils import _split_batch
 from collie.config import load_config, CollieConfig
-from collie.log.logger import logger
+from .peft_utils import patch_peft
 
 __all__ = [
     "env", "setup_distribution", "set_seed", "setup_ds_engine",
-    "zero3_load_state_dict", "is_zero3_enabled", "broadcast_tensor"
+    "zero3_load_state_dict", "is_zero3_enabled", "broadcast_tensor",
+    "patch_deepspeed", "patch_megatron", "patch_pipeline_engine",
+    "launch"
 ]
 
 DTYPE_ENUM = [
@@ -31,11 +36,15 @@ DTYPE_ENUM = [
 ]
 
 def zero3_load_state_dict(model: torch.nn.Module, state_dict: dict):
+    """ 用于加载 ZeRO stage 3 的模型参数。
+    """
     for name, param in model.named_parameters():
         with deepspeed.zero.GatheredParameters(param, modifier_rank=0):
             param.data = state_dict[name].data.to(param.device).to(param.dtype)
 
 def is_zero3_enabled(config: CollieConfig):
+    """ 判断是否启用了 ZeRO stage 3。
+    """
     if isinstance(config.ds_config, str) and os.path.exists(config.ds_config):
         config.ds_config = load_config(config.ds_config)
     if isinstance(config.ds_config, dict) \
@@ -52,6 +61,13 @@ def setup_ds_engine(
         optimizer: Optional[Union[torch.optim.Optimizer, DeepSpeedOptimizerCallable]] = None,
         lr_scheduler: Optional[Union[torch.optim.lr_scheduler._LRScheduler, DeepSpeedSchedulerCallable]] = None
 ):
+    """ 启动 DeepSpeed 引擎。
+    :param config: **CoLLie** 的配置
+    :param model: 模型
+    :param optimizer: 优化器
+    :param lr_scheduler: 学习率调度器
+    :return: DeepSpeed 引擎、优化器、dataloader (为 None)、学习率调度器
+    """
     if "train_micro_batch_size_per_gpu" not in config.ds_config.keys():
         config.ds_config["train_micro_batch_size_per_gpu"] = config.train_micro_batch_size
     if "gradient_accumulation_steps" not in config.ds_config.keys():
@@ -117,6 +133,7 @@ def setup_distribution(config) -> None:
         config.ds_config = load_config(config.ds_config)
     patch_deepspeed(config)
     patch_megatron()
+    patch_peft()
     if "WORLD_SIZE" in os.environ.keys():
         # launch from pytorch
         master_addr = os.environ.get("MASTER_ADDR", "localhost")
@@ -517,3 +534,27 @@ class Env:
         return parallel_state.is_pipeline_first_stage()
 
 env = Env()
+
+def launch(target: callable,
+           devices: str,
+           port: int=12701):
+    """ 在一台节点上以 torchrun 风格启动多进程
+    :param target: 启动的函数
+    :param devices: 启动的设备，以逗号分隔
+    :param port: 启动的端口
+    """
+    def _wrapper(environ):
+        os.environ.update(environ)
+        target()
+    processes = []
+    for rank in range(len(devices.split(","))):
+        environ = copy.deepcopy(os.environ)
+        environ["MASTER_ADDR"] = "localhost"
+        environ["MASTER_PORT"] = str(port)
+        environ["WORLD_SIZE"] = str(len(devices.split(",")))
+        environ["RANK"] = str(rank)
+        environ["LOCAL_RANK"] = str(rank)
+        environ["CUDA_VISIBLE_DEVICES"] = devices
+        processes.append(Process(target=_wrapper, args=(environ,)))
+    [p.start() for p in processes]
+    [p.join() for p in processes]

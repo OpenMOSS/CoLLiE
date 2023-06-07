@@ -29,7 +29,7 @@ from collie.module import PipelineGenerationMixin, GPTLMLoss, PipelineModel
 from collie.driver.io.file import FileIODriver
 from collie.driver.io.petrel import PetrelIODriver
 from collie.log import logger
-from collie.utils import progress, env, setup_ds_engine, BaseProvider, _GenerationStreamer, is_zero3_enabled, BaseMonitor, _MultiMonitors, broadcast_tensor
+from collie.utils import progress, env, setup_ds_engine, BaseProvider, _GenerationStreamer, is_zero3_enabled, BaseMonitor, _MultiMonitors, broadcast_tensor, ColliePadder
 from collie.optim import InplaceSGD
 from collie.models.base import CollieModelForCausalLM
 from .evaluator import Evaluator
@@ -112,8 +112,8 @@ class Trainer(TrainerEventTrigger):
                  train_dataset: Optional[torch.utils.data.Dataset] = None,
                  eval_dataset: Optional[torch.utils.data.Dataset] = None,
                  callbacks: Optional[Union[Callback, List[Callback]]] = None,
-                 train_dataset_collate_fn: Optional[Callable] = None,
-                 eval_dataset_collate_fn: Optional[Callable] = None,
+                 train_dataset_collate_fn: Optional[Callable] = ColliePadder(),
+                 eval_dataset_collate_fn: Optional[Callable] = ColliePadder(padding_left=True),
                  generation_config: GenerationConfig = GenerationConfig(),
                  data_provider: Optional[BaseProvider] = None,
                  monitors: Sequence[BaseMonitor] = [],
@@ -159,12 +159,15 @@ class Trainer(TrainerEventTrigger):
             )
 
         if evaluators is None or (hasattr(evaluators, "__len__") and len(evaluators) == 0):
-            evaluators = Evaluator(model=model, dataset=eval_dataset, metrics=metrics, eval_fn=eval_fn,
-                 config=config, collate_fn=eval_dataset_collate_fn, data_provider=None,
-                 generation_config=generation_config)
-            evaluators.engine = self.engine
-            evaluators.monitor = self.monitor
-            evaluators.data_provider = self.data_provider
+            if eval_dataset is not None:
+                evaluators = Evaluator(model=model, dataset=eval_dataset, metrics=metrics, eval_fn=eval_fn,
+                    config=config, collate_fn=eval_dataset_collate_fn, data_provider=None,
+                    generation_config=generation_config)
+                evaluators.engine = self.engine
+                evaluators.monitor = self.monitor
+                evaluators.data_provider = self.data_provider
+            else:
+                evaluators = []
         if not isinstance(evaluators, Sequence):
             evaluators = [evaluators]
         for evaluator in evaluators:
@@ -319,6 +322,7 @@ class Trainer(TrainerEventTrigger):
                         get_accelerator().empty_cache()
                         self.on_train_batch_begin(batch)
                         with self.monitor as item:
+                            print(batch)
                             loss = self.train_fn(self, batch, self.epoch_idx * self.steps_per_epoch + self.batch_idx)
                             item.update({"loss": loss,
                                          "batch": batch,
@@ -345,6 +349,8 @@ class Trainer(TrainerEventTrigger):
 
         :param dataloader: 用于验证的数据集，为 ``Iterable`` 对象 ，当为 ``None`` 时，使用 ``eval_dataset`` 生成的 ``eval_dataloader``
         """
+        if len(self.evaluators) == 0:
+            return
         self.on_evaluate_begin()
         eval_results = []
         for evaluator in self.evaluators:
@@ -372,6 +378,12 @@ class Trainer(TrainerEventTrigger):
             loss = trainer.engine.train_batch(batch)
         else:
             input_ids, labels = batch
+            # concat prompt labels for p-tuning
+            if trainer.config.peft_config and trainer.config.peft_config.peft_type in ["PROMPT_TUNING", "P_TUNING"]:
+                batch_size = input_ids.shape[0]
+                prefix_labels = torch.full((batch_size, trainer.config.peft_config.num_virtual_tokens), -100).to(labels.device)
+                labels = torch.cat((prefix_labels, labels), dim=1)
+
             logits = trainer.engine(input_ids=input_ids.cuda()).logits
             loss = trainer.loss_fn(logits, labels)
             if not isinstance(trainer.optimizer, InplaceSGD):
@@ -415,15 +427,14 @@ class Trainer(TrainerEventTrigger):
         if mode == "model":
             if isinstance(self.engine.module, CollieModelForCausalLM) or isinstance(self.engine.module, PipelineModel):
                 if is_zero3_enabled(self.config):
-                    with deepspeed.zero.GatheredParameters(list(self.engine.module.parameters(recurse=True)), modifier_rank=0):
-                        if env.dp_rank == 0:
-                            self.engine.module.save_parallel_state_dict(
-                                state_dict=self.engine.module.state_dict(),
-                                path=path,
-                                config=self.config,
-                                process_exclusion=process_exclusion,
-                                protocol=protocol
-                            )
+                    with deepspeed.zero.GatheredParameters(list(self.engine.module.parameters(recurse=True))):
+                        self.engine.module.save_parallel_state_dict(
+                            state_dict=self.engine.module.state_dict(),
+                            path=path,
+                            config=self.config,
+                            process_exclusion=process_exclusion,
+                            protocol=protocol
+                        )
                 else:
                     self.engine.module.save_parallel_state_dict(
                         state_dict=self.engine.module.state_dict(),
@@ -434,12 +445,11 @@ class Trainer(TrainerEventTrigger):
                     )
             elif isinstance(self.engine.module, PreTrainedModel):
                 if is_zero3_enabled(self.config):
-                    with deepspeed.zero.GatheredParameters(list(self.engine.module.parameters(recurse=True)), modifier_rank=0):
-                        if env.dp_rank == 0:
-                            self.engine.module.save_pretrained(
-                                save_directory=path,
-                                **kwargs
-                            )
+                    with deepspeed.zero.GatheredParameters(list(self.engine.module.parameters(recurse=True))):
+                        self.engine.module.save_pretrained(
+                            save_directory=path,
+                            **kwargs
+                        )
                 else:
                     self.engine.module.save_pretrained(
                         save_directory=path,
@@ -472,7 +482,8 @@ class Trainer(TrainerEventTrigger):
                         global_steps=engine.global_steps,
                         global_samples=engine.global_samples)
 
-            IODriver.save(state, os.path.join(path, self.checkpoint_file))
+            if env.rank == 0 or engine.zero_optimization_partition_weights():
+                IODriver.save(state, os.path.join(path, self.checkpoint_file))
 
             if engine.save_zero_checkpoint:
                 self._save_zero_checkpoint(path, IODriver)
@@ -537,7 +548,7 @@ class Trainer(TrainerEventTrigger):
                     else:
                         with deepspeed.zero.GatheredParameters(list(self.engine.module.parameters(recurse=True)), modifier_rank=0):
                             if env.dp_rank == 0:
-                                state_dict = reduce(lambda x, y: {**x, **y}, [IODriver.load(os.path.join(path, file), mode="rb") for file in glob.glob(os.path.join(path, "*.bin"))])
+                                state_dict = reduce(lambda x, y: {**x, **y}, [IODriver.load(file, mode="rb") for file in glob.glob(os.path.join(path, "*.bin"))])
                                 self.engine.module.load_state_dict(state_dict)
                 else:
                     index = None
@@ -555,7 +566,7 @@ class Trainer(TrainerEventTrigger):
                             for attr in value:
                                 self.engine.module.state_dict()[attr].copy_(state_dict[attr])
                     else:
-                        state_dict = reduce(lambda x, y: {**x, **y}, [IODriver.load(os.path.join(path, file)) for file in glob.glob(os.path.join(path, "*.bin"))])
+                        state_dict = reduce(lambda x, y: {**x, **y}, [IODriver.load(file, "b") for file in glob.glob(os.path.join(path, "*.bin"))])
                         self.engine.module.load_state_dict(state_dict)
         if mode == "trainer":
             # check
@@ -570,12 +581,11 @@ class Trainer(TrainerEventTrigger):
 
             # DeepSpeed.load_checkpoint
             if engine.zero_optimization_partition_weights():
-                # Prepare for checkpoint load by ensuring all parameters are partitioned
-                engine.optimizer.checkpoint_event_prologue()
+                ckpt_file = self.checkpoint_file
+            else:
+                ckpt_file = "collie_dp0_pp0_tp0.pt"
+            checkpoint = IODriver.load(os.path.join(path, ckpt_file), "b")
 
-            ## DeepSpeed._load_checkpoint
-            checkpoint = IODriver.load(os.path.join(path, self.checkpoint_file), "b")
-            
             module = checkpoint["module"]
             engine.module.load_state_dict(module)
 
