@@ -536,7 +536,7 @@ class Trainer(TrainerEventTrigger):
         assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
         IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
         IODriver.makedirs(path, exist_ok=True)
-        self.on_save_checkpoint()
+        callback_states = self.on_save_checkpoint()
         # save parallel_settings
         if env.dp_rank == 0:
             dist_config = {
@@ -562,7 +562,8 @@ class Trainer(TrainerEventTrigger):
                     sparse_tensor_module_names=engine.sparse_tensor_module_names,
                     skipped_steps=engine.skipped_steps,
                     global_steps=engine.global_steps,
-                    global_samples=engine.global_samples)
+                    global_samples=engine.global_samples,
+                    callback_states=callback_states)
 
         if env.rank == 0 or engine.zero_optimization_partition_weights():
             IODriver.save(state, os.path.join(path, self.checkpoint_file))
@@ -586,7 +587,6 @@ class Trainer(TrainerEventTrigger):
         assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
         IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
         assert IODriver.exists(path), f"`{path}` does not exist."
-        self.on_load_checkpoint()
         engine = self.engine
         # check
         loaded_args = json.loads(IODriver.load(os.path.join(path, "collie.json"), "r"))
@@ -644,6 +644,8 @@ class Trainer(TrainerEventTrigger):
 
         if engine.zero_optimization_partition_weights():
             engine.optimizer.checkpoint_event_epilogue()
+
+        self.on_load_checkpoint(checkpoint["callback_states"])
 
     def _save_zero_checkpoint(self, path, driver):
         """保存 `ZeRO` 的状态
