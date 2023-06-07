@@ -30,4 +30,5 @@ __all__ = [
     "LossMonitor",
     "EvalMonitor",
     "ColliePadder",
+    "apply_to_collection",
 ]
