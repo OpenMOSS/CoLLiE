@@ -122,11 +122,11 @@ class GPTLMLoss(torch.nn.Module):
     """
     最基本的 GPT 语言模型的损失函数。
 
-    :param ignore_index: 忽略的标签的 ``index``，默认为 **0**
+    :param ignore_index: 忽略的标签的 ``index``，默认为 **-100**
     """
-    def __init__(self, ignore_index=0):
+    def __init__(self, ignore_index=-100):
         super().__init__()
-        self.loss = torch.nn.CrossEntropyLoss(ignore_index=ignore_index)  # ignore <pad> when compute loss
+        self.loss = torch.nn.CrossEntropyLoss(ignore_index=ignore_index)
 
     def forward(self, logits: torch.Tensor, labels: Union[torch.Tensor, Tuple[torch.Tensor]], *args):
         """ 计算损失

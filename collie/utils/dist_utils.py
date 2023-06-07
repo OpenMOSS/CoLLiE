@@ -133,6 +133,7 @@ def setup_distribution(config) -> None:
         config.ds_config = load_config(config.ds_config)
     patch_deepspeed(config)
     patch_megatron()
+    patch_peft()
     if "WORLD_SIZE" in os.environ.keys():
         # launch from pytorch
         master_addr = os.environ.get("MASTER_ADDR", "localhost")

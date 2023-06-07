@@ -378,6 +378,12 @@ class Trainer(TrainerEventTrigger):
             loss = trainer.engine.train_batch(batch)
         else:
             input_ids, labels = batch
+            # concat prompt labels for p-tuning
+            if trainer.config.peft_config and trainer.config.peft_config.peft_type in ["PROMPT_TUNING", "P_TUNING"]:
+                batch_size = input_ids.shape[0]
+                prefix_labels = torch.full((batch_size, trainer.config.peft_config.num_virtual_tokens), -100).to(labels.device)
+                labels = torch.cat((prefix_labels, labels), dim=1)
+
             logits = trainer.engine(input_ids=input_ids.cuda()).logits
             loss = trainer.loss_fn(logits, labels)
             if not isinstance(trainer.optimizer, InplaceSGD):
