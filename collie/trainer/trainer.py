@@ -118,6 +118,7 @@ class Trainer(TrainerEventTrigger):
                  monitors: Sequence[BaseMonitor] = [],
                  metrics: Optional[Dict] = None,
                  evaluators: Optional[List] = None) -> None:
+        self.config = config
         if isinstance(optimizer, InplaceSGD):
             if config.pp_size > 1:
                 raise ValueError("InplaceSGD is incompatible with pipeline parallelism.")
@@ -141,8 +142,6 @@ class Trainer(TrainerEventTrigger):
         self.train_dataset_collate_fn = train_dataset_collate_fn
         self.eval_dataset_collate_fn = eval_dataset_collate_fn
         self.generation_config = generation_config
-
-        self.config = config
         self.communicate_buffer_shape = None
         self.setup_parallel_model()
         get_accelerator().empty_cache()
@@ -321,7 +320,6 @@ class Trainer(TrainerEventTrigger):
                         get_accelerator().empty_cache()
                         self.on_train_batch_begin(batch)
                         with self.monitor as item:
-                            print(batch)
                             loss = self.train_fn(self, batch, self.epoch_idx * self.steps_per_epoch + self.batch_idx)
                             item.update({"loss": loss,
                                          "batch": batch,
