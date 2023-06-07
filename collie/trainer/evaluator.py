@@ -78,7 +78,7 @@ class Evaluator:
 
     def init_engine(self):
         """
-        初始化engine。config 中 的 optimizer 手动删掉， 不然会自动调用
+        初始化 engine。config 中 的 optimizer 手动删掉， 不然会自动调用
         """
         if dist.get_world_size() != self.config.tp_size * self.config.dp_size * self.config.pp_size:
             logger.rank_zero_warning("The world size is not equal to the product of the parallel sizes set."
@@ -97,6 +97,11 @@ class Evaluator:
         )
     
     def eval(self, dataloader: Optional[Iterable] = None):
+        """
+        对数据集进行一次 eval 测试并返回 metric 的结果。需要注意的是如果 ``Evaluator`` 中的 engine 没有初始化，那么默认会自动初始化一个 engine。
+
+        :param dataloader: 用于 eval 的数据集，为 ``Iterable`` 对象 ，当为 ``None`` 时，使用默认的 ``dataset`` 生成的 ``eval_dataloader``
+        """
         if self.engine is None:
             self.init_engine()
         if self.data_provider is not None and dist.get_rank() == 0:
