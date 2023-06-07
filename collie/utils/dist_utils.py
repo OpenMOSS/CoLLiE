@@ -21,7 +21,7 @@ from typing import Union, Optional
 
 from collie.utils.utils import _split_batch
 from collie.config import load_config, CollieConfig
-from collie.log.logger import logger
+from .peft_utils import patch_peft
 
 __all__ = [
     "env", "setup_distribution", "set_seed", "setup_ds_engine",
