@@ -2,7 +2,7 @@ rich
 tqdm
 torch>=1.13.0
 einops
-deepspeed
+deepspeed>=0.9.3
 transformers
 sentencepiece
 protobuf==3.20.1
