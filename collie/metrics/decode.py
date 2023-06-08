@@ -48,7 +48,7 @@ class DecodeMetric(BaseMetric):
         sentences = []
         for ids in decode_list:
             sentences.append(self.tokenizer.decode(ids))
-        if env.dp_rank == 0 or self.gather_result:
+        if (env.dp_rank == 0 or self.gather_result) and env.pp_rank == 0 and env.tp_rank == 0:
             if self.verbose:
                 logger.info(sentences)
             if self.save_to_file:

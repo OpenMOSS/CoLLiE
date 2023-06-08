@@ -15,8 +15,7 @@ from collie.module import (ColumnParallelLinearWithoutBias,
                            RowParallelLinearWithoutBias,
                            VocabParallelEmbedding,
                            ColumnParallelLMHead)
-from collie.driver.io.file import FileIODriver
-from collie.driver.io.petrel import PetrelIODriver
+from collie.driver.io import IODriver
 from collie.models.base import CollieModelForCausalLM
 from collie.utils import env, progress
 from collie.config import CollieConfig
@@ -348,7 +347,7 @@ class MossForCausalLM(CollieModelForCausalLM):
         hidden_states = self.drop(inputs_embed)
 
         all_hidden_states = ()
-        for l in self.h:
+        for i, l in enumerate(self.h):
             all_hidden_states += (hidden_states,)
             hidden_states = l(hidden_states)
 
@@ -422,12 +421,11 @@ class MossForCausalLM(CollieModelForCausalLM):
         :return: 一个字典，每个字典都包含当前 rank 上模型需要的权重。
         """
         assert format in ["hf", "meta"], f"Only support hf and meta , not `{format}`."
-        assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
         # Actually Moss only supports `hf` format
         if isinstance(config, str):
             config = CollieConfig.from_pretrained(config)
-        IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
-        if not IODriver.exists(path) and protocol == "file":
+        io_driver = IODriver.from_protocol(protocol)
+        if not io_driver.exists(path) and protocol == "file":
             raise FileNotFoundError(f"folder {path} not found.")
 
         # 如果开启了进程互斥，那么每个进程都会显示进度条，否则只显示 RANK0 的
@@ -437,29 +435,29 @@ class MossForCausalLM(CollieModelForCausalLM):
                 dist.barrier()
             if cur_rank != env.rank:
                 continue
-            if IODriver.exists(os.path.join(path, "config.json")):
+            if io_driver.exists(os.path.join(path, "config.json")):
                 # update config from config.json
-                new_config = json.loads(IODriver.load(os.path.join(path, "config.json"), mode="r"))
+                new_config = json.loads(io_driver.load(os.path.join(path, "config.json"), mode="r"))
                 config.model_config.update(new_config)
             # 如果存在 pytorch_model.bin.index.json 文件的话，此时不同的 pp 进程可以按需加载自己需要的权重
             index_file = os.path.join(path, "pytorch_model.bin.index.json")
             # start load
             state_dict = OrderedDict()
-            if IODriver.exists(index_file) and env.is_pipeline:
+            if io_driver.exists(index_file) and env.is_pipeline:
                 # 有 index 且是流水线
-                weight_map = json.loads(IODriver.load(index_file, mode="r"))["weight_map"]
+                weight_map = json.loads(io_driver.load(index_file, mode="r"))["weight_map"]
                 # layers 表示当前 rank 自己需要的层
                 cur_names = _weight_name_in_current_rank(weight_map.keys())
                 weights = set(weight_map[name] for name in cur_names)
             else:
                 # 如果没有 pytorch_model.bin.index.json 文件的话，那么就加载所有的权重
-                weights = [weight for weight in IODriver.list(path) if weight.endswith(".bin")]
+                weights = [weight for weight in io_driver.list(path) if weight.endswith(".bin")]
 
             desc = "Loading state dict"
             if process_exclusion:
                 desc += f" on pp={env.pp_rank} tp={env.tp_rank} dp={env.dp_rank}"
             for weight in progress(weights, desc, disable=hide_progress):
-                part_state_dict = IODriver.load(os.path.join(path, weight), mode="rb")
+                part_state_dict = io_driver.load(os.path.join(path, weight), mode="rb")
                 state_dict.update(_state_dict_to_load(
                     part_state_dict, env.tp_rank, config.tp_size,
                     process_exclusion
@@ -489,8 +487,7 @@ class MossForCausalLM(CollieModelForCausalLM):
         :param process_exclusion: 是否每个 rank 各自独立、互斥地保存模型权重。在模
             型规模较大时，该参数可以帮助节省内存。
         """
-        assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
-        IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
+        io_driver = IODriver.from_protocol(protocol)
         if env.rank == 0:
             config.save_pretrained(path)
 
@@ -520,13 +517,13 @@ class MossForCausalLM(CollieModelForCausalLM):
                 ckpt_name = f"pytorch_model-{env.pp_rank+1:05d}-of-{config.pp_size:05d}.bin"
                 index_dict = set_index_dict(state_dict, ckpt_name)
                 tmp_index_file = os.path.join(path, "_tmp_index_{}.json")
-                IODriver.save(
+                io_driver.save(
                     json.dumps(index_dict), tmp_index_file.format(env.pp_rank)
                 )
             else:
                 ckpt_name = f"pytorch_model.bin"
             ckpt_path = os.path.join(path, ckpt_name)
-            IODriver.save(state_dict, ckpt_path)
+            io_driver.save(state_dict, ckpt_path)
         dist.barrier()
 
         # Only save and merge on rank0
@@ -536,7 +533,7 @@ class MossForCausalLM(CollieModelForCausalLM):
             total_size = 0
             weight_map = {}
             for _file in tmp_index_files:
-                _index_dict = json.loads(IODriver.load(_file, mode="r"))
+                _index_dict = json.loads(io_driver.load(_file, mode="r"))
                 total_size += _index_dict["total_size"]
                 weight_map.update(_index_dict["weight_map"])
                 os.remove(_file)
@@ -544,7 +541,7 @@ class MossForCausalLM(CollieModelForCausalLM):
                 "metadata": {"total_size": total_size},
                 "weight_map": weight_map
             }
-            IODriver.save(
+            io_driver.save(
                 json.dumps(merged_dict, indent=2, sort_keys=True) + "\n",
                 os.path.join(path, "pytorch_model.bin.index.json")
             )

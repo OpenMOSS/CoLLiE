@@ -8,6 +8,7 @@ from .monitor import BaseMonitor, StepTimeMonitor, _MultiMonitors, TGSMonitor, M
 from .padder import ColliePadder
 
 __all__ = [
+    # dist_utils
     "setup_distribution",
     "set_seed",
     "env",
@@ -15,13 +16,22 @@ __all__ = [
     "zero3_load_state_dict",
     "is_zero3_enabled",
     "broadcast_tensor",
+
+    # utils
     "find_tensors",
     "progress",
     "dictToObj",
+    "apply_to_collection",
+
+    # data_provider
     "BaseProvider",
     "GradioProvider",
     "_GenerationStreamer",
+
+    # metric_wrapper
     "_MetricsWrapper",
+
+    # monitor
     "BaseMonitor",
     "StepTimeMonitor",
     "_MultiMonitors",
@@ -29,5 +39,7 @@ __all__ = [
     "MemoryMonitor",
     "LossMonitor",
     "EvalMonitor",
+
+    # padder
     "ColliePadder",
 ]

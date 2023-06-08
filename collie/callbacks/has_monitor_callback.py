@@ -232,20 +232,14 @@ class HasMonitorCallback(ResultsMonitor, Callback):
         super().__init__(monitor, larger_better)
         self.must_have_monitor = must_have_monitor
 
-    def on_after_trainer_initialized(self, trainer, driver):
+    def on_after_trainer_initialized(self, trainer):
         r"""如果本身的 monitor 没有设置，则根据 Trainer 中的 monitor 设置
         monitor 。同时对于必须要有 monitor 设置的 callback ，该函数会进行检查。
 
         :param trainer:
-        :param driver:
         :return:
         """
         if self.must_have_monitor and self.monitor is None:
             raise RuntimeError(
                 f'No `monitor` is set for {self.log_name}. '
                 f'You can set it in the initialization or through Trainer.')
-
-    def on_sanity_check_end(self, trainer, sanity_check_res):
-        # 主要核对一下 monitor 是否存在。
-        if self.monitor is not None:
-            self.get_monitor_value(results=sanity_check_res)
