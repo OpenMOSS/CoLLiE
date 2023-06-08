@@ -11,3 +11,4 @@ fastapi
 megatron-core
 tensorboard
 google
+peft

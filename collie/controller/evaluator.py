@@ -6,12 +6,12 @@ from deepspeed.runtime.pipe.engine import PipelineEngine
 from deepspeed.accelerator import get_accelerator
 from transformers.generation.utils import GenerationConfig
 
-from collie.module import PipelineGenerationMixin
+from collie.module import PipelineGenerationMixin, GPTLMLoss
 from collie.data.dataloader import CollieDataLoader
 from collie.utils.rich_progress import f_rich_progress
 from collie.log import logger
 from collie.config import CollieConfig
-from collie.utils import progress, env, setup_ds_engine, BaseProvider, _GenerationStreamer, _MetricsWrapper, BaseMonitor, _MultiMonitors, broadcast_tensor
+from collie.utils import progress, env, setup_ds_engine, BaseProvider, _GenerationStreamer, _MetricsWrapper, BaseMonitor, _MultiMonitors, broadcast_tensor, ColliePadder
 
 class Evaluator:
     """
@@ -61,7 +61,7 @@ class Evaluator:
     """
 
     def __init__(self, model, dataset: torch.utils.data.Dataset, metrics: Optional[Dict] = None, eval_fn: Optional[Callable]=None,
-                 config: Optional[CollieConfig] = None, collate_fn: Optional[Callable] = None, data_provider: Optional[BaseProvider] = None,
+                 config: Optional[CollieConfig] = None, collate_fn: Optional[Callable] = ColliePadder(padding_left=True), data_provider: Optional[BaseProvider] = None,
                  generation_config: GenerationConfig = GenerationConfig(), monitors: Sequence[BaseMonitor] = []):
         self.engine = None
         self.model = model
@@ -121,20 +121,27 @@ class Evaluator:
                 tqbar_batch.set_description(f"Evaluating Batch: {batch_idx} / {self.eval_steps}")
                 self.data_provider_handler()
                 self.engine.eval()
-                result = self.eval_fn(self, batch)
+                with torch.no_grad():
+                    result = self.eval_fn(self, batch)
                 get_accelerator().empty_cache()
                 self.metric_wrapper.update(result)
         with self.monitor as item:
             metric_results = self.metric_wrapper.get_metric()
+            for key in list(metric_results.keys()):
+                if isinstance(metric_results[key], dict):
+                    for k in list(metric_results[key].keys()):
+                        metric_results[f"{key}#{k}"] = metric_results[key][k]
+                    del metric_results[key]
             item.update({"eval_result": metric_results, "mode": "eval"})
         self.metric_wrapper.reset()
 
-        if len(metric_results) > 0:  # 如果 metric 不为 None 需要 print 。
+        if len(metric_results) > 0 and env.rank == 0:  # 如果 metric 不为 None 需要 print 。
             f_rich_progress.print_json(metric_results)
             
         return metric_results
     
     @staticmethod
+    @torch.no_grad()
     def eval_fn(evaluator, batch: Tuple) -> Any:
         """一次验证的基本单元
 
@@ -158,7 +165,7 @@ class Evaluator:
                                               generation_config=evaluator.generation_config)
         return {
             "generated_ids": generated_ids,
-            "labels": labels,
+            # **labels
         }
 
     def data_provider_handler(self):
@@ -197,3 +204,84 @@ class Evaluator:
         if not use_stream:
             self.data_provider.put_feedback(generated_ids[0].cpu())
         get_accelerator().empty_cache()
+        
+class PerplexityEvaluator(Evaluator):
+    def __init__(self, 
+                 loss_fn: Callable = GPTLMLoss(),
+                 collate_fn: Optional[Callable] = ColliePadder(),
+                 *args,
+                 **kwargs):
+        self.loss_fn = loss_fn
+        super().__init__(collate_fn=collate_fn, *args, **kwargs)
+        
+    @staticmethod
+    @torch.no_grad()
+    def eval_fn(evaluator, batch: Tuple) -> Any:
+        """一次验证的基本单元
+
+        :param evaluator: 训练器
+        :param batch: 一个 batch 的数据，类型为长度为 2 的 ``Tuple``，其中第一个元素为 ``input_ids``，第二个元素为 ``labels``
+
+            .. note::
+
+                根据提供的 ``dataset`` 和 ``collate_fn`` 的不同，``labels`` 的类型也会有所不同。
+    
+        :return: 一次验证的结果，为 `Dict` 类型，该结果会被传入 `metric` 的 `update` 方法中
+        """
+        if evaluator.config.pp_size > 1:
+            logits = evaluator.engine.eval_batch(batch)
+        else:
+            input_ids, labels = batch
+            # concat prompt labels for p-tuning
+            if evaluator.config.peft_config and evaluator.config.peft_config.peft_type in ["PROMPT_TUNING", "P_TUNING"]:
+                batch_size = input_ids.shape[0]
+                if "labels" in labels.keys():
+                    prefix_labels = torch.full((batch_size, evaluator.config.peft_config.num_virtual_tokens), -100).to(labels["labels"].device)
+                    labels["labels"] = torch.cat((prefix_labels, labels["labels"]), dim=1)
+            logits = evaluator.engine(input_ids=input_ids.cuda()).logits
+        ppl = evaluator.loss_fn(logits, batch[1])
+        return {
+            "ppl": ppl.detach().clone().view(1,).cuda(),
+            # **{key: value.cuda() for key, value in batch[1].items() if isinstance(value, torch.Tensor)}
+        }
+        
+class ClassficationEvaluator(PerplexityEvaluator):
+    @staticmethod
+    @torch.no_grad()
+    def eval_fn(evaluator, batch: Tuple) -> Any:
+        """一次验证的基本单元
+
+        :param evaluator: 训练器
+        :param batch: 一个 batch 的数据，类型为长度为 2 的 ``Tuple``，其中第一个元素为 ``input_ids``，第二个元素为 ``labels``
+
+            .. note::
+
+                根据提供的 ``dataset`` 和 ``collate_fn`` 的不同，``labels`` 的类型也会有所不同。
+    
+        :return: 一次验证的结果，为 `Dict` 类型，该结果会被传入 `metric` 的 `update` 方法中
+        """
+        input_ids_group, labels_group = batch
+        assert isinstance(input_ids_group, tuple), "input_ids must be a list for classification task."
+        pred = torch.zeros((input_ids_group[0].shape[0], len(input_ids_group)))
+        for idx, input_ids in enumerate(input_ids_group):
+            assert isinstance(input_ids, torch.Tensor), "input_ids must be a list of torch.Tensor for classification task."
+            labels = {"labels": labels_group["labels"][idx], 
+                      **{key: value for key, value in labels_group.items() if key != "labels"}}
+            if evaluator.config.pp_size > 1:
+                logits = evaluator.engine.eval_batch((input_ids, labels))
+            else:
+                # concat prompt labels for p-tuning
+                if evaluator.config.peft_config and evaluator.config.peft_config.peft_type in ["PROMPT_TUNING", "P_TUNING"]:
+                    batch_size = input_ids.shape[0]
+                    if "labels" in labels.keys():
+                        prefix_labels = torch.full((batch_size, evaluator.config.peft_config.num_virtual_tokens), -100).to(labels["labels"].device)
+                        labels["labels"] = torch.cat((prefix_labels, labels["labels"]), dim=1)
+                logits = evaluator.engine(input_ids=input_ids.cuda()).logits
+            for sample_idx in range(input_ids.shape[0]):
+                pred[sample_idx, idx] = evaluator.loss_fn(logits[sample_idx: sample_idx + 1, :], labels["labels"][sample_idx: sample_idx + 1, :]).detach().cpu().item()
+        pred = pred.argmin(dim=1)
+        return {
+            "pred": pred.cuda(),
+            "target": labels_group["target"].squeeze(1).cuda(),
+            # **{key: value.cuda() for key, value in labels.items() if isinstance(value, torch.Tensor)}
+        }

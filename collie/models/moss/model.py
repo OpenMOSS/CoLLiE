@@ -234,7 +234,7 @@ class MossBlock(nn.Module):
         self.config = config
         self.idx = layer_idx
 
-        self.use_cache = True
+        self.use_cache = False
         self.past_key_values = None
         self.hidden_states = None
 
@@ -367,7 +367,7 @@ class MossForCausalLM(CollieModelForCausalLM):
                                       past_key_values: Optional[list] = None,
                                       attention_mask: Optional[torch.Tensor] = None,
                                       **kwargs):
-        self._set_use_cache(self.h, self.generation_config.use_cache)
+        self._set_use_cache(self.h, kwargs.get("use_cache", self.generation_config.use_cache))
         if past_key_values is None:
             self._clean_past_key_values(self.h)
         else:
@@ -378,6 +378,7 @@ class MossForCausalLM(CollieModelForCausalLM):
     def clean(self):
         self._clean_hidden_states([*self.h, self.lm_head])
         self._clean_past_key_values(self.h)
+        self._set_use_cache(self.h, False)
     
     @classmethod
     def pipeline_layers(cls, config):

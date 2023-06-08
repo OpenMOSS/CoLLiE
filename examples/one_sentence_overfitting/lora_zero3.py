@@ -10,7 +10,7 @@ from peft import get_peft_model, LoraConfig, TaskType
 
 from collie.utils import setup_distribution
 from collie.config import CollieConfig
-from collie.trainer.trainer import Trainer
+from collie.controller.trainer import Trainer
 from collie.metrics.decode import DecodeMetric
 from collie.models.llama.model import LlamaForCausalLM
 

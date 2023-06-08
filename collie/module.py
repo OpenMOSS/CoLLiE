@@ -11,7 +11,7 @@ __all__ = [
 import os
 import json
 import torch
-from typing import Optional, List, Sequence, Union, Tuple
+from typing import Optional, List, Sequence, Dict
 
 from torch import nn
 from torch import distributed as dist
@@ -129,19 +129,18 @@ class GPTLMLoss(torch.nn.Module):
         self.ignore_index = ignore_index
         self.loss = torch.nn.CrossEntropyLoss(ignore_index=ignore_index)  # ignore <pad> when compute loss
 
-    def forward(self, logits: torch.Tensor, labels: Union[torch.Tensor, Tuple[torch.Tensor]], *args):
+    def forward(self, logits: torch.Tensor, labels: Dict[str, torch.Tensor], *args):
         """ 计算损失
         :param logits: 模型的输出
         :param labels: 真实标签
         """
-        if isinstance(labels, Sequence):
-            if len(labels) == 1:
-                labels = labels[0]
-                label_mask = None
-            elif len(labels) == 2:
-                label_mask = labels[1]
-                labels = labels[0].masked_fill(label_mask, value=self.ignore_index)
-            
+        labels_mask = None
+        if isinstance(labels, dict):
+            if "labels_mask" in labels.keys():
+                labels_mask = labels["labels_mask"]
+            labels = labels["labels"]
+        if labels_mask is not None:
+            labels = labels.masked_fill(labels_mask==1, value=self.ignore_index)
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous().to(logits.device)
         # Flatten the tokens

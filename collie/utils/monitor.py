@@ -18,6 +18,7 @@ from collie.utils import dictToObj
 from collie.utils.dist_utils import env
 
 import time
+import datetime
 from typing import Sequence
 from functools import reduce
 
@@ -37,12 +38,22 @@ def get_monitor(config: CollieConfig):
     """
     if "monitor_config" in config.ds_config.keys():
         config.ds_config["monitor_config"]["enabled"] = True
+        if "tag" in config.ds_config["monitor_config"].keys():
+            tag = config.ds_config["monitor_config"]["tag"]
+        else:
+            tag = ""
         if "tensorboard" not in config.ds_config["monitor_config"].keys():
             config.ds_config["monitor_config"]["tensorboard"] = {"enabled": False}
+        else:
+            config.ds_config["monitor_config"]["tensorboard"]["job_name"] = tag + datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
         if "wandb" not in config.ds_config["monitor_config"].keys():
             config.ds_config["monitor_config"]["wandb"] = {"enabled": False}
+        else:
+            config.ds_config["monitor_config"]["wandb"]["group"] = tag + datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
         if "csv_monitor" not in config.ds_config["monitor_config"].keys():
             config.ds_config["monitor_config"]["csv_monitor"] = {"enabled": False}
+        else:
+            config.ds_config["monitor_config"]["csv_monitor"]["job_name"] = tag + datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
         return MonitorMaster(dictToObj(config.ds_config["monitor_config"]))
     else:
         return DummyDeepSpeedMonitor(config.ds_config)
@@ -120,11 +131,17 @@ class LossMonitor(BaseMonitor):
 class EvalMonitor(BaseMonitor):
     """ 用来记录每个step的eval结果，仅支持 **int** 和 **float** 类型的结果
     """
+    def __enter__(self):
+        self.step = 0
+        return super().__enter__()
+    
     def __exit__(self, exc_type, exc_val, exc_tb):
         if 'eval_result' in self.item.keys() and self.item["mode"] == "eval":
             for key, value in self.item['eval_result'].items():
                 if isinstance(value, float) or isinstance(value, int):
-                    self.monitor.write_events([(f"Metric {key}", value, self.item['epoch_idx'])])
+                    print(value)
+                    self.monitor.write_events([(f"Metric {key}", value, self.step)])
+            self.step += 1
         
 class _MultiMonitors:
     def __init__(self, monitors: Sequence[BaseMonitor]) -> None:

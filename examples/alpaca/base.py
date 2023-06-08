@@ -13,7 +13,7 @@ from transformers.generation.utils import GenerationConfig
 from collie.models.llama.model import LlamaForCausalLM
 from collie.metrics.decode import DecodeMetric
 from collie.module import GPTLMLoss, PipelineGenerationMixin
-from collie.trainer.trainer import Trainer
+from collie.controller.trainer import Trainer
 from collie.log import logger
 from collie.utils import env, setup_distribution
 from collie.utils.monitor import StepTimeMonitor, TGSMonitor, MemoryMonitor, LossMonitor, EvalMonitor

@@ -10,13 +10,13 @@ from transformers.generation.utils import GenerationConfig
 sys.path.append("../../")
 
 from collie.config import CollieConfig
-from collie.trainer.trainer import Trainer
+from collie.controller.trainer import Trainer
 from collie.metrics import BaseMetric
 from collie.models.llama.model import LlamaForCausalLM
-from collie.trainer.trainer import Trainer
+from collie.controller.trainer import Trainer
 from collie.metrics.decode import DecodeMetric
 from collie.config import CollieConfig
-from collie.trainer.evaluator import Evaluator
+from collie.controller.evaluator import Evaluator
 from collie.utils import zero3_load_state_dict, setup_distribution, GradioProvider
 from collie.utils.monitor import StepTimeMonitor, TGSMonitor, MemoryMonitor, LossMonitor, EvalMonitor
 

@@ -158,19 +158,17 @@ class Trainer(TrainerEventTrigger):
             )
 
         if evaluators is None or (hasattr(evaluators, "__len__") and len(evaluators) == 0):
-            if eval_dataset is not None:
-                evaluators = Evaluator(model=model, dataset=eval_dataset, metrics=metrics, eval_fn=eval_fn,
-                    config=config, collate_fn=eval_dataset_collate_fn, data_provider=None,
-                    generation_config=generation_config)
-                evaluators.engine = self.engine
-                evaluators.monitor = self.monitor
-                evaluators.data_provider = self.data_provider
-            else:
-                evaluators = []
+            evaluators = []
+            evaluator = Evaluator(model=model, dataset=eval_dataset, metrics=metrics, eval_fn=eval_fn,
+                config=config, collate_fn=eval_dataset_collate_fn, data_provider=None,
+                generation_config=generation_config)
+            evaluator.monitor = self.monitor
+            evaluators.append(evaluator)
         if not isinstance(evaluators, Sequence):
             evaluators = [evaluators]
         for evaluator in evaluators:
             evaluator.engine = self.engine
+            evaluator.data_provider = self.data_provider
 
         self.evaluators = evaluators
 
@@ -322,7 +320,7 @@ class Trainer(TrainerEventTrigger):
                         self.on_train_batch_begin(batch)
                         with self.monitor as item:
                             loss = self.train_fn(self, batch, self.epoch_idx * self.steps_per_epoch + self.batch_idx)
-                            item.update({"loss": loss,
+                            item.update({"loss": round(loss, 4),
                                          "batch": batch,
                                          "batch_idx": self.batch_idx,
                                          "epoch_idx": self.epoch_idx,
@@ -334,7 +332,7 @@ class Trainer(TrainerEventTrigger):
                         if self.config.eval_per_n_steps > 0 and (self.batch_idx + 1) % self.config.eval_per_n_steps == 0:
                             self.eval()
                 if self.config.eval_per_n_epochs > 0 and (self.epoch_idx + 1) % self.config.eval_per_n_epochs == 0:
-                        self.eval()
+                    self.eval()
                 self.on_train_epoch_end()
                 self.batch_idx = 0
                 if self.config.eval_per_n_epochs > 0 and (self.epoch_idx + 1) % self.config.eval_per_n_epochs == 0:
@@ -350,10 +348,10 @@ class Trainer(TrainerEventTrigger):
         if len(self.evaluators) == 0:
             return
         self.on_evaluate_begin()
-        eval_results = []
+        eval_results = {}
         for evaluator in self.evaluators:
             results = evaluator.eval(dataloader)
-            eval_results.append(results)
+            eval_results.update(results)
         # TODO deal with results
         self.on_evaluate_end(results)
 
@@ -511,14 +509,11 @@ class Trainer(TrainerEventTrigger):
         if mode == "model":
             if isinstance(self.engine.module, CollieModelForCausalLM) or isinstance(self.engine.module, PipelineModel):
                 if is_zero3_enabled(self.config):
-                    if env.dp_rank == 0:
-                        state_dict = self.engine.module.load_parallel_state_dict(
-                            path=path, config=self.config, process_exclusion=process_exclusion, protocol=protocol
-                            )
-                    for attr in state_dict.keys():
-                        with deepspeed.zero.GatheredParameters(self.engine.module.state_dict()[attr], modifier_rank=0):
-                            if env.dp_rank == 0:
-                                self.engine.module.state_dict()[attr].copy_(state_dict[attr])
+                    with deepspeed.zero.GatheredParameters(list(self.engine.module.parameters(recurse=True)), modifier_rank=0):
+                        if env.rank == 0:
+                            self.engine.module.load_state_dict(self.engine.module.load_parallel_state_dict(
+                                path=path, config=self.config, process_exclusion=process_exclusion, protocol=protocol
+                            ))
                 else:
                     self.engine.module.load_state_dict(
                         self.engine.module.load_parallel_state_dict(
@@ -539,13 +534,13 @@ class Trainer(TrainerEventTrigger):
                     if index is not None:
                         for key, value in index.items():
                             with deepspeed.zero.GatheredParameters([self.engine.module.state_dict()[attr] for attr in value], modifier_rank=0):
-                                if env.dp_rank == 0:
+                                if env.rank == 0:
                                     state_dict = IODriver.load(os.path.join(path, key), mode="br")
                                     for attr in value:
                                         self.engine.module.state_dict()[attr].copy_(state_dict[attr])
                     else:
                         with deepspeed.zero.GatheredParameters(list(self.engine.module.parameters(recurse=True)), modifier_rank=0):
-                            if env.dp_rank == 0:
+                            if env.rank == 0:
                                 state_dict = reduce(lambda x, y: {**x, **y}, [IODriver.load(file, mode="rb") for file in glob.glob(os.path.join(path, "*.bin"))])
                                 self.engine.module.load_state_dict(state_dict)
                 else:

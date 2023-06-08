@@ -7,7 +7,10 @@ from .utils import progress, setup_distribution, set_seed, env, \
             _GenerationStreamer, BaseMonitor, StepTimeMonitor, _MultiMonitors, \
                 TGSMonitor, MemoryMonitor, LossMonitor, EvalMonitor
 from .module import PipelineGenerationMixin, ColumnParallelLinear, RowParallelLinearWithoutBias, LinearWithHiddenStates, ColumnParallelLMHead, GPTLMLoss, PipelineModel, MultiParallelGrid
-from .trainer import Trainer
+from .controller import Trainer, Evaluator, PerplexityEvaluator, ClassficationEvaluator
+from .config import CollieConfig
+from .metrics import BaseMetric, DecodeMetric, AccuracyMetric, PplMetric
+from .data import CollieDatasetForClassification, CollieBatchSampler, CollieDataLoader, CollieDatasetForTraining
 
 __all__ = [
     'LlamaForCausalLM',
@@ -39,5 +42,15 @@ __all__ = [
     "TGSMonitor",
     "MemoryMonitor",
     "LossMonitor",
-    "EvalMonitor"
+    "EvalMonitor",
+    'Evaluator',
+    'PerplexityEvaluator',
+    'PipelineModel',
+    'MultiParallelGrid',
+    'CollieConfig',
+    'BaseMetric',
+    'DecodeMetric',
+    'AccuracyMetric',
+    'PplMetric',
+    'ClassficationEvaluator'
 ]

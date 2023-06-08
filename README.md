@@ -45,7 +45,6 @@ CoLLiE已使用 *Megatron-LM* 和 *Flash Attention* 重写模型，只需修改 
 ## 使用
 
 ### 示例
-More examples are available at .
 更多示例可在 [示例](examples) 中查看。
 
 ### 启动脚本
