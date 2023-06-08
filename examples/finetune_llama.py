@@ -7,7 +7,7 @@ from datasets import load_dataset
 import torch
 
 config = CollieConfig.from_pretrained("decapoda-research/llama-7b-hf")
-config.tp_size = 8
+config.pp_size = 8
 config.train_micro_batch_size = 2
 config.eval_batch_size = 2
 config.gradient_accumulation_steps = 32
@@ -34,17 +34,17 @@ config.seed = 1024
 model = LlamaForCausalLM.from_pretrained("/mnt/petrelfs/zhangshuo/model/llama-7b-hf", config=config)
 optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5)
 ### Prepare training dataset
-# train_dataset = [
-#     {
-#         "input": f"Comment: {sample['text']}. The sentiment of this comment is: ",
-#         "output": "positive." if sample["label"] else "negative."
-#     } for sample in load_dataset("imdb", split="train")
-# ]
 train_dataset = [
     {
-        "text": f"Comment: {sample['text']}. The sentiment of this comment is: {'positive.' if sample['label'] else 'negative.'}",
+        "input": f"Comment: {sample['text']}. The sentiment of this comment is: ",
+        "output": "positive." if sample["label"] else "negative."
     } for sample in load_dataset("imdb", split="train")
 ]
+# train_dataset = [
+#     {
+#         "text": f"Comment: {sample['text']}. The sentiment of this comment is: {'positive.' if sample['label'] else 'negative.'}",
+#     } for sample in load_dataset("imdb", split="train")
+# ]
 ### Prepare perplexity evaluation dataset
 radio = 0.1
 eval_dataset_ppl, train_dataset = train_dataset[:int(len(train_dataset) * radio)], train_dataset[int(len(train_dataset) * radio):]
@@ -52,7 +52,7 @@ eval_dataset_ppl, train_dataset = train_dataset[:int(len(train_dataset) * radio)
 eval_dataset_cls = [
     {
         "input": f"Comment: {sample['text']}. The sentiment of this comment is: ",
-        "output": ["positive.", "negative."],
+        "output": ["negative.", "positive."],
         "target": sample["label"] 
     } for sample in load_dataset("imdb", split="test")
 ][:1000]
