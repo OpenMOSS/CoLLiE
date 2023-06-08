@@ -494,7 +494,7 @@ class MossForCausalLM(CollieModelForCausalLM):
         # gather to tp rank 0
         desc = "Saving state dict"
         # 没有 process_exclusion 的时候就不显示了
-        hide_progress = process_exclusion and env.rank != 0
+        hide_progress = not process_exclusion or env.rank != 0
         for cur_pp_rank in progress(range(env.pp_size), desc, disable=hide_progress):
             if process_exclusion:
                 dist.barrier()
