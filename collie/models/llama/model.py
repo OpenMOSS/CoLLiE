@@ -26,8 +26,7 @@ from collie.log.logger import logger
 from collie.config import load_config
 from collie.config import CollieConfig
 from collie.utils import progress, env
-from collie.driver.io.file import FileIODriver
-from collie.driver.io.petrel import PetrelIODriver
+from collie.driver.io import IODriver
 from collie.models.base import CollieModelForCausalLM
 from collie.module import ColumnParallelLinearWithoutBias, RowParallelLinearWithoutBias, ColumnParallelLMHead
 
@@ -340,11 +339,10 @@ class LlamaForCausalLM(CollieModelForCausalLM):
             properly to match the current rank.
         """
         assert format in ["hf", "meta"], "Only support hf and meta format"
-        assert protocol in ["file", "petrel"], "Only support file and petrel protocol"
         if isinstance(config, str):
             config = CollieConfig.from_pretrained(config)
-        IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
-        if not IODriver.exists(path):
+        io_driver = IODriver.from_protocol(protocol)
+        if not io_driver.exists(path):
             raise FileNotFoundError(f"folder {path} not found.")
         state_dict = OrderedDict()
         weights = []
@@ -366,8 +364,8 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                     parts = env.pipeline_parts
                 if format == "hf":
                     # 如果存在 pytorch_model.bin.index.json 文件的话，此时不同的 pp 进程可以按需加载自己需要的权重
-                    if IODriver.exists(os.path.join(path, "pytorch_model.bin.index.json")) and "COLLIE_PP_PARTS" in os.environ.keys():
-                        weight_map = json.loads(IODriver.load(os.path.join(path, "pytorch_model.bin.index.json"), mode="r"))["weight_map"]
+                    if io_driver.exists(os.path.join(path, "pytorch_model.bin.index.json")) and "COLLIE_PP_PARTS" in os.environ.keys():
+                        weight_map = json.loads(io_driver.load(os.path.join(path, "pytorch_model.bin.index.json"), mode="r"))["weight_map"]
                         # layers 表示自己需要的层
                         layers = list(range(parts[int(os.environ["COLLIE_PP_RANK"])], parts[int(os.environ["COLLIE_PP_RANK"]) + 1]))
                         # 筛选出形似 model.layers.0 这样的层。包含两个条件：1. 有数字的层；2. 数字加一要在 layers 里面（因为最开始还有个 embedding 占一层）
@@ -386,10 +384,10 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                             weights.append(weight_map["model.norm.weight"])
                     else:
                         # 如果没有 pytorch_model.bin.index.json 文件的话，那么就加载所有的权重
-                        weights = [weight for weight in IODriver.list(path) if weight.endswith(".bin")]
+                        weights = [weight for weight in io_driver.list(path) if weight.endswith(".bin")]
                     with progress(weights, desc="Loading state dict", total=len(weights), disable=hide_progress) as pbar:
                         for weight in pbar:
-                            part_state_dict = IODriver.load(os.path.join(path, weight), mode="rb")
+                            part_state_dict = io_driver.load(os.path.join(path, weight), mode="rb")
                             for key in list(part_state_dict.keys()):
                                 # 对 q_proj.weight 和 k_proj.weight 进行 reshape
                                 if key.endswith("q_proj.weight") or key.endswith("k_proj.weight"):
@@ -408,8 +406,8 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                     inv_freq = 1.0 / (10000.0 ** (torch.arange(0, (config.hidden_size // config.num_attention_heads),
                                 2).float() / (config.hidden_size // config.num_attention_heads)))
                     # 根据 meta 中的 params.json 更新一下用户配置
-                    if IODriver.exists(os.path.join(path, "params.json")):
-                        params = json.loads(IODriver.load(os.path.join(path, "params.json"), mode="r"))
+                    if io_driver.exists(os.path.join(path, "params.json")):
+                        params = json.loads(io_driver.load(os.path.join(path, "params.json"), mode="r"))
                         for key, value in {
                             "hidden_size": params["dim"],
                             "intermediate_size": params["multiple_of"] * ((int(2 * 4 * config.hidden_size / 3) + params["multiple_of"] - 1) // params["multiple_of"]),
@@ -419,12 +417,12 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                         }.items():
                             setattr(config, key, value)
                     # 权重全部加载
-                    weights = [weight for weight in IODriver.list(path) if (weight.endswith(".pt") or weight.endswith(".pth"))]
+                    weights = [weight for weight in io_driver.list(path) if (weight.endswith(".pt") or weight.endswith(".pth"))]
                     # 因为 meta 的权重默认 按照张量并行分割，cat 的时候存在顺序问题，所以先排序一下
                     weights = sorted(weights, key=lambda x: int(x.split(".")[1]))
                     with progress(weights, desc="Loading state dict", total=len(weights), disable=hide_progress) as pbar:
                         for weight in pbar:
-                            part_state_dict = IODriver.load(os.path.join(path, weight), mode="rb")
+                            part_state_dict = io_driver.load(os.path.join(path, weight), mode="rb")
                             for key in list(part_state_dict.keys()):
                                 # if key.startswith("layers"):
                                 #     layer = int(key.split(".")[1])
@@ -534,8 +532,7 @@ class LlamaForCausalLM(CollieModelForCausalLM):
         The format of saved state dict should be the same as that of
         `huggingface`.
         """
-        assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
-        IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
+        io_driver = IODriver.from_protocol(protocol)
         def reshape_wq_wk(w: torch.Tensor):
             return w.view(config.num_attention_heads,
                           config.hidden_size // config.num_attention_heads // 2,
@@ -610,13 +607,13 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                                 total_size += weight_size
                             index_dict = dict(total_size=total_size, weight_map=weight_map)
                             tmp_index_file = os.path.join(path, "_tmp_index_{}.json")
-                            IODriver.save(
+                            io_driver.save(
                                 json.dumps(index_dict), tmp_index_file.format(env.pp_rank)
                             )
                         else:
                             ckpt_name = f"pytorch_model.bin"
                         ckpt_path = os.path.join(path, ckpt_name)
-                        IODriver.save(state_dict, ckpt_path)
+                        io_driver.save(state_dict, ckpt_path)
                 if dist.is_initialized() and process_exclusion:
                     dist.barrier()
         dist.barrier()
@@ -628,7 +625,7 @@ class LlamaForCausalLM(CollieModelForCausalLM):
             total_size = 0
             weight_map = {}
             for _file in tmp_index_files:
-                _index_dict = json.loads(IODriver.load(_file, mode="r"))
+                _index_dict = json.loads(io_driver.load(_file, mode="r"))
                 total_size += _index_dict["total_size"]
                 weight_map.update(_index_dict["weight_map"])
                 os.remove(_file)
@@ -636,7 +633,7 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                 "metadata": {"total_size": total_size},
                 "weight_map": weight_map
             }
-            IODriver.save(
+            io_driver.save(
                 json.dumps(merged_dict, indent=2, sort_keys=True) + "\n",
                 os.path.join(path, "pytorch_model.bin.index.json")
             )
