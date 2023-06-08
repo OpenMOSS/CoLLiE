@@ -335,9 +335,6 @@ class Trainer(TrainerEventTrigger):
                         self.eval()
                 self.on_train_epoch_end()
                 self.batch_idx = 0
-                if self.config.eval_per_n_epochs > 0 and (self.epoch_idx + 1) % self.config.eval_per_n_epochs == 0:
-                    self.eval()
-                self.on_train_epoch_end()
         self.on_train_end()
         self.epoch_idx = 0
                 
