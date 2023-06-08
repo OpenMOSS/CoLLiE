@@ -49,8 +49,7 @@ def get_monitor(config: CollieConfig):
         if "wandb" not in config.ds_config["monitor_config"].keys():
             config.ds_config["monitor_config"]["wandb"] = {"enabled": False}
         else:
-            import wandb
-            wandb.run.name = tag + datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+            config.ds_config["monitor_config"]["wandb"]["job_name"] = tag + datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
         if "csv_monitor" not in config.ds_config["monitor_config"].keys():
             config.ds_config["monitor_config"]["csv_monitor"] = {"enabled": False}
         else:
