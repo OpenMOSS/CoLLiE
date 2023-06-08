@@ -5,9 +5,6 @@ from collie.log import logger
 from .callback import Callback
 
 def prepare_callback(callbacks):
-    """
-    遍历 callbacks，并且加入 :class:`.ProgressCallback`。
-    """
     _callbacks = []
     if callbacks is not None:
         if isinstance(callbacks, Callback):
