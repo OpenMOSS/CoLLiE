@@ -3,7 +3,6 @@ from copy import deepcopy
 from typing import Callable, Dict, Optional, Tuple, Union
 
 from collie.log.logger import logger
-from collie.driver.io import FileIODriver, PetrelIODriver
 from .has_monitor_callback import ResultsMonitor
 
 __all__ = ['TopkSaver']
@@ -26,8 +25,8 @@ class Saver:
         :meth:`.Trainer.load_checkpoint` 加载重新进行训练。该保存路径还可以通过
         :meth:`.CollieForCausalLM.from_pretrained` 函数或者 :meth:`.Trainer.\
         load_model` 加载到模型中；同时也可以直接加载到对应的 huggingface 模型中。
-    :param kwargs: 传给 :meth:`.Trainer.load_checkpoint` 或者 :meth:`.Trainer.\
-        load_model` 的额外参数。
+    :param kwargs: 传给 :meth:`.Trainer.save_checkpoint` 或者 :meth:`.Trainer.\
+        save_model` 的额外参数。
     """
 
     def __init__(self, folder: Optional[str] = None, model_only: bool = True,
@@ -170,8 +169,8 @@ class TopkSaver(ResultsMonitor, Saver):
         :meth:`.Trainer.load_checkpoint` 加载重新进行训练。该保存路径还可以通过
         :meth:`.CollieForCausalLM.from_pretrained` 函数或者 :meth:`.Trainer.\
         load_model` 加载到模型中；同时也可以直接加载到对应的 huggingface 模型中。
-    :param kwargs: 传给 :meth:`.Trainer.load_checkpoint` 或者 :meth:`.Trainer.\
-        load_model` 的额外参数。
+    :param kwargs: 传给 :meth:`.Trainer.save_checkpoint` 或者 :meth:`.Trainer.\
+        save_model` 的额外参数。
     """
 
     def __init__(self,

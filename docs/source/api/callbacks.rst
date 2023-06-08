@@ -22,3 +22,4 @@ Callbacks
    Callback
    HasMonitorCallback
    CheckpointCallback
+   LoadBestCallback

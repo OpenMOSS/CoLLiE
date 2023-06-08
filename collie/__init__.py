@@ -3,7 +3,8 @@
 from .trainer import Trainer
 from .config import CollieConfig
 from .models import LlamaForCausalLM, MossForCausalLM, CollieModelForCausalLM, ChatGLMForCausalLM
-from .callbacks import Callback, HasMonitorCallback, CheckpointCallback
+from .callbacks import Callback, HasMonitorCallback, CheckpointCallback, \
+    LoadBestModelCallback
 from .module import PipelineGenerationMixin, ColumnParallelLinear, \
     RowParallelLinear, VocabParallelEmbedding, RowParallelLinearWithoutBias, \
     LinearWithHiddenStates, ColumnParallelLMHead, GPTLMLoss
@@ -41,6 +42,7 @@ __all__ = [
     'Callback',
     'CheckpointCallback',
     'HasMonitorCallback',
+    'LoadBestModelCallback',
 
     # utils
     'progress',

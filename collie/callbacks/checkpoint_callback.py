@@ -47,8 +47,8 @@ class CheckpointCallback(Callback):
     :param topk: 保存 monitor 结果中的 ``topk`` 个。
     :param last: 如果为 ``True``，将在每次 epoch 运行结束都保存一次，会覆盖之前的
         保存。如果为 ``False`` 则不会保存 ``last`` 文件。
-    :param kwargs: 传给 :meth:`.Trainer.load_checkpoint` 或者 :meth:`.Trainer.\
-        load_model` 的额外参数。
+    :param kwargs: 传给 :meth:`.Trainer.save_checkpoint` 或者 :meth:`.Trainer.\
+        save_model` 的额外参数。
     """
 
     def __init__(
