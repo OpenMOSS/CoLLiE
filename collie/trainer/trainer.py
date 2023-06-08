@@ -322,7 +322,7 @@ class Trainer(TrainerEventTrigger):
                         get_accelerator().empty_cache()
                         self.on_train_batch_begin(batch)
                         with self.monitor as item:
-                            print(batch)
+                            # print(batch)
                             loss = self.train_fn(self, batch, self.epoch_idx * self.steps_per_epoch + self.batch_idx)
                             item.update({"loss": loss,
                                          "batch": batch,

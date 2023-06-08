@@ -135,7 +135,8 @@ class Evaluator:
         self.metric_wrapper.reset()
 
         if len(metric_results) > 0:  # 如果 metric 不为 None 需要 print 。
-            f_rich_progress.print_json(metric_results)
+            if dist.get_rank() == 0:
+                f_rich_progress.print_json(metric_results)
             
         return metric_results
     
