@@ -58,7 +58,7 @@ class Saver:
         :param folder_name: 保存的 folder 名称，将被创建。
         :return: 实际发生保存的 folder 绝对路径。如果为 None 则没有创建。
         """
-        folder = os.paht.join(self.save_folder, folder_name)
+        folder = os.path.join(self.save_folder, folder_name)
         save_fn = getattr(trainer, self.save_fn_name)
         save_fn(folder, self.process_exclusion, **self.kwargs)
 

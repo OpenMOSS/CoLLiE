@@ -106,17 +106,17 @@ class CheckpointCallback(Callback):
         self.topk_saver.save_topk(trainer, results)
 
     def on_train_epoch_end(self, trainer):
-        if trainer.epoch_idx % self.every_n_epochs == 0:
-            folder_name = f'epoch_{trainer.cur_epoch_idx}'
+        if (trainer.epoch_idx + 1) % self.every_n_epochs == 0:
+            folder_name = f'epoch_{trainer.epoch_idx + 1}'
             self.topk_saver.save(trainer, folder_name=folder_name)
         if self.last:
             folder_name = f'last'
             self.topk_saver.save(trainer, folder_name=folder_name)
 
-    def on_train_batch_end(self, trainer):
-        if trainer.batch_idx % self.every_n_batches == 0:
-            folder_name = f'epoch_{trainer.cur_epoch_idx}' \
-                          f'-batch_{trainer.batch_idx}'
+    def on_train_batch_end(self, trainer, loss):
+        if (trainer.batch_idx + 1) % self.every_n_batches == 0:
+            folder_name = f'epoch_{trainer.epoch_idx}' \
+                          f'-batch_{trainer.batch_idx + 1}'
             self.topk_saver.save(trainer, folder_name=folder_name)
 
     def on_save_checkpoint(self, trainer) -> Dict:
