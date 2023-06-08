@@ -87,8 +87,8 @@ def test_checkpoint_callback(pretrained_model, model_only, folder,
     finally:
         if os.path.exists(folder):
             logger.info(f"folders in checkpoint {folder}/:\n{os.listdir(folder)}")
-        if env.rank == 0:
-            shutil.rmtree(folder)
+            if env.rank == 0:
+                shutil.rmtree(folder)
 
 
 if __name__ == "__main__":
