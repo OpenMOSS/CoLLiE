@@ -116,8 +116,6 @@ class Evaluator:
 
         with progress(eval_dataloader, desc="Evaluating Batch: ", disable=env.rank != 0, total=self.eval_steps) as tqbar_batch:
             for batch_idx, batch in enumerate(tqbar_batch):
-                if batch_idx >= self.eval_steps:
-                    break
                 tqbar_batch.set_description(f"Evaluating Batch: {batch_idx} / {self.eval_steps}")
                 self.data_provider_handler()
                 self.engine.eval()
