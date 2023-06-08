@@ -90,12 +90,13 @@ class Callback:
         """
         pass
 
-    def on_load_checkpoint(self, trainer):
+    def on_load_checkpoint(self, trainer, states):
         r"""
         当 Trainer 要恢复 checkpoint 的时候触发（即调用 :meth:`Trainer.load_checkpoint() <collie.trainer.Trainer.load_checkpoint>`
         函数时）。
 
         :param trainer: :class:`.Trainer` 实例；
+        :param states: callback 状态。
         """
         pass
 

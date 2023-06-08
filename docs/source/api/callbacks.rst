@@ -21,3 +21,4 @@ Callbacks
 
    Callback
    HasMonitorCallback
+   CheckpointCallback
