@@ -142,6 +142,7 @@ class Trainer(TrainerEventTrigger):
         self.train_dataset_collate_fn = train_dataset_collate_fn
         self.eval_dataset_collate_fn = eval_dataset_collate_fn
         self.generation_config = generation_config
+        
         self.communicate_buffer_shape = None
         self.setup_parallel_model()
         get_accelerator().empty_cache()
@@ -278,7 +279,6 @@ class Trainer(TrainerEventTrigger):
             )
         self.config.train_micro_batch_size = self.engine.train_micro_batch_size_per_gpu()
         self.config.gradient_accumulation_steps = self.engine.gradient_accumulation_steps()
-
         # train_dataloader
         if self.train_dataset is None:
             self.train_dataloader = None
