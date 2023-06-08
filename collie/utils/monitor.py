@@ -49,7 +49,8 @@ def get_monitor(config: CollieConfig):
         if "wandb" not in config.ds_config["monitor_config"].keys():
             config.ds_config["monitor_config"]["wandb"] = {"enabled": False}
         else:
-            config.ds_config["monitor_config"]["wandb"]["group"] = tag + datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+            import wandb
+            wandb.run.name = tag + datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
         if "csv_monitor" not in config.ds_config["monitor_config"].keys():
             config.ds_config["monitor_config"]["csv_monitor"] = {"enabled": False}
         else:
@@ -138,8 +139,6 @@ class EvalMonitor(BaseMonitor):
     def __exit__(self, exc_type, exc_val, exc_tb):
         if 'eval_result' in self.item.keys() and self.item["mode"] == "eval":
             for key, value in self.item['eval_result'].items():
-                if isinstance(value, float) or isinstance(value, int):
-                    print(value)
                     self.monitor.write_events([(f"Metric {key}", value, self.step)])
             self.step += 1
         

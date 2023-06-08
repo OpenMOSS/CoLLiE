@@ -218,12 +218,6 @@ def patch_pipeline_engine(config):
             self.reset_activation_shape()
         batch = _split_batch(batch, self.train_micro_batch_size_per_gpu(),
                              self.gradient_accumulation_steps())
-        import os
-        if "IDX" not in os.environ.keys():
-            os.environ["IDX"] = "0"
-        torch.save(batch, f"batch_{os.environ['IDX']}.pt")
-        os.environ["IDX"] = str(int(os.environ["IDX"]) + 1)
-        
         data_iter = iter(batch)
         return raw_train_batch(self, data_iter)
 
@@ -294,6 +288,7 @@ def patch_deepspeed(config):
 
     DeepSpeedZeroOptimizer.initialize_optimizer_states = safe_initialize_optimizer_states
     patch_pipeline_engine(config)
+        
 
 def patch_megatron():
     parallel_state.get_model_parallel_world_size = lambda: parallel_state.get_tensor_model_parallel_world_size()

@@ -7,11 +7,11 @@ from datasets import load_dataset
 import torch
 
 config = CollieConfig.from_pretrained("decapoda-research/llama-7b-hf")
-config.pp_size = 8
-config.train_micro_batch_size = 12
-config.eval_batch_size = 12
-config.gradient_accumulation_steps = 24
-config.eval_per_n_steps = 5
+config.tp_size = 8
+config.train_micro_batch_size = 2
+config.eval_batch_size = 2
+config.gradient_accumulation_steps = 32
+config.eval_per_n_steps = 10
 config.ds_config = {
     "fp16": {
         "enabled": True
@@ -22,18 +22,27 @@ config.ds_config = {
         "wandb": {
             "enabled": True,
             "team": "00index",
-            "project": "test_evaluator"
+            "project": "collie",
+            "group": "test_evaluator"
         }
-    }
+    },
+    # "zero_optimization": {
+    #     "stage": 3,
+    # }
 }
 config.seed = 1024
 model = LlamaForCausalLM.from_pretrained("/mnt/petrelfs/zhangshuo/model/llama-7b-hf", config=config)
 optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5)
 ### Prepare training dataset
+# train_dataset = [
+#     {
+#         "input": f"Comment: {sample['text']}. The sentiment of this comment is: ",
+#         "output": "positive." if sample["label"] else "negative."
+#     } for sample in load_dataset("imdb", split="train")
+# ]
 train_dataset = [
     {
-        "input": f"Comment: {sample['text']}. The sentiment of this comment is: ",
-        "output": "positive." if sample["label"] else "negative."
+        "text": f"Comment: {sample['text']}. The sentiment of this comment is: {'positive.' if sample['label'] else 'negative.'}",
     } for sample in load_dataset("imdb", split="train")
 ]
 ### Prepare perplexity evaluation dataset
@@ -43,10 +52,10 @@ eval_dataset_ppl, train_dataset = train_dataset[:int(len(train_dataset) * radio)
 eval_dataset_cls = [
     {
         "input": f"Comment: {sample['text']}. The sentiment of this comment is: ",
-        "output": ["positive.</s>", "negative.</s>"],
+        "output": ["positive.", "negative."],
         "target": sample["label"] 
     } for sample in load_dataset("imdb", split="test")
-]
+][:1000]
 ### Convert to CoLLie Dataset
 traine_dataset = CollieDatasetForTraining(train_dataset, 
                                           tokenizer=LlamaTokenizer.from_pretrained("/mnt/petrelfs/zhangshuo/model/llama-7b-hf", add_eos_token=True))
