@@ -11,7 +11,7 @@ from .utils import progress, setup_distribution, set_seed, env, \
     setup_ds_engine, zero3_load_state_dict, is_zero3_enabled, \
         broadcast_tensor, find_tensors, BaseProvider, GradioProvider, \
             _GenerationStreamer, BaseMonitor, StepTimeMonitor, _MultiMonitors, \
-                TGSMonitor, MemoryMonitor, LossMonitor, EvalMonitor
+                TGSMonitor, MemoryMonitor, LossMonitor, EvalMonitor, LRMonitor
 from .module import PipelineGenerationMixin, ColumnParallelLinear, RowParallelLinearWithoutBias, LinearWithHiddenStates, ColumnParallelLMHead, GPTLMLoss, PipelineModel, MultiParallelGrid
 from .controller import Trainer, Evaluator, PerplexityEvaluator, ClassficationEvaluator
 from .config import CollieConfig
@@ -70,6 +70,7 @@ __all__ = [
     'MemoryMonitor',
     'LossMonitor',
     'EvalMonitor',
+    'LRMonitor',
     '_GenerationStreamer',
     '_MultiMonitors'
     

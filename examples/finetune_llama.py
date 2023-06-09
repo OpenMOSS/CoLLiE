@@ -1,7 +1,7 @@
 import sys
 sys.path.append("..")
 from collie import Trainer, PerplexityEvaluator, LlamaForCausalLM, CollieConfig, PplMetric, AccuracyMetric, DecodeMetric, CollieDatasetForTraining, CollieDatasetForClassification, \
-    LossMonitor, TGSMonitor, MemoryMonitor, EvalMonitor, GradioProvider, ClassficationEvaluator
+    LossMonitor, TGSMonitor, MemoryMonitor, EvalMonitor, GradioProvider, ClassficationEvaluator, LRMonitor
 from transformers import LlamaTokenizer
 from datasets import load_dataset
 import torch
@@ -11,20 +11,20 @@ config.pp_size = 8
 config.train_micro_batch_size = 2
 config.eval_batch_size = 2
 config.gradient_accumulation_steps = 32
-config.eval_per_n_steps = 10
+config.eval_per_n_steps = 5
 config.ds_config = {
     "fp16": {
         "enabled": True
     },
-    # "monitor_config": {
-    #     "enabled": True,
-    #     "wandb": {
-    #         "enabled": True,
-    #         "team": "00index",
-    #         "project": "collie",
-    #         "group": "test_evaluator"
-    #     }
-    # },
+    "monitor_config": {
+        "enabled": True,
+        "wandb": {
+            "enabled": True,
+            "team": "00index",
+            "project": "collie",
+            "group": "test_evaluator"
+        }
+    },
     # "zero_optimization": {
     #     "stage": 3,
     # }
@@ -32,6 +32,7 @@ config.ds_config = {
 config.seed = 1024
 model = LlamaForCausalLM.from_pretrained("/mnt/petrelfs/zhangshuo/model/llama-7b-hf", config=config)
 optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5)
+lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=1000)
 ### Prepare training dataset
 train_dataset = [
     {
@@ -45,7 +46,7 @@ train_dataset = [
 #     } for sample in load_dataset("imdb", split="train")
 # ]
 ### Prepare perplexity evaluation dataset
-radio = 0.1
+radio = 0.01
 eval_dataset_ppl, train_dataset = train_dataset[:int(len(train_dataset) * radio)], train_dataset[int(len(train_dataset) * radio):]
 ### Prepare classification evaluation dataset
 eval_dataset_cls = [
@@ -88,13 +89,15 @@ evaluator_cls = ClassficationEvaluator(
 ### Prepare Trainer
 trainer = Trainer(
     model=model,
+    lr_scheduler=lr_scheduler,
     config=config,
     optimizer=optimizer,
     train_dataset=traine_dataset,
     monitors=[
         LossMonitor(config),
         TGSMonitor(config),
-        MemoryMonitor(config)
+        MemoryMonitor(config),
+        LRMonitor(config)
     ],
     data_provider=GradioProvider(LlamaTokenizer.from_pretrained("/mnt/petrelfs/zhangshuo/model/llama-7b-hf"), port=12300, stream=True),
     evaluators=[evaluator_ppl, evaluator_cls]
