@@ -59,23 +59,36 @@ class _ShardContainer(list):
         self.file.seek(meta["offset"])
         return json.loads(self.file.readline().decode())
     
-class CollieDataset(Dataset):
+class CollieDatasetForTraining(Dataset):
+    """ **CoLLie** 中的基本数据格式，可用于预训练、微调、生成任务。需提供的数据格式形似:
+    
+        ```json
+        [
+            {
+                "text": "这是prompt部分的文本",
+            },
+            ...
+        ]
+        
+        或者:
+        
+        ```json
+        [
+            {
+                "input": "这是prompt部分的文本",
+                "output": "这是output部分的文本"
+            },
+            ...
+        ]
+        
+        当使用第二种数据格式时，只有 `output` 部分的 token 会参与 loss计算。
+    """
     def __init__(self,
                  dataset: Sequence[Dict],
                  tokenizer: Optional[PreTrainedTokenizer]=None,
                  add_special_tokens: bool=True,
                  shuffle: bool=False, 
                  seed: int = 1024):
-        if tokenizer is not None:
-            if len(dataset[0].keys()) == 1:
-                assert "text" in dataset[0].keys(), "Dataset must have `text` field."
-            elif len(dataset[0].keys()) == 2:
-                assert "input" in dataset[0].keys(), "Dataset must have `input` field."
-                assert "output" in dataset[0].keys(), "Dataset must have `output` field."
-            else:
-                raise ValueError("Dataset must have one or two fields.")
-        else:
-            assert "tokens" in dataset[0].keys(), "Dataset must have `tokens` field when tokenizer is None."
         self.dataset = dataset
         self.tokenizer = tokenizer
         self.add_special_tokens = add_special_tokens
@@ -97,7 +110,7 @@ class CollieDataset(Dataset):
         eos_length = len(ids_with_special_tokens) - len(ids_without_special_tokens) - bos_length
         return bos_length, eos_length
     
-    def __getitem__(self, index) -> Tuple[List]:
+    def __getitem__(self, index) -> Tuple:
         if index > len(self):
             raise IndexError("Index out of range.")
         labels_mask = None
@@ -109,9 +122,9 @@ class CollieDataset(Dataset):
             else:
                 labels_mask = torch.tensor(self.dataset[index]["label_mask"]) if "label_mask" in self.dataset[index].keys() else None
         else:
-            if len(self.dataset[0].keys()) == 1:
+            if "text" in self.dataset[0].keys():
                 input_ids = self.tokenizer(self.dataset[index]["text"], add_special_tokens=self.add_special_tokens).input_ids
-            elif len(self.dataset[0].keys()) == 2:
+            elif "input" in self.dataset[0].keys() and "output" in self.dataset[0].keys():
                 input_ids = self.tokenizer(self.dataset[index]["input"] + self.dataset[index]["output"], add_special_tokens=self.add_special_tokens).input_ids
                 labels_mask = torch.ones_like(torch.tensor(input_ids))
                 context_length = len(self.tokenizer(self.dataset[index]["input"], add_special_tokens=self.add_special_tokens).input_ids)
@@ -122,9 +135,14 @@ class CollieDataset(Dataset):
             else:
                 raise ValueError("Dataset must have one or two fields.")
         if labels_mask is None:
-            return input_ids, input_ids
+            return input_ids, {
+                "labels": input_ids
+            }
         else:
-            return input_ids, (input_ids, labels_mask)
+            return input_ids, {
+                "labels": input_ids,
+                "labels_mask": labels_mask
+            }
     
     @classmethod
     def from_json(cls, 
@@ -148,16 +166,11 @@ class CollieDataset(Dataset):
         shard_idx = 0
         meta = np.empty((0, 2), int)
         for i in self.indices:
-            sample = self[i][1]
-            if isinstance(sample, tuple) and len(sample) == 2:
-                data = {
-                    "tokens": sample[0],
-                    "label_mask": sample[1]
-                }
-            else:
-                data = {
-                    "tokens": sample
-                }
+            labels = self[i][1]
+            data = {
+                "tokens": labels["labels"]
+            }
+            data.update({key: value for key, value in labels.items() if key != "labels"})
             bytes_data = json.dumps(data).encode() + "\n".encode()
             offset = shard.tell()
             length = len(data["tokens"])
@@ -172,3 +185,35 @@ class CollieDataset(Dataset):
                 shard = io.BytesIO()
                 meta = np.empty((0, 2), int)
                 shard_idx += 1
+                
+class CollieDatasetForClassification(CollieDatasetForTraining):
+    """ **CoLLie** 中的分类任务数据集，须搭配 :class:`~collie.controller.evaluator.ClassficationEvaluator` 
+        使用。需提供的数据格式形似:
+    
+        ```json
+        [
+            {
+                "input": "这是prompt部分的文本",
+                "output": ["类别1", "类别2", "类别3"],
+                "target": 0
+            },
+            ...
+        ]
+    """
+    def __getitem__(self, index) -> Tuple:
+        if index > len(self):
+            raise IndexError("Index out of range.")
+        index = self.indices[index]
+        if self.tokenizer is None:
+            input_ids = tuple(self.dataset[index]["tokens"])
+            target = self.dataset[index]["target"]
+        else:
+            if "input" in self.dataset[0].keys() and "output" in self.dataset[0].keys() and "target" in self.dataset[0].keys():
+                input_ids = tuple([self.tokenizer(self.dataset[index]["input"] + output, add_special_tokens=self.add_special_tokens).input_ids for output in self.dataset[index]["output"]])
+                target = self.dataset[index]["target"]
+            else:
+                raise ValueError("CollieDatasetForClassification must have three fields (`input`, `output` and `target`).")
+        return input_ids, {
+            "labels": input_ids,
+            "target": target
+        }

@@ -183,7 +183,7 @@ class ChatGLMLayer(nn.Module):
         self.alpha = (2 * self.config.num_layers) ** 0.5
         self.layer_id = layer_id
         # 务必保持变量名一致
-        self.use_cache = True
+        self.use_cache = False
         self.past_key_values = None
         self.hidden_states = None
         
@@ -366,7 +366,7 @@ class ChatGLMForCausalLM(CollieModelForCausalLM):
                                       past_key_values: Optional[list] = None,
                                       attention_mask: Optional[torch.Tensor] = None,
                                       **kwargs):
-        self._set_use_cache(self.layers, self.generation_config.use_cache)
+        self._set_use_cache(self.layers, kwargs.get("use_cache", self.generation_config.use_cache))
         if past_key_values is None:
             self._clean_past_key_values(self.layers)
         else:
@@ -378,6 +378,7 @@ class ChatGLMForCausalLM(CollieModelForCausalLM):
         self._clean_hidden_states([*self.layers, self.lm_head])
         # 别忘了清理 word_embeddings 里的 past_position_ids
         self._clean_past_key_values(self.layers, self.word_embeddings)
+        self._set_use_cache(self.layers, False)
         
     @classmethod
     def _get_word_embedding_with_position_ids_cls(cls, config):

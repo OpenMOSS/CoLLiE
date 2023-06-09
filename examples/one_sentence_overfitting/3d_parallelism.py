@@ -1,7 +1,7 @@
 import sys
 sys.path.append("../..")
 from collie.models.llama.model import LlamaForCausalLM
-from collie.trainer.trainer import Trainer
+from collie.controller.trainer import Trainer
 from collie.metrics.decode import DecodeMetric
 from collie.config import CollieConfig
 from collie.utils import GradioProvider, setup_distribution

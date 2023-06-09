@@ -66,9 +66,11 @@ class AccuracyMetric(BaseMetric):
 
                 {"acc": float, 'total': float, 'correct': float}
         """
-        evaluate_result = {'acc': round(self.correct / (self.total + 1e-12), 6),
-                           'total': self.total, 'correct': self.correct}
-        return evaluate_result
+        # evaluate_result = {'acc': round(self.correct / (self.total + 1e-12), 6),
+        #                    'total': self.total, 'correct': self.correct}
+        return {
+            "acc": round(self.correct / (self.total + 1e-12), 6)
+        }
     
     def update(self, result:Dict):
         r"""

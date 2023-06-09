@@ -86,7 +86,33 @@ class GradioProvider(BaseProvider):
         interface = gr.Interface(fn=submit, inputs="textbox", outputs="text")
         interface.queue()
         interface.launch(server_name="0.0.0.0", server_port=self.port, share=True)
-        
+
+class DashProvider(BaseProvider):
+    """ 基于 Dash 的异步数据提供器，会在本地启动一个 Dash 服务，将用户输入的文本作为模型的输入
+    """ 
+    def __init__(self, 
+                 tokenizer: PreTrainedTokenizer,
+                 port: int = 7878,
+                 stream: bool = False) -> None:
+        super().__init__(stream)
+        self.tokenizer = tokenizer
+        self.port = port
+    
+    def provider_handler(self):
+        # from collie.utils.dash_html import app
+        from dash import Dash, html, Input, Output, dcc
+
+        app = Dash(__name__)
+        app.layout = html.Div([
+            html.H6("更改文本框中的值以查看回调操作！"),
+            html.Div(["输入：",
+                    dcc.Input(id='my-input', value='初始值', type='text')]),
+            html.Br(),
+            html.Div(id='my-output'),
+        ])
+
+        app.run_server(port=self.port, host="0.0.0.0", debug=True)
+
 class _GenerationStreamer(BaseStreamer):
     """ 重写 `transformers` 的 `BaseStreamer` 类以兼容 **CoLLie** 的异步数据提供器
     """
