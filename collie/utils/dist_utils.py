@@ -15,6 +15,7 @@ from deepspeed.runtime.utils import set_random_seed
 from deepspeed.runtime.zero.stage_1_and_2 import DeepSpeedZeroOptimizer
 from deepspeed.runtime.engine import DeepSpeedOptimizerCallable, DeepSpeedSchedulerCallable
 from deepspeed.runtime.pipe.engine import PipelineEngine
+from deepspeed.runtime.pipe import schedule
 from deepspeed.accelerator import get_accelerator
 from megatron.core import parallel_state, tensor_parallel
 
@@ -222,6 +223,7 @@ def patch_pipeline_engine(config):
         data_iter = iter(batch)
         return raw_train_batch(self, data_iter)
 
+    @torch.no_grad()
     def eval_batch(self, batch):
         if self.buffer_shape is None:
             self.buffer_shape = batch[0].shape
@@ -243,6 +245,74 @@ def patch_pipeline_engine(config):
         # Assume batch first
         if logits is not None:
             assert isinstance(logits, list), type(logits)
+            map(lambda x: x.detach_(), logits)
+            logits = torch.cat(logits, dim=0)
+        src_rank = self.grid.stage_to_global(self.num_stages - 1)
+        logits = broadcast_tensor(logits, src=src_rank,
+                                  group=env.pp_group)
+        self.total_loss = total_loss
+        return logits
+    
+    @torch.no_grad()
+    def generate_batch(self, batch):
+        if self.buffer_shape is None:
+            self.buffer_shape = batch[0].shape
+        elif self.buffer_shape != batch[0].shape:
+            self.buffer_shape = batch[0].shape
+            self.reset_activation_shape()
+        if self.total_loss is not None:
+            total_loss = self.total_loss.detach().clone()
+        else:
+            total_loss = None
+        self.total_loss = None
+        # special case for generation
+        gradient_accumulation_steps = batch[0].shape[0]
+        batch = _split_batch(batch, 1, gradient_accumulation_steps)
+        data_iter = iter(batch)
+        
+        self._compute_loss = False
+        logits = None
+        # Curriculum learning could change activation shape
+        if self.curriculum_enabled_legacy():
+            new_difficulty = self.curriculum_scheduler_legacy.update_difficulty( \
+                self.global_steps + 1)
+            if self.global_steps == 0 or self.curriculum_scheduler_legacy.first_step:
+                self.reset_activation_shape()
+                self.curriculum_scheduler_legacy.first_step = False
+            elif new_difficulty != self.curriculum_scheduler_legacy.get_difficulty( \
+                self.global_steps):
+                self.reset_activation_shape()
+
+        # Use the provided data iterator
+        train_iterator = self.data_iterator
+        self.set_dataiterator(data_iter)
+
+        # Do the work
+        sched = schedule.InferenceSchedule(micro_batches=gradient_accumulation_steps,
+                                           stages=self.num_stages,
+                                           stage_id=self.stage_id)
+
+        # prevent dead-lock with multiple evals sequence
+        dist.barrier()
+        with torch.no_grad():
+            self._exec_schedule(sched)
+
+        if self.is_last_stage():
+            logits = self._reduce_outputs(self.fwd_outputs, reduce=None)
+
+        # Restore the training iterator
+        self.set_dataiterator(train_iterator)
+
+        # Reset any buffers that may have been populated during the forward passes.
+        #ds_checkpointing.reset()
+        self.eval_return_logits = False
+        
+        # logits: list
+        # len(logits) = micro_batch_nums
+        # Assume batch first
+        if logits is not None:
+            assert isinstance(logits, list), type(logits)
+            map(lambda x: x.detach_(), logits)
             logits = torch.cat(logits, dim=0)
         src_rank = self.grid.stage_to_global(self.num_stages - 1)
         logits = broadcast_tensor(logits, src=src_rank,
@@ -252,6 +322,7 @@ def patch_pipeline_engine(config):
 
     PipelineEngine.train_batch = train_batch
     PipelineEngine.eval_batch = eval_batch
+    PipelineEngine.generate_batch = generate_batch
 
 def patch_deepspeed(config):
     if hasattr(config, "ds_config") \
