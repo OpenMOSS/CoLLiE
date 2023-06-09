@@ -322,7 +322,8 @@ class Trainer(TrainerEventTrigger):
                                          "epoch_idx": self.epoch_idx,
                                          "global_batch_idx": self.global_batch_idx,
                                          "memory_allocated": torch.cuda.max_memory_allocated(),
-                                         "mode": "train"})
+                                         "mode": "train"}
+                                )
                         tqbar_batch.set_postfix(Loss=round(loss, 4))
                         self.on_train_batch_end(loss)
                         if self.config.eval_per_n_steps > 0 and (self.batch_idx + 1) % self.config.eval_per_n_steps == 0:
