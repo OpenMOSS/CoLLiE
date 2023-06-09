@@ -12,3 +12,4 @@ megatron-core
 tensorboard
 google
 peft
+wandb

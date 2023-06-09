@@ -144,7 +144,6 @@ class Trainer(TrainerEventTrigger):
         
         self.communicate_buffer_shape = None
         self.setup_parallel_model()
-        get_accelerator().empty_cache()
         self.data_provider = data_provider
         self.monitor = _MultiMonitors(monitors)
         if self.data_provider is not None and dist.get_rank() == 0:
@@ -156,7 +155,7 @@ class Trainer(TrainerEventTrigger):
                 "and the later will not take effect."
             )
 
-        if evaluators is None or (hasattr(evaluators, "__len__") and len(evaluators) == 0):
+        if (evaluators is None or (hasattr(evaluators, "__len__") and len(evaluators) == 0)) and self.eval_dataset is not None:
             evaluators = []
             evaluator = Evaluator(model=model, dataset=eval_dataset, metrics=metrics, eval_fn=eval_fn,
                 config=config, collate_fn=eval_dataset_collate_fn, data_provider=None,
@@ -245,7 +244,6 @@ class Trainer(TrainerEventTrigger):
         )
         if not use_stream:
             self.data_provider.put_feedback(generated_ids[0].cpu())
-        get_accelerator().empty_cache()
 
     def setup_parallel_model(self):
         """
@@ -314,7 +312,6 @@ class Trainer(TrainerEventTrigger):
                         tqbar_batch.set_description(f"Training Batch: {self.batch_idx} / {self.steps_per_epoch}")
                         self.data_provider_handler()
                         self.engine.train()
-                        get_accelerator().empty_cache()
                         self.on_train_batch_begin(batch)
                         with self.monitor as item:
                             loss = self.train_fn(self, batch, self.epoch_idx * self.steps_per_epoch + self.batch_idx)

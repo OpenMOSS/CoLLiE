@@ -288,7 +288,7 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
         if past_key_values is not None:
             input_ids = input_ids[:, -1:]
         batch = (input_ids, input_ids)
-        logits = self.engine.eval_batch(batch)
+        logits = self.engine.generate_batch(batch)
         return CausalLMOutputWithPast(
             loss=None,
             logits=logits,
