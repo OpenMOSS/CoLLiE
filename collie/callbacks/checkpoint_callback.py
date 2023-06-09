@@ -1,6 +1,6 @@
 import sys
 from pathlib import Path
-from typing import Callable, Dict, Optional, Sequence, Union
+from typing import Callable, Dict, Optional, Union
 
 from collie.log.logger import logger
 from .callback import Callback
@@ -47,8 +47,8 @@ class CheckpointCallback(Callback):
     :param topk: 保存 monitor 结果中的 ``topk`` 个。
     :param last: 如果为 ``True``，将在每次 epoch 运行结束都保存一次，会覆盖之前的
         保存。如果为 ``False`` 则不会保存 ``last`` 文件。
-    :param kwargs: 传给 :meth:`.Trainer.load_checkpoint` 或者 :meth:`.Trainer.\
-        load_model` 的额外参数。
+    :param kwargs: 传给 :meth:`.Trainer.save_checkpoint` 或者 :meth:`.Trainer.\
+        save_model` 的额外参数。
     """
 
     def __init__(
@@ -106,17 +106,17 @@ class CheckpointCallback(Callback):
         self.topk_saver.save_topk(trainer, results)
 
     def on_train_epoch_end(self, trainer):
-        if trainer.epoch_idx % self.every_n_epochs == 0:
-            folder_name = f'epoch_{trainer.cur_epoch_idx}'
+        if (trainer.epoch_idx + 1) % self.every_n_epochs == 0:
+            folder_name = f'epoch_{trainer.epoch_idx + 1}'
             self.topk_saver.save(trainer, folder_name=folder_name)
         if self.last:
             folder_name = f'last'
             self.topk_saver.save(trainer, folder_name=folder_name)
 
-    def on_train_batch_end(self, trainer):
-        if trainer.batch_idx % self.every_n_batches == 0:
-            folder_name = f'epoch_{trainer.cur_epoch_idx}' \
-                          f'-batch_{trainer.batch_idx}'
+    def on_train_batch_end(self, trainer, loss):
+        if (trainer.batch_idx + 1) % self.every_n_batches == 0:
+            folder_name = f'epoch_{trainer.epoch_idx}' \
+                          f'-batch_{trainer.batch_idx + 1}'
             self.topk_saver.save(trainer, folder_name=folder_name)
 
     def on_save_checkpoint(self, trainer) -> Dict:

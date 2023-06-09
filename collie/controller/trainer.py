@@ -25,8 +25,7 @@ from transformers.modeling_utils import PreTrainedModel
 
 from collie.config import CollieConfig
 from collie.module import PipelineGenerationMixin, GPTLMLoss, PipelineModel
-from collie.driver.io.file import FileIODriver
-from collie.driver.io.petrel import PetrelIODriver
+from collie.driver.io import IODriver
 from collie.log import logger
 from collie.utils import progress, env, setup_ds_engine, BaseProvider, _GenerationStreamer, is_zero3_enabled, BaseMonitor, _MultiMonitors, broadcast_tensor, ColliePadder
 from collie.optim import InplaceSGD
@@ -158,19 +157,17 @@ class Trainer(TrainerEventTrigger):
             )
 
         if evaluators is None or (hasattr(evaluators, "__len__") and len(evaluators) == 0):
-            if eval_dataset is not None:
-                evaluators = Evaluator(model=model, dataset=eval_dataset, metrics=metrics, eval_fn=eval_fn,
-                    config=config, collate_fn=eval_dataset_collate_fn, data_provider=None,
-                    generation_config=generation_config)
-                evaluators.engine = self.engine
-                evaluators.monitor = self.monitor
-                evaluators.data_provider = self.data_provider
-            else:
-                evaluators = []
+            evaluators = []
+            evaluator = Evaluator(model=model, dataset=eval_dataset, metrics=metrics, eval_fn=eval_fn,
+                config=config, collate_fn=eval_dataset_collate_fn, data_provider=None,
+                generation_config=generation_config)
+            evaluator.monitor = self.monitor
+            evaluators.append(evaluator)
         if not isinstance(evaluators, Sequence):
             evaluators = [evaluators]
         for evaluator in evaluators:
             evaluator.engine = self.engine
+            evaluator.data_provider = self.data_provider
 
         self.evaluators = evaluators
 
@@ -321,7 +318,7 @@ class Trainer(TrainerEventTrigger):
                         self.on_train_batch_begin(batch)
                         with self.monitor as item:
                             loss = self.train_fn(self, batch, self.epoch_idx * self.steps_per_epoch + self.batch_idx)
-                            item.update({"loss": loss,
+                            item.update({"loss": round(loss, 4),
                                          "batch": batch,
                                          "batch_idx": self.batch_idx,
                                          "epoch_idx": self.epoch_idx,
@@ -333,12 +330,13 @@ class Trainer(TrainerEventTrigger):
                         if self.config.eval_per_n_steps > 0 and (self.batch_idx + 1) % self.config.eval_per_n_steps == 0:
                             self.eval()
                 if self.config.eval_per_n_epochs > 0 and (self.epoch_idx + 1) % self.config.eval_per_n_epochs == 0:
-                        self.eval()
+                    self.eval()
                 self.on_train_epoch_end()
                 self.batch_idx = 0
                 if self.config.eval_per_n_epochs > 0 and (self.epoch_idx + 1) % self.config.eval_per_n_epochs == 0:
                     self.eval()
                 self.on_train_epoch_end()
+        self.on_train_end()
         self.epoch_idx = 0
                 
     def eval(self, dataloader: Optional[Iterable] = None):
@@ -349,10 +347,10 @@ class Trainer(TrainerEventTrigger):
         if len(self.evaluators) == 0:
             return
         self.on_evaluate_begin()
-        eval_results = []
+        eval_results = {}
         for evaluator in self.evaluators:
             results = evaluator.eval(dataloader)
-            eval_results.append(results)
+            eval_results.update(results)
         # TODO deal with results
         self.on_evaluate_end(results)
 
@@ -414,9 +412,8 @@ class Trainer(TrainerEventTrigger):
         :param process_exclusion: 是否开启进程互斥，当开启流水线并行时开启此项可以节省内存（仅限 **CoLLie** 内实现的模型，对 `transformers` 提供的模型本项无效）
         """
         dist.barrier()
-        assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
-        IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
-        IODriver.makedirs(path, exist_ok=True)
+        io_driver = IODriver.from_protocol(protocol)
+        io_driver.makedirs(path, exist_ok=True)
         self.on_save_model()
         if isinstance(self.engine.module, CollieModelForCausalLM) or isinstance(self.engine.module, PipelineModel):
             if is_zero3_enabled(self.config):
@@ -456,21 +453,17 @@ class Trainer(TrainerEventTrigger):
     def load_model(self, path: str, process_exclusion: bool = False, **kwargs):...
     def load_model(self, path: str, process_exclusion: bool = False,
                    protocol: str = 'file', **kwargs):
-        assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
-        IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
-        assert IODriver.exists(path), f"`{path}` does not exist."
+        io_driver = IODriver.from_protocol(protocol)
+        assert io_driver.exists(path), f"`{path}` does not exist."
         self.on_load_model()
         if isinstance(self.engine.module, CollieModelForCausalLM) or isinstance(self.engine.module, PipelineModel):
             if is_zero3_enabled(self.config):
                 self.engine.optimizer.checkpoint_event_prologue()
-                if env.dp_rank == 0:
-                    state_dict = self.engine.module.load_parallel_state_dict(
-                        path=path, config=self.config, process_exclusion=process_exclusion, protocol=protocol
-                    )
                 with deepspeed.zero.GatheredParameters(list(self.engine.module.parameters(recurse=True)), modifier_rank=0):
-                    if env.dp_rank == 0:
-                        for attr in state_dict.keys():
-                            self.engine.module.state_dict()[attr].copy_(state_dict[attr])
+                    if env.rank == 0:
+                        self.engine.module.load_state_dict(self.engine.module.load_parallel_state_dict(
+                            path=path, config=self.config, process_exclusion=process_exclusion, protocol=protocol
+                        ))
                 self.engine.optimizer.checkpoint_event_epilogue()
             else:
                 self.engine.module.load_state_dict(
@@ -481,8 +474,8 @@ class Trainer(TrainerEventTrigger):
         elif isinstance(self.engine.module, PreTrainedModel):
             if is_zero3_enabled(self.config):
                 index = None
-                if IODriver.exists(os.path.join(path, "pytorch_model.bin.index.json")):
-                    weight_map = json.loads(IODriver.load(os.path.join(path, "pytorch_model.bin.index.json"), mode="r"))["weight_map"]
+                if io_driver.exists(os.path.join(path, "pytorch_model.bin.index.json")):
+                    weight_map = json.loads(io_driver.load(os.path.join(path, "pytorch_model.bin.index.json"), mode="r"))["weight_map"]
                     index = OrderedDict()
                     for key, value in weight_map.items():
                         if value not in index.keys():
@@ -494,19 +487,19 @@ class Trainer(TrainerEventTrigger):
                     for key, value in index.items():
                         with deepspeed.zero.GatheredParameters([self.engine.module.state_dict()[attr] for attr in value], modifier_rank=0):
                             if env.dp_rank == 0:
-                                state_dict = IODriver.load(os.path.join(path, key), mode="br")
+                                state_dict = io_driver.load(os.path.join(path, key), mode="br")
                                 for attr in value:
                                     self.engine.module.state_dict()[attr].copy_(state_dict[attr])
                 else:
                     with deepspeed.zero.GatheredParameters(list(self.engine.module.parameters(recurse=True)), modifier_rank=0):
                         if env.dp_rank == 0:
-                            state_dict = reduce(lambda x, y: {**x, **y}, [IODriver.load(file, mode="rb") for file in glob.glob(os.path.join(path, "*.bin"))])
+                            state_dict = reduce(lambda x, y: {**x, **y}, [io_driver.load(file, mode="rb") for file in glob.glob(os.path.join(path, "*.bin"))])
                             self.engine.module.load_state_dict(state_dict)
                 self.engine.optimizer.checkpoint_event_epilogue()
             else:
                 index = None
-                if IODriver.exists(os.path.join(path, "pytorch_model.bin.index.json")):
-                    weight_map = json.loads(IODriver.load(os.path.join(path, "pytorch_model.bin.index.json"), mode="r"))["weight_map"]
+                if io_driver.exists(os.path.join(path, "pytorch_model.bin.index.json")):
+                    weight_map = json.loads(io_driver.load(os.path.join(path, "pytorch_model.bin.index.json"), mode="r"))["weight_map"]
                     index = OrderedDict()
                     for key, value in weight_map.items():
                         if value not in index.keys():
@@ -515,11 +508,11 @@ class Trainer(TrainerEventTrigger):
                             index[value].append(key)
                 if index is not None:
                     for key, value in index.items():
-                        state_dict = IODriver.load(os.path.join(path, key), mode="br")
+                        state_dict = io_driver.load(os.path.join(path, key), mode="br")
                         for attr in value:
                             self.engine.module.state_dict()[attr].copy_(state_dict[attr])
                 else:
-                    state_dict = reduce(lambda x, y: {**x, **y}, [IODriver.load(file) for file in glob.glob(os.path.join(path, "*.bin"))])
+                    state_dict = reduce(lambda x, y: {**x, **y}, [io_driver.load(file) for file in glob.glob(os.path.join(path, "*.bin"))])
                     self.engine.module.load_state_dict(state_dict)
 
     def save_checkpoint(self, path: str, process_exclusion: bool = False, **kwargs):...
@@ -531,9 +524,8 @@ class Trainer(TrainerEventTrigger):
         :param process_exclusion: 是否开启进程互斥，当开启流水线并行时开启此项可以节省内存（仅限 **CoLLie** 内实现的模型，对 `transformers` 提供的模型本项无效）
         """
         dist.barrier()
-        assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
-        IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
-        IODriver.makedirs(path, exist_ok=True)
+        io_driver = IODriver.from_protocol(protocol)
+        io_driver.makedirs(path, exist_ok=True)
         callback_states = self.on_save_checkpoint()
         # save parallel_settings
         if env.dp_rank == 0:
@@ -541,7 +533,7 @@ class Trainer(TrainerEventTrigger):
                 "dp_size": env.dp_size, "tp_size": env.tp_size,
                 "pp_size": env.pp_size
             }
-            IODriver.save(json.dumps(dist_config), os.path.join(path, "collie.json"))
+            io_driver.save(json.dumps(dist_config), os.path.join(path, "collie.json"))
         engine = self.engine
         # DeepSpeedEngine.save_checkpoint
 
@@ -564,10 +556,10 @@ class Trainer(TrainerEventTrigger):
                     callback_states=callback_states)
 
         if env.rank == 0 or engine.zero_optimization_partition_weights():
-            IODriver.save(state, os.path.join(path, self.checkpoint_file))
+            io_driver.save(state, os.path.join(path, self.checkpoint_file))
 
         if engine.save_zero_checkpoint:
-            self._save_zero_checkpoint(path, IODriver)
+            self._save_zero_checkpoint(path, io_driver)
 
         if engine.zero_optimization_partition_weights():
             engine.optimizer.checkpoint_event_epilogue()
@@ -582,12 +574,11 @@ class Trainer(TrainerEventTrigger):
         :param path: 断点保存路径
         :param process_exclusion: 是否开启进程互斥，当开启流水线并行时开启此项可以节省内存（仅限 **CoLLie** 内实现的模型，对 ``transformers`` 提供的模型本项无效）
         """
-        assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
-        IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
-        assert IODriver.exists(path), f"`{path}` does not exist."
+        io_driver = IODriver.from_protocol(protocol)
+        assert io_driver.exists(path), f"`{path}` does not exist."
         engine = self.engine
         # check
-        loaded_args = json.loads(IODriver.load(os.path.join(path, "collie.json"), "r"))
+        loaded_args = json.loads(io_driver.load(os.path.join(path, "collie.json"), "r"))
         assert loaded_args["dp_size"] == env.dp_size and \
             loaded_args["tp_size"] == env.tp_size and \
             loaded_args["pp_size"] == env.pp_size, \
@@ -603,7 +594,7 @@ class Trainer(TrainerEventTrigger):
             ckpt_file = self.checkpoint_file
         else:
             ckpt_file = "collie_dp0_pp0_tp0.pt"
-        checkpoint = IODriver.load(os.path.join(path, ckpt_file), "b")
+        checkpoint = io_driver.load(os.path.join(path, ckpt_file), "b")
 
         if engine.zero_optimization_partition_weights():
             # Prepare for checkpoint load by ensuring all parameters are partitioned
@@ -636,7 +627,7 @@ class Trainer(TrainerEventTrigger):
 
         load_zero_checkpoint = engine.zero_optimization() or engine.bfloat16_enabled()
         if load_zero_checkpoint:
-            success = self._load_zero_checkpoint(path, IODriver)
+            success = self._load_zero_checkpoint(path, io_driver)
             if not success:
                 engine.optimizer._restore_from_bit16_weights()
 

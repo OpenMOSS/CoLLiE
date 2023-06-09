@@ -1,13 +1,10 @@
-from typing import Sequence
+from typing import Sequence, Dict
 
 from collie.utils.utils import _get_fun_msg
 from collie.log import logger
 from .callback import Callback
 
 def prepare_callback(callbacks):
-    """
-    遍历 callbacks，并且加入 :class:`.ProgressCallback`。
-    """
     _callbacks = []
     if callbacks is not None:
         if isinstance(callbacks, Callback):
@@ -82,12 +79,9 @@ class CallbackManager:
     def on_save_checkpoint(self, trainer):
         r"""
         用于断点重训的 callback 的保存函数；
-        该函数主要涉及两个方面：
-
-        1. callback 的状态的保存；我们会调用每一个 callback 的
-           :func:`on_save_checkpoint` 方法，该方法应当返回一个字典，其中包含着
-           断点重训应当保存的状态；
-        2. 每一个具体的 callback 函数的 filter 的状态；
+        该函数主要涉及callback 的状态的保存；我们会调用每一个 callback 的
+        :func:`on_save_checkpoint` 方法，该方法应当返回一个字典，其中包含着
+        断点重训应当保存的状态；
 
         :param trainer: :class:`~.Trainer` 实例；
         :return: 一个包含上述内容的字典，格式如下:
@@ -128,7 +122,7 @@ class CallbackManager:
         r"""
         用于断点重训的加载函数，对应于断点重训的保存函数；
 
-        :param trainer: :class:`~fastNLP.core.controllers.Trainer` 实例；
+        :param trainer: :class:`.Trainer` 实例；
         :param states: 同 :func:`on_save_checkpoint` 函数的返回值；
         """
         # 恢复每一个 callback 的单独的状态；
@@ -152,7 +146,7 @@ class CallbackManager:
         if len(_duplicated_callbacks) > 0:
             logger.warning(
                 f'Notice these callback_name: {_duplicated_callbacks} '
-                'are duplicated, fastNLP will only save the first callback\'s '
+                'are duplicated, CoLLiE will only save the first callback\'s '
                 'state.')
 
     @_exec_callback

@@ -10,6 +10,7 @@ import torch
 from torch import distributed as dist
 from torch.multiprocessing import Process
 import deepspeed
+from deepspeed.monitor.wandb import WandbMonitor
 from deepspeed.runtime.utils import set_random_seed
 from deepspeed.runtime.zero.stage_1_and_2 import DeepSpeedZeroOptimizer
 from deepspeed.runtime.engine import DeepSpeedOptimizerCallable, DeepSpeedSchedulerCallable
@@ -288,6 +289,14 @@ def patch_deepspeed(config):
 
     DeepSpeedZeroOptimizer.initialize_optimizer_states = safe_initialize_optimizer_states
     patch_pipeline_engine(config)
+    
+    raw_wandb_init = copy.deepcopy(WandbMonitor.__init__)
+    def collie_wandb_init(self, wandb_config):
+        raw_wandb_init(self, wandb_config)
+        import wandb
+        wandb.run.name = wandb_config.job_name
+    WandbMonitor.__init__ = collie_wandb_init
+        
 
 def patch_megatron():
     parallel_state.get_model_parallel_world_size = lambda: parallel_state.get_tensor_model_parallel_world_size()

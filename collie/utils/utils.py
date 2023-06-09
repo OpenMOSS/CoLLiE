@@ -161,11 +161,21 @@ def _split_batch(batch, micro_batch_size, micro_batch_num):
     assert len(batch) == 2, len(batch)
     inputs = batch[0]
     labels = batch[1]
+    micro_batch_num = inputs.shape[0] // micro_batch_size
     if isinstance(labels, Sequence):
         labels_split = [torch.split(label, micro_batch_size) for label in labels]
         labels_split = list(zip(*labels_split))
-    else:
+    elif isinstance(labels, torch.Tensor):
         labels_split = torch.split(labels, micro_batch_size)
+    elif isinstance(labels, dict):
+        labels_split = {}
+        for key in list(labels.keys()):
+            if isinstance(labels[key], torch.Tensor):
+                labels_split[key] = torch.split(labels[key], micro_batch_size)
+            elif isinstance(labels[key], Sequence):
+                labels_split[key] = [torch.split(label, micro_batch_size) for label in labels[key]]
+                labels_split[key] = list(zip(*labels_split[key]))
+        labels_split = [{key: value[i] for key, value in labels_split.items()} for i in range(micro_batch_num)]
     if isinstance(inputs, torch.Tensor):
         inputs_split = torch.split(inputs, micro_batch_size)
         assert len(inputs_split) == micro_batch_num, len(inputs_split)

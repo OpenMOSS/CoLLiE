@@ -46,47 +46,24 @@ class BaseMetric(ABC):
         """
         raise NotImplementedError
     
-    def gather(self, result: Dict) -> Dict[str, List]:
+    def gather(self, result: Dict[str, torch.Tensor]) -> Dict[str, List]:
         r"""
         将不同进程上的 result 数据聚合在一起，使用了 DDP 情况。
 
-        :param result: :class `Trainer` 中 eval_fn 返回的结果。类型为 Dict。
+        :param result: :class `Trainer` 中 eval_fn 返回的结果。类型为 Dict[str, torch.Tensor]。
             例如::
             
                 result = {'logits': logit, 'labels': label}
 
-        :return: 经过 gather 后的结果。假设 ``result`` 为::
-            
-                result = {'logits': logit, 'labels': label}
+        :return: 经过 gather 后的结果。类型为 Dict[str, torch.Tensor]。
 
-            其根据 ``dp_size`` 的值有如下两种情况：
-
-            * dp_size 为 ``1``, 其返回值为::
-            
-                {'logits': [logit], 'labels': [label]}
-
-            * dp_size > 1, 其返回值为::
-            
-                {
-                    'logits': [logit1, logit2, ..., logit_dp_size],
-                    'labels': [label1, label2, ..., label_dp_size]
-                }
+            当 ``dp_size`` 不为 1 时 (即开启了数据并行的情况下), 会把不同 dp 进程的 ``result`` 按照第一个维度进行拼接。
 
         """
-        def _to_device(tensor, device):
-            return tensor.contiguous().to(device)
-
-        gather_result = {key_name: [] for key_name in result.keys()}
-        if self.trainer.config.dp_size == 1:
-            result_list = [result]
-        else:
+        if self.trainer.config.dp_size > 1:
             group = self.trainer.engine.mpu.get_data_parallel_group()
-            result = apply_to_collection(result, torch.Tensor, _to_device,
-                                         device=torch.device("cpu"))
-            result_list = [None for _ in range(self.trainer.config.dp_size)]
-            dist.all_gather_object(result_list, result, group=group)
-        for result_dp in result_list:
-            for name, value in result_dp.items():
-                gather_result[name].append(value)
-
-        return gather_result
+            for key in result.keys():
+                gather_list = [torch.zeros_like(result[key]).to(result[key].dtype).to(result[key].device) for _ in range(self.trainer.config.dp_size)]
+                dist.all_gather(gather_list, result[key], group=group)
+                result[key] = torch.cat(gather_list, dim=0)
+        return result

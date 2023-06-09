@@ -9,7 +9,7 @@ from collie.module import GPTLMLoss
 from collie.config import CollieConfig
 from collie.log import logger
 from collie.utils import env, setup_distribution
-from collie.trainer import Trainer
+from collie.controller import Trainer
 
 from moss_002_sft import get_dataset, collate_fn
 from metric import SFTDecodeMetric, SFTAccMetric
