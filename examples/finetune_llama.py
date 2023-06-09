@@ -16,16 +16,15 @@ config.ds_config = {
     "fp16": {
         "enabled": True
     },
-    "monitor_config": {
-        "enabled": True,
-        "tag": "test_evaluator",
-        "wandb": {
-            "enabled": True,
-            "team": "00index",
-            "project": "collie",
-            "group": "test_evaluator"
-        }
-    },
+    # "monitor_config": {
+    #     "enabled": True,
+    #     "wandb": {
+    #         "enabled": True,
+    #         "team": "00index",
+    #         "project": "collie",
+    #         "group": "test_evaluator"
+    #     }
+    # },
     # "zero_optimization": {
     #     "stage": 3,
     # }
@@ -97,7 +96,7 @@ trainer = Trainer(
         TGSMonitor(config),
         MemoryMonitor(config)
     ],
-    # data_provider=GradioProvider(LlamaTokenizer.from_pretrained("/mnt/petrelfs/zhangshuo/model/llama-7b-hf")),
+    data_provider=GradioProvider(LlamaTokenizer.from_pretrained("/mnt/petrelfs/zhangshuo/model/llama-7b-hf"), port=12300, stream=True),
     evaluators=[evaluator_ppl, evaluator_cls]
 )
 trainer.train()

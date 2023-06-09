@@ -36,7 +36,9 @@ class ColliePadder:
         else:
             padding_token_id = self.labels_padding_token_id
         batch = list(batch)
-        if isinstance(batch[0], (int, float)):
+        if isinstance(batch[0], torch.Tensor):
+            pass
+        elif isinstance(batch[0], (int, float)):
             batch = [torch.tensor(x) for x in batch]
         elif isinstance(batch[0], np.ndarray):
             batch = [torch.from_numpy(x) for x in batch]

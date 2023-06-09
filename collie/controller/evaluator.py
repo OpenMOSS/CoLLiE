@@ -126,7 +126,6 @@ class Evaluator:
                 self.engine.eval()
                 with torch.no_grad():
                     result = self.eval_fn(self, batch)
-                get_accelerator().empty_cache()
                 self.metric_wrapper.update(result)
         with self.monitor as item:
             metric_results = self.metric_wrapper.get_metric()
@@ -206,7 +205,6 @@ class Evaluator:
         )
         if not use_stream:
             self.data_provider.put_feedback(generated_ids[0].cpu())
-        get_accelerator().empty_cache()
         
 class PerplexityEvaluator(Evaluator):
     def __init__(self, 

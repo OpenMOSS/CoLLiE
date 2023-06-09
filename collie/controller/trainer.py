@@ -144,7 +144,6 @@ class Trainer(TrainerEventTrigger):
         
         self.communicate_buffer_shape = None
         self.setup_parallel_model()
-        get_accelerator().empty_cache()
         self.data_provider = data_provider
         self.monitor = _MultiMonitors(monitors)
         if self.data_provider is not None and dist.get_rank() == 0:
@@ -156,7 +155,7 @@ class Trainer(TrainerEventTrigger):
                 "and the later will not take effect."
             )
 
-        if evaluators is None or (hasattr(evaluators, "__len__") and len(evaluators) == 0):
+        if (evaluators is None or (hasattr(evaluators, "__len__") and len(evaluators) == 0)) and self.eval_dataset is not None:
             evaluators = []
             evaluator = Evaluator(model=model, dataset=eval_dataset, metrics=metrics, eval_fn=eval_fn,
                 config=config, collate_fn=eval_dataset_collate_fn, data_provider=None,
@@ -245,7 +244,6 @@ class Trainer(TrainerEventTrigger):
         )
         if not use_stream:
             self.data_provider.put_feedback(generated_ids[0].cpu())
-        get_accelerator().empty_cache()
 
     def setup_parallel_model(self):
         """
@@ -314,11 +312,11 @@ class Trainer(TrainerEventTrigger):
                         tqbar_batch.set_description(f"Training Batch: {self.batch_idx} / {self.steps_per_epoch}")
                         self.data_provider_handler()
                         self.engine.train()
-                        get_accelerator().empty_cache()
                         self.on_train_batch_begin(batch)
                         with self.monitor as item:
-                            loss = self.train_fn(self, batch, self.epoch_idx * self.steps_per_epoch + self.batch_idx)
+                            loss, lr = self.train_fn(self, batch, self.epoch_idx * self.steps_per_epoch + self.batch_idx)
                             item.update({"loss": round(loss, 4),
+                                         "lr": lr,
                                          "batch": batch,
                                          "batch_idx": self.batch_idx,
                                          "epoch_idx": self.epoch_idx,
@@ -381,6 +379,10 @@ class Trainer(TrainerEventTrigger):
             if not isinstance(trainer.optimizer, InplaceSGD):
                 trainer.engine.backward(loss)
                 trainer.engine.step()
+                if trainer.lr_scheduler:
+                    lr = trainer.lr_scheduler.get_last_lr()[0]
+                else:
+                    lr = trainer.optimizer.param_groups[0]['lr']
             else:
                 # for inplace_sgd only
                 if trainer.optimizer.clip_grad_norm is not None:
@@ -397,7 +399,7 @@ class Trainer(TrainerEventTrigger):
                 trainer.optimizer.backward_step(loss, lr)
                 if trainer.optimizer.zero_enabled:  # TODO: should tp do this too?
                     trainer.engine.optimizer.get_param_coordinator(training=True).reset_step()
-        return loss.detach().cpu().item()
+        return loss.detach().cpu().item(), lr
 
     def save_model(self, path: str, process_exclusion: bool = False, **kwargs):...
     def save_model(self, path: str, process_exclusion: bool = False,
