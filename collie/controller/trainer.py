@@ -314,15 +314,16 @@ class Trainer(TrainerEventTrigger):
                         self.engine.train()
                         self.on_train_batch_begin(batch)
                         with self.monitor as item:
-                            loss, lr = self.train_fn(self, batch, self.epoch_idx * self.steps_per_epoch + self.batch_idx)
+                            loss = self.train_fn(self, batch, self.global_batch_idx)
                             item.update({"loss": round(loss, 4),
-                                         "lr": lr,
+                                         "lr": self.lr,
                                          "batch": batch,
                                          "batch_idx": self.batch_idx,
                                          "epoch_idx": self.epoch_idx,
                                          "global_batch_idx": self.global_batch_idx,
                                          "memory_allocated": torch.cuda.max_memory_allocated(),
-                                         "mode": "train"})
+                                         "mode": "train"}
+                                )
                         tqbar_batch.set_postfix(Loss=round(loss, 4))
                         self.on_train_batch_end(loss)
                         if self.config.eval_per_n_steps > 0 and (self.batch_idx + 1) % self.config.eval_per_n_steps == 0:
@@ -379,10 +380,6 @@ class Trainer(TrainerEventTrigger):
             if not isinstance(trainer.optimizer, InplaceSGD):
                 trainer.engine.backward(loss)
                 trainer.engine.step()
-                if trainer.lr_scheduler:
-                    lr = trainer.lr_scheduler.get_last_lr()[0]
-                else:
-                    lr = trainer.optimizer.param_groups[0]['lr']
             else:
                 # for inplace_sgd only
                 if trainer.optimizer.clip_grad_norm is not None:
@@ -399,7 +396,15 @@ class Trainer(TrainerEventTrigger):
                 trainer.optimizer.backward_step(loss, lr)
                 if trainer.optimizer.zero_enabled:  # TODO: should tp do this too?
                     trainer.engine.optimizer.get_param_coordinator(training=True).reset_step()
-        return loss.detach().cpu().item(), lr
+        return loss.detach().cpu().item()
+    
+    @property
+    def lr(self):
+        if self.lr_scheduler:
+            lr = self.lr_scheduler.get_last_lr()[0]
+        else:
+            lr = self.optimizer.param_groups[0]['lr']
+        return lr
 
     def save_model(self, path: str, process_exclusion: bool = False, **kwargs):...
     def save_model(self, path: str, process_exclusion: bool = False,

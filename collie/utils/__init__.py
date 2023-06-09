@@ -4,7 +4,7 @@ from .dist_utils import (setup_distribution, set_seed, env, setup_ds_engine,
 from .utils import find_tensors, progress, dictToObj, apply_to_collection
 from .data_provider import BaseProvider, GradioProvider, _GenerationStreamer
 from .metric_wrapper import _MetricsWrapper
-from .monitor import BaseMonitor, StepTimeMonitor, _MultiMonitors, TGSMonitor, MemoryMonitor, LossMonitor, EvalMonitor
+from .monitor import BaseMonitor, StepTimeMonitor, _MultiMonitors, TGSMonitor, MemoryMonitor, LossMonitor, EvalMonitor, LRMonitor
 from .padder import ColliePadder
 
 __all__ = [
@@ -39,6 +39,7 @@ __all__ = [
     "MemoryMonitor",
     "LossMonitor",
     "EvalMonitor",
+    'LRMonitor',
 
     # padder
     "ColliePadder",
