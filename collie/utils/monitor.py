@@ -140,6 +140,13 @@ class EvalMonitor(BaseMonitor):
             for key, value in self.item['eval_result'].items():
                     self.monitor.write_events([(f"Metric {key}", value, self.step)])
             self.step += 1
+            
+class LRMonitor(BaseMonitor):
+    """用来记录每个step的learning rate
+    """
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if 'loss' in self.item.keys() and self.item["mode"] == "train":
+            self.monitor.write_events([(f"Learning Rate", self.item['lr'], self.item['global_batch_idx'])])  
         
 class _MultiMonitors:
     def __init__(self, monitors: Sequence[BaseMonitor]) -> None:
