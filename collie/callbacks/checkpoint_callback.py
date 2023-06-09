@@ -2,7 +2,6 @@ import sys
 from pathlib import Path
 from typing import Callable, Dict, Optional, Sequence, Union
 
-from collie.trainer.trainer import Trainer
 from collie.log.logger import logger
 from .callback import Callback
 from .topk_saver import TopkSaver

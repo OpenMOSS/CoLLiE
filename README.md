@@ -16,7 +16,13 @@
 
 ## 评测
 ### 吞吐量
-待完成
+|            | 7B   | 13B  | 30B  | 65B  |
+| ---------- | ---- | ---- | ---- | ---- |
+| Finetune   | 2    | 3    | 6    | 16   |
+| LoRA       | 1    | 1    | 1    | 2    |
+| InplaceSGD | 1    | 1    | 1    | 2    |
+
+注：在使用Adam优化器的情况下，各个模型需要的最少的GPU（A100）数量
 
 ## 特点
 <div align="center">
@@ -45,7 +51,6 @@ CoLLiE已使用 *Megatron-LM* 和 *Flash Attention* 重写模型，只需修改 
 ## 使用
 
 ### 示例
-More examples are available at .
 更多示例可在 [示例](examples) 中查看。
 
 ### 启动脚本
