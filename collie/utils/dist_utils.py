@@ -245,8 +245,12 @@ def patch_pipeline_engine(config):
         # Assume batch first
         if logits is not None:
             assert isinstance(logits, list), type(logits)
-            map(lambda x: x.detach_(), logits)
-            logits = torch.cat(logits, dim=0)
+            # torch.cat 会导致显存大幅度增长，为了防止 OOM 迁移到 cpu 上
+            _logits = [l.cpu() for l in logits]
+            logits.clear()
+            # 考虑到速度暂时不清空
+            # torch.cuda.empty_cache()
+            logits = torch.cat(_logits, dim=0).cuda()
         src_rank = self.grid.stage_to_global(self.num_stages - 1)
         logits = broadcast_tensor(logits, src=src_rank,
                                   group=env.pp_group)
@@ -312,8 +316,12 @@ def patch_pipeline_engine(config):
         # Assume batch first
         if logits is not None:
             assert isinstance(logits, list), type(logits)
-            map(lambda x: x.detach_(), logits)
-            logits = torch.cat(logits, dim=0)
+            # torch.cat 会导致显存大幅度增长，为了防止 OOM 迁移到 cpu 上
+            _logits = [l.cpu() for l in logits]
+            logits.clear()
+            # 考虑到速度暂时不清空
+            # torch.cuda.empty_cache()
+            logits = torch.cat(_logits, dim=0).cuda()
         src_rank = self.grid.stage_to_global(self.num_stages - 1)
         logits = broadcast_tensor(logits, src=src_rank,
                                   group=env.pp_group)
