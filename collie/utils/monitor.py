@@ -131,15 +131,10 @@ class LossMonitor(BaseMonitor):
 class EvalMonitor(BaseMonitor):
     """ 用来记录每个step的eval结果，仅支持 **int** 和 **float** 类型的结果
     """
-    def __init__(self, config) -> None:
-        super().__init__(config)
-        self.step = 0
-    
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if 'eval_result' in self.item.keys() and self.item["mode"] == "eval":
+        if 'eval_result' in self.item.keys() and 'global_batch_idx' in self.item.keys() and self.item["mode"] == "eval":
             for key, value in self.item['eval_result'].items():
-                self.monitor.write_events([(f"Metric {key}", value, self.step)])
-            self.step += 1
+                self.monitor.write_events([(f"Metric {key}", value, self.item["global_batch_idx"])])
             
 class LRMonitor(BaseMonitor):
     """用来记录每个step的learning rate
@@ -159,7 +154,6 @@ class _MultiMonitors:
         return self.item
     
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if env.pp_rank == 0 and env.tp_rank == 0 and env.dp_rank == 0:
-            for monitor in self.monitors:
-                monitor.item = self.item
-                monitor.__exit__(exc_type, exc_val, exc_tb)
+        for monitor in self.monitors:
+            monitor.item = self.item
+            monitor.__exit__(exc_type, exc_val, exc_tb)

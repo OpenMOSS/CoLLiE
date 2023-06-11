@@ -75,6 +75,7 @@ class Evaluator:
         self.eval_dataloader = None
         self.data_provider = data_provider
         self.monitor = _MultiMonitors(monitors)
+        self.global_batch_idx = 0
 
     def init_engine(self):
         """
@@ -134,7 +135,10 @@ class Evaluator:
                     for k in list(metric_results[key].keys()):
                         metric_results[f"{key}#{k}"] = metric_results[key][k]
                     del metric_results[key]
-            item.update({"eval_result": metric_results, "mode": "eval"})
+            item.update({
+                "eval_result": metric_results, 
+                "global_batch_idx": self.global_batch_idx,
+                "mode": "eval"})
         self.metric_wrapper.reset()
 
         if len(metric_results) > 0 and env.rank == 0:  # 如果 metric 不为 None 需要 print 。

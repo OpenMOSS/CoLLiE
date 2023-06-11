@@ -345,6 +345,7 @@ class Trainer(TrainerEventTrigger):
         self.on_evaluate_begin()
         eval_results = {}
         for evaluator in self.evaluators:
+            evaluator.global_batch_idx = self.global_batch_idx
             results = evaluator.eval(dataloader)
             eval_results.update(results)
         # TODO deal with results

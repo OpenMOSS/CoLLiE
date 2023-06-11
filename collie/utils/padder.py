@@ -85,7 +85,6 @@ class ColliePadder:
                     elif isinstance(batch[0][i][key], tuple) and isinstance(batch[0][i][key][0], (torch.Tensor, np.ndarray, list)):
                         padded_dict[key] = [self.collate_fn([x[i][key][j] for x in batch]) for j in range(len(batch[0][i][key]))]
                     else:
-                        print(batch[0][i][key])
                         raise TypeError(f"Unsupported type: {type(batch[0][i][key])}")
                 padded_batch.append(padded_dict)
             else:
