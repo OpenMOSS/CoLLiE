@@ -1,7 +1,10 @@
-from typing import Dict, Optional, List
+from typing import Dict, Optional
 from .base import BaseMetric
 
 class PplMetric(BaseMetric):
+    """
+    计算困惑度 Perplexity 的 Metric。
+    """
     def __init__(self, gather_result: bool = False) -> None:
         super().__init__(gather_result)
         self.ppl = 0.
