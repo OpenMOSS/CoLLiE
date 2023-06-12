@@ -1,7 +1,5 @@
 """ **CoLLie** 中的通用 ``collate_fn`` 构造器
 """
-import sys
-sys.path.append("/mnt/petrelfs/zhangshuo/projects/collie/")
 from typing import Sequence, Any, List, Tuple, Dict
 import torch
 import torch.nn.functional as F
@@ -13,6 +11,7 @@ __all__ = [
 
 class ColliePadder:
     """ **CoLLie** 中的通用 ``collate_fn`` 构造器
+
     :param padding_token: 用于填充模型输入数据 (input_ids) 的 token
     :param labels_padding_token: 用于填充模型标签数据 (labels) 的 token
     :param padding_left: 是否在左侧填充
@@ -28,6 +27,7 @@ class ColliePadder:
         
     def collate_fn(self, batch: Sequence[Any]) -> torch.Tensor:
         """ 用于填充的 ``collate_fn``
+
         :param batch: 一个 batch 的数据
         :return: 填充后的 batch
         """

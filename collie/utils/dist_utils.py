@@ -64,6 +64,7 @@ def setup_ds_engine(
         lr_scheduler: Optional[Union[torch.optim.lr_scheduler._LRScheduler, DeepSpeedSchedulerCallable]] = None
 ):
     """ 启动 DeepSpeed 引擎。
+
     :param config: **CoLLie** 的配置
     :param model: 模型
     :param optimizer: 优化器

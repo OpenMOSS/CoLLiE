@@ -67,7 +67,8 @@ class Callback:
 
     def on_save_model(self, trainer):
         r"""
-        当调用 :meth:`Trainer.save_model() <collie.trainer.Trainer.save_model>` 时调用，此刻模型还未保存。
+        当调用 :meth:`Trainer.save_model() <collie.controller.Trainer.\
+        save_model>` 时调用，此刻模型还未保存。
 
         :param trainer: :class:`.Trainer` 实例；
         """
@@ -75,7 +76,8 @@ class Callback:
 
     def on_load_model(self, trainer):
         r"""
-        当调用 :meth:`Trainer.load_model() <collie.trainer.Trainer.load_model>` 加载模型时调用，此刻模型还未加载。
+        当调用 :meth:`Trainer.load_model() <collie.controller.Trainer.\
+        load_model>` 加载模型时调用，此刻模型还未加载。
 
         :param trainer: :class:`.Trainer` 实例；
         """
@@ -83,7 +85,7 @@ class Callback:
 
     def on_save_checkpoint(self, trainer):
         r"""
-        当 Trainer 将要保存 checkpoint 的时候触发 (即调用 :meth:`Trainer.save_checkpoint() <collie.trainer.Trainer.save_checkpoint>`
+        当 Trainer 将要保存 checkpoint 的时候触发 (即调用 :meth:`Trainer.save_checkpoint() <collie.controller.Trainer.save_checkpoint>`
         函数时)，该函数用于保存当前 callback 在恢复时需要的相关数据。
 
         :param trainer: :class:`.Trainer` 实例；
@@ -92,7 +94,7 @@ class Callback:
 
     def on_load_checkpoint(self, trainer, states):
         r"""
-        当 Trainer 要恢复 checkpoint 的时候触发（即调用 :meth:`Trainer.load_checkpoint() <collie.trainer.Trainer.load_checkpoint>`
+        当 Trainer 要恢复 checkpoint 的时候触发（即调用 :meth:`Trainer.load_checkpoint() <collie.controller.Trainer.load_checkpoint>`
         函数时）。
 
         :param trainer: :class:`.Trainer` 实例；

@@ -25,17 +25,13 @@ Dist Utils
 .. autosummary::
    :toctree: generated
    :nosignatures:
-   
-   launch
+
    setup_distribution
    setup_ds_engine
    set_seed
    broadcast_tensor
    zero3_load_state_dict
    is_zero3_enabled
-   patch_deepspeed
-   patch_megatron
-   patch_pipeline_engine
 
 Utils
 ----------------
@@ -53,8 +49,40 @@ Utils
    :template: classtemplate.rst
 
    progress
+
+Data Provider
+----------------
+
+.. autosummary::
+   :toctree: generated
+   :nosignatures:
+   :template: classtemplate.rst
+
    BaseProvider
    GradioProvider
+
+Monitor
+----------------
+
+.. autosummary::
+   :toctree: generated
+   :nosignatures:
+   :template: classtemplate.rst
+
    BaseMonitor
    StepTimeMonitor
-   MultiMonitors
+   TGSMonitor
+   MemoryMonitor
+   LossMonitor
+   EvalMonitor
+   LRMonitor
+
+Padder
+----------------
+
+.. autosummary::
+   :toctree: generated
+   :nosignatures:
+   :template: classtemplate.rst
+
+   ColliePadder

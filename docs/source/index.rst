@@ -8,6 +8,8 @@ CoLLiE: Collaborative Tuning of Large Language Models in an Efficient Way
    :maxdepth: 2
    :caption: 快速上手
 
+   tutorials/collie_tutorial_0
+
 .. toctree::
    :maxdepth: 2
    :caption: API 文档
@@ -15,10 +17,11 @@ CoLLiE: Collaborative Tuning of Large Language Models in an Efficient Way
    collie.config <api/config>
    collie.module <api/module>
    collie.models <api/models>
-   collie.trainer <api/trainer>
+   collie.controller <api/controller>
    collie.callbacks <api/callbacks>
    collie.optim <api/optim>
    collie.metrics <api/metrics>
+   collie.data <api/data>
    collie.utils <api/utils>
 
 .. toctree::

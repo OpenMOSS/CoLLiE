@@ -42,13 +42,13 @@ class Trainer(TrainerEventTrigger):
 
     :param model: 用于训练和验证的模型，可以使用 **CoLLie** 实现的模型或 transformers 提供的模型：
 
-        * **CoLLie** 实现的模型 :class:`~collie.CollieModelForCausalLM` 可支持的并行方式包括：张量并行、流水线并行、`ZeRO`
+        * **CoLLie** 实现的模型 :class:`.CollieModelForCausalLM` 可支持的并行方式包括：张量并行、流水线并行、`ZeRO`
         * transformers 提供的模型 ``transformers.PreTrainedModel`` 只支持 `ZeRO`
         
     :param config: 用于训练和验证的配置
     :param loss_fn: 用于计算 loss 的函数，默认使用 :meth:`~collie.module.GPTLMLoss`
-    :param train_fn: 用于训练的函数，默认使用 :meth:`~collie.trainer.Trainer.train_fn`
-    :param eval_fn: 用于验证的函数，默认使用 :meth:`~collie.trainer.Trainer.eval_fn`
+    :param train_fn: 用于训练的函数，默认使用 :meth:`~collie.controller.Trainer.train_fn`
+    :param eval_fn: 用于验证的函数，默认使用 :meth:`~collie.controller.Evaluator.eval_fn`
     :param optimizer: 训练过程中的优化器，当为 `None` 的时候会尝试使用 ``config.ds_config`` 定义的优化器
     :param lr_scheduler: 训练过程中的学习率调度器；
     :param train_dataset: 用于训练的数据集。
@@ -98,6 +98,8 @@ class Trainer(TrainerEventTrigger):
 
         * Collie 自己的 ``metric``：详见 :class:`.BaseMetric`
         * 继承 Collie 基类的自定义 Metric
+    :param evaluators: 验证器。当传入多个 :class:`.Evaluator` 时会依次执行
+        evaluator 的验证方法。
     """
     def __init__(self, 
                  model: torch.nn.Module,
@@ -360,7 +362,7 @@ class Trainer(TrainerEventTrigger):
 
             .. note::
                 
-                根据提供的 ``train_dataset`` 和 ``train_dataset_collate_fn`` 的不同，`labels` 的类型也会有所不同，详见 :class:`~collie.trainer.Trainer`
+                根据提供的 ``train_dataset`` 和 ``train_dataset_collate_fn`` 的不同，`labels` 的类型也会有所不同，详见 :class:`.Trainer`
     
         :param global_step: 当前的全局步数
         

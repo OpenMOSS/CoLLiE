@@ -9,7 +9,7 @@ class _MetricsWrapper:
     对输入的 metrics 进行封装以便于支持 Trainer 使用
 
     :param metrics: 用户传进来的 metric, 类型为 Dict。例如 {'name1': metric1, 'name2': metric2}
-    :param trainer: 类型为 :class:`~collie.trainer.Trainer`, 用以对 metrics 进行初始化。
+    :param trainer: 类型为 :class:`~collie.controller.Trainer`, 用以对 metrics 进行初始化。
     """
 
     def __init__(self, metrics, trainer):

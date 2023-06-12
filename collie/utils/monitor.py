@@ -61,22 +61,24 @@ def get_monitor(config: CollieConfig):
 class BaseMonitor:
     """
     BaseMonitor是一个基础的监控器类，用于记录模型训练过程中的统计信息。
-    其中，`trainer` 会将需要统计的数据存放到 `item` 中，目前 item 的内容为:
+    其中，`trainer` 会将需要统计的数据存放到 `item` 中，目前 item 的内容为：
+
         .. code-block::
-        item = {
-            "batch": (input_ids, labels),
-            "epoch_idx": 0,
-            "batch_idx": 1,
-            "global_batch_idx": 1,
-            "loss": 0.1,
-            "eval_result": {
-                "acc": 0.1,
-                "ppl": 0.1,
-                ...
-            },
-            "memory_allocated": 7000000000,
-            "mode": "train"
-        }
+
+            item = {
+                "batch": (input_ids, labels),
+                "epoch_idx": 0,
+                "batch_idx": 1,
+                "global_batch_idx": 1,
+                "loss": 0.1,
+                "eval_result": {
+                    "acc": 0.1,
+                    "ppl": 0.1,
+                    ...
+                },
+                "memory_allocated": 7000000000,
+                "mode": "train"
+            }
         
     :param config: 用户传入的config，类型为CollieConfig
     """

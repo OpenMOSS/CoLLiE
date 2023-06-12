@@ -20,3 +20,6 @@ Optimizers
    :template: classtemplate.rst
 
    InplaceSGD
+   Adan
+   Lion
+   SophiaG

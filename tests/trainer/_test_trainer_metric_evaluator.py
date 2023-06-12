@@ -16,13 +16,8 @@ from collie.models.llama.model import LlamaForCausalLM
 from collie.controller.trainer import Trainer
 from collie.metrics.decode import DecodeMetric
 from collie.config import CollieConfig
-<<<<<<< HEAD
 from collie.controller.evaluator import Evaluator
 from collie.utils import zero3_load_state_dict, setup_distribution, GradioProvider
-=======
-from collie.trainer.evaluator import Evaluator
-from collie.utils import zero3_load_state_dict, setup_distribution
->>>>>>> e1fcb68afcf5be0902ae6b6f6a1ccf943a84c04a
 from collie.utils.monitor import StepTimeMonitor, TGSMonitor, MemoryMonitor, LossMonitor, EvalMonitor
 from collie.utils.data_provider import GradioProvider, DashProvider
 
@@ -196,7 +191,7 @@ def _test_gpt2_data_provider():
     # import sys
     # import torch
     # sys.path.append("../..")
-    # from collie.trainer.trainer import Trainer
+    # from collie.controller.trainer import Trainer
     # from collie.metrics.decode import DecodeMetric
     # from collie.config import CollieConfig
     # from collie.utils import setup_distribution

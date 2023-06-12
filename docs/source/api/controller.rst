@@ -1,17 +1,17 @@
 .. role:: hidden
    :class: hidden-section
 
-CoLLiE.callbacks
+CoLLiE.controller
 ===================================
 
-.. contents:: CoLLiE.callbacks
+.. contents:: CoLLiE.controller
    :depth: 2
    :local:
    :backlinks: top
 
-.. currentmodule:: collie.callbacks
+.. currentmodule:: collie.controller
 
-Callbacks
+Controller
 ----------------
 
 .. autosummary::
@@ -19,7 +19,7 @@ Callbacks
    :nosignatures:
    :template: classtemplate.rst
 
-   Callback
-   HasMonitorCallback
-   CheckpointCallback
-   LoadBestModelCallback
+   Trainer
+   Evaluator
+   PerplexityEvaluator
+   ClassficationEvaluator

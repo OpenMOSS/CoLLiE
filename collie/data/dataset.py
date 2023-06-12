@@ -60,26 +60,28 @@ class _ShardContainer(list):
         return json.loads(self.file.readline().decode())
     
 class CollieDatasetForTraining(Dataset):
-    """ **CoLLie** 中的基本数据格式，可用于预训练、微调、生成任务。需提供的数据格式形似:
+    """ **CoLLie** 中的基本数据格式，可用于预训练、微调、生成任务。需提供的数据格式形似：
+
+        .. code-block::
     
-        ```json
-        [
-            {
-                "text": "这是prompt部分的文本",
-            },
-            ...
-        ]
+            [
+                {
+                    "text": "这是prompt部分的文本",
+                },
+                ...
+            ]
         
         或者:
-        
-        ```json
-        [
-            {
-                "input": "这是prompt部分的文本",
-                "output": "这是output部分的文本"
-            },
-            ...
-        ]
+
+        .. code-block::
+
+            [
+                {
+                    "input": "这是prompt部分的文本",
+                    "output": "这是output部分的文本"
+                },
+                ...
+            ]
         
         当使用第二种数据格式时，只有 `output` 部分的 token 会参与 loss计算。
     """
@@ -190,15 +192,16 @@ class CollieDatasetForClassification(CollieDatasetForTraining):
     """ **CoLLie** 中的分类任务数据集，须搭配 :class:`~collie.controller.evaluator.ClassficationEvaluator` 
         使用。需提供的数据格式形似:
     
-        ```json
-        [
-            {
-                "input": "这是prompt部分的文本",
-                "output": ["类别1", "类别2", "类别3"],
-                "target": 0
-            },
-            ...
-        ]
+        .. code-block::
+
+            [
+                {
+                    "input": "这是prompt部分的文本",
+                    "output": ["类别1", "类别2", "类别3"],
+                    "target": 0
+                },
+                ...
+            ]
     """
     def __getitem__(self, index) -> Tuple:
         if index > len(self):
