@@ -18,7 +18,7 @@ from deepspeed.accelerator import get_accelerator
 from deepspeed.runtime import zero
 from deepspeed.runtime.hybrid_engine import DeepSpeedHybridEngine
 from deepspeed.runtime.config import DeepSpeedConfig
-from deepspeed.runtime.pipe import PipelineModule
+from deepspeed.runtime.pipe import PipelineModule, LayerSpec
 
 from megatron.core import parallel_state, tensor_parallel
 
@@ -247,6 +247,18 @@ def patch_deepspeed(config):
         import wandb
         wandb.run.name = wandb_config.job_name
     WandbMonitor.__init__ = collie_wandb_init
+
+    # LayerSpec
+    def layer_spec_init(self, typename, *module_args, **module_kwargs):
+        self.typename = typename
+        self.module_args = module_args
+        self.module_kwargs = module_kwargs
+
+        if dist.is_initialized():
+            self.global_rank = dist.get_rank()
+        else:
+            self.global_rank = -1
+    LayerSpec.__init__ = layer_spec_init
         
 
 def patch_megatron():

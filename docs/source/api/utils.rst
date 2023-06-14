@@ -42,6 +42,7 @@ Utils
 
    find_tensors
    apply_to_collection
+   dict_as_params
 
 .. autosummary::
    :toctree: generated

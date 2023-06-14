@@ -14,7 +14,8 @@ import torch
 from collie.log.logger import logger
 from .rich_progress import f_rich_progress
 
-__all__ = ["find_tensors", "progress", "dictToObj", "apply_to_collection"]
+__all__ = ["find_tensors", "progress", "dictToObj", "apply_to_collection", 
+           "dict_as_params"]
 
 def find_tensors():
     """
@@ -372,6 +373,33 @@ def _check_valid_parameters_number(fn,
         raise e
 
 def dict_as_params(input_keys: Union[str, Sequence[str]], output_keys: Union[str, Sequence[str]]):
+    """
+    从输入的字典中顺次取出 ``input_keys`` 作为模型的输入，并且将模型的输出以
+    ``output_keys`` 为 key 放入字典中作为输出。在这一过程中多余的 key 并不会被丢
+    弃。
+
+    可以用于 ``nn.LayerNorm`` 这些在流水线并行中一般不需要改变 forward 过程但需要
+    改变输入输出结构的模型，使用该函数可以避免频繁地重写这些模型，并且可以适应流水线
+    ``LayerSpec`` 的初始化。
+
+    .. code-block::
+        dict_as_params(input_keys="input_ids", output_keys="hidden_states")(nn.Embedding, vocab_size, hidden_size)
+
+        LayerSpec(
+            dict_as_params(input_keys="input_ids", output_keys="hidden_states"),
+            nn.Embbedding, vocab_size, hidden_size
+        )
+
+    :param input_keys: 该模型输入需要的 key。``dict_as_params`` 会从输入的字典中
+        依次取出 ``input_keys`` 的内容传入模型。
+    :param output_keys: 该模型输出对应的 key。``dict_as_params`` 会依次将模型的
+        输出和 ``output_keys`` 进行对应，并放入字典中作为最终的输出。
+
+    .. info::
+
+        在使用该函数时，请您注意输入输出顺序和 ``input_keys`` ``output_keys`` 顺序
+        的对应关系，避免将错误的 key 赋给了对应的张量。
+    """
     def _inner(cls: type, *args, **kwargs):
         obj = cls(*args, **kwargs)
         raw_foward = obj.forward
