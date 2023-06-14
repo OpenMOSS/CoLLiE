@@ -53,12 +53,10 @@ class MossAttention(nn.Module):
         self.scale_attn = torch.sqrt(torch.tensor(self.head_dim, dtype=torch.float32)).to(torch.get_default_dtype())
         self.qkv_proj = ColumnParallelLinearWithoutBias(
             self.embed_dim, self.embed_dim * 3, bias=False, gather_output=True,
-            use_cpu_initialization=config.use_cpu_initialization
         )
 
         self.out_proj = RowParallelLinearWithoutBias(
             self.embed_dim, self.embed_dim, bias=False,
-            use_cpu_initialization=config.use_cpu_initialization,
             input_is_parallel=False
         )
         self.rotary_dim = config.rotary_dim
@@ -206,11 +204,9 @@ class MossMLP(nn.Module):
 
         self.fc_in = ColumnParallelLinearWithoutBias(
             embed_dim, intermediate_size, gather_output=False,
-            use_cpu_initialization=config.use_cpu_initialization
         )
         self.fc_out = RowParallelLinearWithoutBias(
             intermediate_size, embed_dim, input_is_parallel=True,
-            use_cpu_initialization=config.use_cpu_initialization
         )
 
         self.act = NewGELUActivation()
@@ -333,16 +329,13 @@ class MossForCausalLM(CollieModelForCausalLM):
         super().__init__(config)
         self.embed_dim = config.n_embd
         self.vocab_size = config.vocab_size
-        self.wte = VocabParallelEmbedding(config.vocab_size, self.embed_dim,
-                                          use_cpu_initialization=config.use_cpu_initialization)
+        self.wte = VocabParallelEmbedding(config.vocab_size, self.embed_dim)
         self.drop = nn.Dropout(config.embd_pdrop)
         self.h = nn.ModuleList([
             MossBlock(config, i) for i in range(config.n_layer)
         ])
         self.ln_f = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_epsilon)
-        self.lm_head = ColumnParallelLMHead(
-            config.n_embd, config.vocab_size, use_cpu_initialization=config.use_cpu_initialization
-        )
+        self.lm_head = ColumnParallelLMHead(config.n_embd, config.vocab_size)
 
     def forward(self, input_ids, **kwargs):
         inputs_embed = self.wte(input_ids)
@@ -388,7 +381,6 @@ class MossForCausalLM(CollieModelForCausalLM):
         layers = [
             dict_as_params("input_ids", "hidden_states")(
                 VocabParallelEmbedding, config.vocab_size, config.n_embd,
-                use_cpu_initialization=config.use_cpu_initialization
             ),
             dict_as_params("hidden_states", "hidden_states")(
                 nn.Dropout, config.embd_pdrop
@@ -403,7 +395,6 @@ class MossForCausalLM(CollieModelForCausalLM):
             ),
             dict_as_params("hidden_states", "logits")(
                 ColumnParallelLMHead, config.n_embd, config.vocab_size,
-                use_cpu_initialization=config.use_cpu_initialization
             )
         ]
 
