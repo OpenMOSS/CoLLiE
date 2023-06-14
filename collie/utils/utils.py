@@ -2,6 +2,7 @@ import os
 import functools
 import inspect
 import dataclasses
+from types import MethodType
 from typing import (Callable, Any, Dict, Union, Mapping, Sequence, Tuple,
                     Optional, List)
 from collections import defaultdict, OrderedDict
@@ -161,7 +162,7 @@ def _split_batch(batch, micro_batch_size, micro_batch_num):
     assert len(batch) == 2, len(batch)
     inputs = batch[0]
     labels = batch[1]
-    micro_batch_num = inputs.shape[0] // micro_batch_size
+    # micro_batch_num = inputs.shape[0] // micro_batch_size
     if isinstance(labels, Sequence):
         labels_split = [torch.split(label, micro_batch_size) for label in labels]
         labels_split = list(zip(*labels_split))
@@ -179,6 +180,15 @@ def _split_batch(batch, micro_batch_size, micro_batch_num):
     if isinstance(inputs, torch.Tensor):
         inputs_split = torch.split(inputs, micro_batch_size)
         assert len(inputs_split) == micro_batch_num, len(inputs_split)
+    elif isinstance(inputs, dict):
+        inputs_split = {}
+        for key in list(inputs.keys()):
+            if isinstance(inputs[key], torch.Tensor):
+                inputs_split[key] = torch.split(inputs[key], micro_batch_size)
+            elif isinstance(inputs[key], Sequence):
+                inputs_split[key] = [torch.split(input_, micro_batch_size) for input_ in inputs[key]]
+                inputs_split[key] = list(zip(*inputs_split[key]))
+        inputs_split = [{key: value[i] for key, value in inputs_split.items()} for i in range(micro_batch_num)]
     else:
         inputs_split = (torch.split(input_, micro_batch_size) for input_ in inputs)
         inputs_split = list(zip(*inputs_split))
@@ -360,3 +370,29 @@ def _check_valid_parameters_number(fn,
             f'parameters:{expected_params}. The following exception will '
             'happen.')
         raise e
+
+def dict_as_params(input_keys: Union[str, Sequence[str]], output_keys: Union[str, Sequence[str]]):
+    def _inner(cls: type, *args, **kwargs):
+        obj = cls(*args, **kwargs)
+        raw_foward = obj.forward
+        def _forward(self, dict_inputs: dict):
+            if isinstance(input_keys, str):
+                inputs = [dict_inputs[input_keys]]
+            elif isinstance(input_keys, Sequence):
+                inputs = [dict_inputs[k] for k in input_keys]
+            else:
+                raise ValueError(f"input_keys should be str or Sequence[str], but got {type(input_keys)}")
+            outputs = raw_foward(*inputs)
+            if isinstance(output_keys, str):
+                dict_inputs[output_keys] = outputs
+            elif isinstance(output_keys, Sequence):
+                assert isinstance(outputs, Sequence) and len(outputs) == len(output_keys), \
+                    "outputs should be Sequence and have the same length as output_keys"
+                for k, v in zip(output_keys, outputs):
+                    dict_inputs[k] = v
+            else:
+                raise ValueError(f"output_keys should be str or Sequence[str], but got {type(output_keys)}")
+            return dict_inputs
+        obj.forward = MethodType(_forward, obj)
+        return obj
+    return _inner

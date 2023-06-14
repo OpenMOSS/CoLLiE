@@ -6,7 +6,8 @@ from .callbacks import Callback, HasMonitorCallback, CheckpointCallback, \
     LoadBestModelCallback
 from .module import PipelineGenerationMixin, ColumnParallelLinear, \
     RowParallelLinear, VocabParallelEmbedding, RowParallelLinearWithoutBias, \
-    LinearWithHiddenStates, ColumnParallelLMHead, GPTLMLoss
+    ColumnParallelLinearWithoutBias, LinearWithHiddenStates, \
+    ColumnParallelLMHead, GPTLMLoss
 from .utils import progress, setup_distribution, set_seed, env, \
     setup_ds_engine, zero3_load_state_dict, is_zero3_enabled, \
     broadcast_tensor, find_tensors, BaseProvider, GradioProvider, \
@@ -43,6 +44,7 @@ __all__ = [
     'ColumnParallelLinear',
     'RowParallelLinear',
     'VocabParallelEmbedding',
+    'ColumnParallelLinearWithoutBias',
     'RowParallelLinearWithoutBias',
     'LinearWithHiddenStates',
     'ColumnParallelLMHead',

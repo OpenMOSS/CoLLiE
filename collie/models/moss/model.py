@@ -18,6 +18,7 @@ from collie.module import (ColumnParallelLinearWithoutBias,
 from collie.driver.io import IODriver
 from collie.models.base import CollieModelForCausalLM
 from collie.utils import env, progress
+from collie.utils.utils import dict_as_params
 from collie.config import CollieConfig
 from .utils import (apply_rotary_pos_emb, create_sinusoidal_positions,
                     set_index_dict, _state_dict_to_save, _state_dict_to_load,
@@ -215,7 +216,7 @@ class MossMLP(nn.Module):
         self.act = NewGELUActivation()
         self.dropout = nn.Dropout(config.resid_pdrop)
 
-    def forward(self, hidden_states: Optional[torch.FloatTensor]) -> torch.FloatTensor:
+    def forward(self, hidden_states) -> torch.FloatTensor:
         hidden_states = self.fc_in(hidden_states)
         hidden_states = self.act(hidden_states)
         hidden_states = self.fc_out(hidden_states)
@@ -269,7 +270,8 @@ class MossBlock(nn.Module):
 
         return outputs  # hidden_states, present, (attentions)
 
-    def forward(self, hidden_states):
+    def forward(self, inputs):
+        hidden_states = inputs["hidden_states"]
         if not self.training:
             self.hidden_states = hidden_states
         use_cache = not self.training and self.use_cache
@@ -293,7 +295,7 @@ class MossBlock(nn.Module):
             def create_custom_forward(module):
                 def custom_forward(*inputs):
                     # None for past_key_value
-                    return module(*inputs)
+                    return {"hidden_states": module(*inputs)}
 
                 return custom_forward
 
@@ -317,8 +319,8 @@ class MossBlock(nn.Module):
         if use_cache:
             self.past_key_values = outputs[1]
 
-        # hidden_states 
-        return outputs[0]
+        # hidden_states
+        return {"hidden_states": outputs[0]}
 
 
 class MossForCausalLM(CollieModelForCausalLM):
@@ -384,19 +386,23 @@ class MossForCausalLM(CollieModelForCausalLM):
         if isinstance(config, str):
             config = CollieConfig.from_pretrained(config)
         layers = [
-            VocabParallelEmbedding(
-                config.vocab_size, config.n_embd,
+            dict_as_params("input_ids", "hidden_states")(
+                VocabParallelEmbedding, config.vocab_size, config.n_embd,
                 use_cpu_initialization=config.use_cpu_initialization
             ),
-            nn.Dropout(config.embd_pdrop),
+            dict_as_params("hidden_states", "hidden_states")(
+                nn.Dropout, config.embd_pdrop
+            )
         ]
         layers += [
             LayerSpec(MossBlock, config, i) for i in range(config.n_layer)
         ]
         layers += [
-            nn.LayerNorm(config.n_embd, eps=config.layer_norm_epsilon),
-            ColumnParallelLMHead(
-                config.n_embd, config.vocab_size,
+            dict_as_params("hidden_states", "hidden_states")(
+                nn.LayerNorm, config.n_embd, eps=config.layer_norm_epsilon
+            ),
+            dict_as_params("hidden_states", "logits")(
+                ColumnParallelLMHead, config.n_embd, config.vocab_size,
                 use_cpu_initialization=config.use_cpu_initialization
             )
         ]

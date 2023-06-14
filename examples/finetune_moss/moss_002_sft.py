@@ -41,7 +41,7 @@ def collate_fn(batch, tokenizer):
     batch_input_ids = torch.nn.utils.rnn.pad_sequence(batch_input_ids, batch_first=True, padding_value=tokenizer.eos_token_id)
     batch_labels = torch.nn.utils.rnn.pad_sequence(batch_labels, batch_first=True, padding_value=-100)
 
-    return batch_input_ids, batch_labels
+    return {"input_ids": batch_input_ids}, {"labels": batch_labels}
 
 def process(sample, tokenizer, max_len):
     chat = sample["plain_text"].split("<eoa>")[:-1]

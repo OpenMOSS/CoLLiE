@@ -23,6 +23,7 @@ from megatron.core import parallel_state
 from deepspeed.runtime.pipe.module import PipelineModule
 from deepspeed.runtime.pipe.topology import (PipeModelDataParallelTopology,
                                              PipelineParallelGrid)
+from deepspeed.runtime.utils import set_random_seed
 from deepspeed.runtime.engine import DeepSpeedEngine
 from deepspeed.runtime.activation_checkpointing import checkpointing
 from deepspeed.accelerator import get_accelerator
@@ -129,7 +130,7 @@ class GPTLMLoss(torch.nn.Module):
         self.ignore_index = ignore_index
         self.loss = torch.nn.CrossEntropyLoss(ignore_index=ignore_index)  # ignore <pad> when compute loss
 
-    def forward(self, logits: torch.Tensor, labels: Dict[str, torch.Tensor], *args):
+    def forward(self, logits: Dict[str, torch.Tensor], labels: Dict[str, torch.Tensor], *args):
         """ 计算损失
         :param logits: 模型的输出
         :param labels: 真实标签
@@ -139,6 +140,8 @@ class GPTLMLoss(torch.nn.Module):
             if "labels_mask" in labels.keys():
                 labels_mask = labels["labels_mask"]
             labels = labels["labels"]
+        # TODO key
+        logits = logits["logits"]
         if labels_mask is not None:
             labels = labels.masked_fill(labels_mask==1, value=self.ignore_index)
         shift_logits = logits[..., :-1, :].contiguous()
