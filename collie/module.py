@@ -141,7 +141,8 @@ class GPTLMLoss(torch.nn.Module):
                 labels_mask = labels["labels_mask"]
             labels = labels["labels"]
         # TODO key
-        logits = logits["logits"]
+        if isinstance(logits, dict):
+            logits = logits["logits"]
         if labels_mask is not None:
             labels = labels.masked_fill(labels_mask==1, value=self.ignore_index)
         shift_logits = logits[..., :-1, :].contiguous()
