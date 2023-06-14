@@ -383,6 +383,7 @@ def dict_as_params(input_keys: Union[str, Sequence[str]], output_keys: Union[str
     ``LayerSpec`` 的初始化。
 
     .. code-block::
+
         dict_as_params(input_keys="input_ids", output_keys="hidden_states")(nn.Embedding, vocab_size, hidden_size)
 
         LayerSpec(
@@ -395,7 +396,7 @@ def dict_as_params(input_keys: Union[str, Sequence[str]], output_keys: Union[str
     :param output_keys: 该模型输出对应的 key。``dict_as_params`` 会依次将模型的
         输出和 ``output_keys`` 进行对应，并放入字典中作为最终的输出。
 
-    .. info::
+    .. note::
 
         在使用该函数时，请您注意输入输出顺序和 ``input_keys`` ``output_keys`` 顺序
         的对应关系，避免将错误的 key 赋给了对应的张量。
