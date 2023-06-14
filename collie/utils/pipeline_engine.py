@@ -538,7 +538,8 @@ class ColliePipelineEngine(PipelineEngine):
                 if not tensor.is_floating_point():
                     assert tensor.grad is None
                     continue
-                assert tensor.grad is not None
+                else:
+                    assert tensor.grad is not None
                 p2p.send(tensor.grad, self.prev_stage)
 
         # XXX Terrible hack
@@ -645,7 +646,7 @@ class ColliePipelineEngine(PipelineEngine):
                 #      if t.is_floating_point() ]
                 # )
             else:
-                sizes_and_dtypes = [(list(t.size()), t.dtype) for t in outputs.value() if t.is_floating_point()]
+                sizes_and_dtypes = [(list(t.size()), t.dtype) for t in outputs.values() if t.is_floating_point()]
             self.grad_layer = self._allocate_buffers(sizes_and_dtypes, num_buffers=1)[0]
 
         if isinstance(self.grad_layer, torch.Tensor):
