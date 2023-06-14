@@ -25,7 +25,7 @@ except ModuleNotFoundError:
 from collie.log.logger import logger
 from collie.config import load_config
 from collie.config import CollieConfig
-from collie.utils import progress, env
+from collie.utils import progress, env, dict_as_params
 from collie.driver.io import IODriver
 from collie.models.base import CollieModelForCausalLM
 from collie.module import ColumnParallelLinearWithoutBias, RowParallelLinearWithoutBias, ColumnParallelLMHead
@@ -160,15 +160,15 @@ class LlamaLayer(nn.Module):
         self.past_key_values = None
         self.hidden_states = None
 
-    def _forward(self, hidden_states: torch.Tensor):
+    def _forward(self, inputs: dict):
         if not self.training:
-            self.hidden_states = hidden_states
+            self.hidden_states = inputs["hidden_states"]
         else:
             self.hidden_states = None
-        assert hidden_states.ndim == 3, f"hidden_states.shape must be (B, N, H), but got {hidden_states.shape}"
-        batch_size, seq_len, _ = hidden_states.shape
+        assert inputs["hidden_states"].ndim == 3, f"hidden_states.shape must be (B, N, H), but got {inputs['hidden_states'].shape}"
+        batch_size, seq_len, _ = inputs["hidden_states"].shape
         head_dim = self.config.hidden_size // self.config.num_attention_heads
-        _hidden_states = self.input_layernorm(hidden_states)
+        _hidden_states = self.input_layernorm(inputs["hidden_states"])
         query, key, value = self.self_attn["q_proj"](_hidden_states), self.self_attn["k_proj"](
             _hidden_states), self.self_attn["v_proj"](_hidden_states)
         query, key, value = rearrange(query, "b n (h d) -> b n h d", d=head_dim), \
@@ -213,24 +213,27 @@ class LlamaLayer(nn.Module):
             output = F.dropout(output, p=self.config.dropout,
                                training=self.training)
         output = output[:, start_pos:, :]
-        hidden_states = hidden_states + self.self_attn["o_proj"](output)
-        _hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = hidden_states + F.dropout(self.mlp["down_proj"](F.silu(self.mlp["gate_proj"](
+        inputs["hidden_states"] = inputs["hidden_states"] + self.self_attn["o_proj"](output)
+        _hidden_states = self.post_attention_layernorm(inputs["hidden_states"])
+        inputs["hidden_states"] = inputs["hidden_states"] + F.dropout(self.mlp["down_proj"](F.silu(self.mlp["gate_proj"](
             _hidden_states)) * self.mlp["up_proj"](_hidden_states)), p=self.config.dropout, training=self.training)
-        return hidden_states
+        return {
+            "hidden_states": inputs["hidden_states"]
+        }
 
-    def forward(self, hidden_states: torch.Tensor):
+    def forward(self, inputs: dict):
         if self.config.checkpointing and self.training:
             def create_custom_forward(module):
-                def custom_forward(*inputs):
-                    return module._forward(*inputs)
+                def custom_forward(*args):
+                    return module._forward(*args)
                 return custom_forward
-            return torch.utils.checkpoint.checkpoint(
+            inputs.update(torch.utils.checkpoint.checkpoint(
                 create_custom_forward(self),
-                hidden_states
-            )
+                inputs
+            ))
         else:
-            return self._forward(hidden_states)
+            inputs.update(self._forward(inputs))
+        return inputs
 
 
 class LlamaForCausalLM(CollieModelForCausalLM):
@@ -257,19 +260,18 @@ class LlamaForCausalLM(CollieModelForCausalLM):
         self.config = PretrainedConfig(is_decoder=True)
         self.main_input_name = "input_ids"
 
-    def forward(self, input_ids: torch.Tensor, **kwargs):
-        assert input_ids.ndim == 2, f"input_ids.shape must be (B, N), but got {input_ids.shape}"
-        hidden_states = self.embed_tokens(input_ids)
+    def forward(self, inputs: dict, **kwargs):
+        inputs["hidden_states"] = self.embed_tokens(inputs["input_ids"])
         all_hidden_states = ()
         for layer in self.layers:
-            all_hidden_states += (hidden_states,)
-            hidden_states = layer(hidden_states)
-        hidden_states = self.norm(hidden_states)
-        logits = self.lm_head(hidden_states)
+            all_hidden_states += (inputs["hidden_states"],)
+            inputs.update(layer(inputs))
+        inputs["hidden_states"] = self.norm(inputs["hidden_states"])
+        inputs["logits"] = self.lm_head(inputs["hidden_states"])
 
         return CausalLMOutputWithPast(
             loss=None,
-            logits=logits,
+            logits=inputs["logits"],
             past_key_values=self._get_past_key_values(self.layers),
             hidden_states=all_hidden_states,
             attentions=None
@@ -304,16 +306,18 @@ class LlamaForCausalLM(CollieModelForCausalLM):
             config = CollieConfig.from_pretrained(config)
         return [TiedLayerSpec(
             "embed_tokens",
+            dict_as_params(input_keys="input_ids", output_keys="hidden_states"),
             tensor_parallel.VocabParallelEmbedding,
             config.vocab_size,
             config.hidden_size),
             *[LayerSpec(LlamaLayer, config)
               for _ in range(config.num_hidden_layers)],
-            LayerSpec(RMSNormalize,
+            LayerSpec(dict_as_params(input_keys="hidden_states", output_keys="hidden_states"), RMSNormalize,
                       dim=config.hidden_size,
                       eps=config.rms_norm_eps),
             TiedLayerSpec(
             "embed_tokens",
+            dict_as_params(input_keys="hidden_states", output_keys="logits"),
             ColumnParallelLMHead,
             config.hidden_size,
             config.vocab_size,

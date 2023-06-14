@@ -7,30 +7,32 @@ from datasets import load_dataset
 import torch
 
 config = CollieConfig.from_pretrained("decapoda-research/llama-7b-hf")
-config.pp_size = 8
-config.train_micro_batch_size = 2
+config.pp_size = 4
+config.train_micro_batch_size = 1
 config.eval_batch_size = 2
-config.gradient_accumulation_steps = 32
-config.eval_per_n_steps = 5
+config.gradient_accumulation_steps = 4
+config.eval_per_n_steps = 300
+config.checkpointing = False
 config.ds_config = {
     "fp16": {
         "enabled": True
     },
-    "monitor_config": {
-        "enabled": True,
-        "wandb": {
-            "enabled": True,
-            "team": "00index",
-            "project": "collie",
-            "group": "test_evaluator"
-        }
-    },
+    # "monitor_config": {
+    #     "enabled": True,
+    #     "wandb": {
+    #         "enabled": True,
+    #         "team": "00index",
+    #         "project": "collie",
+    #         "group": "test_evaluator"
+    #     }
+    # },
     # "zero_optimization": {
     #     "stage": 3,
     # }
 }
 config.seed = 1024
 model = LlamaForCausalLM.from_pretrained("/mnt/petrelfs/zhangshuo/model/llama-7b-hf", config=config)
+# model = LlamaForCausalLM.from_config(config)
 optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5)
 lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=1000)
 ### Prepare training dataset

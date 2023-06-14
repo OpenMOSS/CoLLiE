@@ -137,11 +137,11 @@ class CollieDatasetForTraining(Dataset):
             else:
                 raise ValueError("Dataset must have one or two fields.")
         if labels_mask is None:
-            return input_ids, {
+            return {"input_ids": input_ids}, {
                 "labels": input_ids
             }
         else:
-            return input_ids, {
+            return {"input_ids": input_ids}, {
                 "labels": input_ids,
                 "labels_mask": labels_mask
             }
@@ -216,7 +216,7 @@ class CollieDatasetForClassification(CollieDatasetForTraining):
                 target = self.dataset[index]["target"]
             else:
                 raise ValueError("CollieDatasetForClassification must have three fields (`input`, `output` and `target`).")
-        return input_ids, {
+        return {"input_ids": input_ids}, {
             "labels": input_ids,
             "target": target
         }

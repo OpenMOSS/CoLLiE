@@ -17,13 +17,11 @@ class ColliePadder:
     :param padding_left: 是否在左侧填充
     """
     def __init__(self, 
-                 padding_token_id: int=0,
-                 labels_padding_token_id: int=-100,
+                 padding_token_id: dict={"attention_mask": 0, "labels": -100},
                  padding_left: bool = False) -> None:
         self.padding_token_id = padding_token_id
-        self.labels_padding_token_id = labels_padding_token_id
         self.padding_left = padding_left
-        self.mode = "input_ids"
+        self.key = "input_ids"
         
     def collate_fn(self, batch: Sequence[Any]) -> torch.Tensor:
         """ 用于填充的 ``collate_fn``
@@ -31,10 +29,7 @@ class ColliePadder:
         :param batch: 一个 batch 的数据
         :return: 填充后的 batch
         """
-        if self.mode == "input_ids":
-            padding_token_id = self.padding_token_id
-        else:
-            padding_token_id = self.labels_padding_token_id
+        padding_token_id = self.padding_token_id.get(self.key, 0)
         batch = list(batch)
         if isinstance(batch[0], torch.Tensor):
             pass
@@ -69,10 +64,6 @@ class ColliePadder:
         assert len(batch[0]) == 2, "Samples from dataset must be a tuple of size 2. Eg: (input_ids, labels)"
         padded_batch = []
         for i in range(2):
-            if i == 0:
-                self.mode = "input_ids"
-            else:
-                self.mode = "labels"
             if isinstance(batch[0][i], (torch.Tensor, np.ndarray, list, int, float)):
                 padded_batch.append(self.collate_fn([x[i] for x in batch]))
             elif isinstance(batch[0][i], tuple):
@@ -80,6 +71,7 @@ class ColliePadder:
             elif isinstance(batch[0][i], Dict):
                 padded_dict = {}
                 for key in batch[0][i].keys():
+                    self.key = key
                     if isinstance(batch[0][i][key], (torch.Tensor, np.ndarray, list, int, float)):
                         padded_dict[key] = self.collate_fn([x[i][key] for x in batch])
                     elif isinstance(batch[0][i][key], tuple) and isinstance(batch[0][i][key][0], (torch.Tensor, np.ndarray, list)):

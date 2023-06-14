@@ -22,6 +22,7 @@ from deepspeed.runtime.pipe.engine import PipelineEngine
 from deepspeed.runtime.engine import DeepSpeedSchedulerCallable
 from transformers.generation.utils import GenerationConfig
 from transformers.modeling_utils import PreTrainedModel
+from transformers import PreTrainedTokenizerBase
 
 from collie.config import CollieConfig
 from collie.module import PipelineGenerationMixin, GPTLMLoss, PipelineModel
@@ -104,6 +105,7 @@ class Trainer(TrainerEventTrigger):
     def __init__(self, 
                  model: torch.nn.Module,
                  config: CollieConfig,
+                 tokenizer: Optional[PreTrainedTokenizerBase] = None,
                  loss_fn: Callable = GPTLMLoss(),
                  train_fn: Optional[Callable] = None,
                  eval_fn: Optional[Callable] = None,
@@ -131,6 +133,7 @@ class Trainer(TrainerEventTrigger):
                 self.config.ds_config["gradient_accumulation_steps"] = 1
 
         self.model = model
+        self.tokenizer = tokenizer
         self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
         self.train_dataset = train_dataset
@@ -142,6 +145,14 @@ class Trainer(TrainerEventTrigger):
             self.eval_fn = eval_fn
         self.train_dataset_collate_fn = train_dataset_collate_fn
         self.eval_dataset_collate_fn = eval_dataset_collate_fn
+        if self.tokenizer is not None and self.tokenizer.pad_token_id is not None \
+            and isinstance(self.train_dataset_collate_fn, ColliePadder) \
+                and "input_ids" not in self.train_dataset_collate_fn.padding_token_id.keys():
+            self.train_dataset_collate_fn.padding_token_id["input_ids"] = self.tokenizer.pad_token_id
+        if self.tokenizer is not None and self.tokenizer.pad_token_id is not None \
+            and isinstance(self.eval_dataset_collate_fn, ColliePadder) \
+                and "input_ids" not in self.eval_dataset_collate_fn.padding_token_id.keys():
+            self.train_dataset_collate_fn.padding_token_id["input_ids"] = self.tokenizer.pad_token_id
         self.generation_config = generation_config
         
         self.communicate_buffer_shape = None
@@ -381,15 +392,16 @@ class Trainer(TrainerEventTrigger):
         if trainer.config.pp_size > 1:
             loss = trainer.engine.train_batch(batch)
         else:
-            input_ids, labels = batch
+            inputs, labels = batch
+            inputs = {key: value.cuda() for key, value in inputs.items()}
             # concat prompt labels for p-tuning
             if trainer.config.peft_config and trainer.config.peft_config.peft_type in ["PROMPT_TUNING", "P_TUNING"]:
-                batch_size = input_ids.shape[0]
+                batch_size = inputs["input_ids"].shape[0]
                 prefix_labels = torch.full((batch_size, trainer.config.peft_config.num_virtual_tokens), -100).to(labels.device)
                 labels = torch.cat((prefix_labels, labels), dim=1)
 
-            logits = trainer.engine(input_ids=input_ids.cuda()).logits
-            loss = trainer.loss_fn(logits, labels)
+            outputs = trainer.engine(inputs)
+            loss = trainer.loss_fn(outputs, labels)
             if not isinstance(trainer.optimizer, InplaceSGD):
                 trainer.engine.backward(loss)
                 trainer.engine.step()
@@ -400,8 +412,8 @@ class Trainer(TrainerEventTrigger):
                     if trainer.optimizer.zero_enabled:
                         trainer.engine.optimizer.get_param_coordinator(training=True).reset_step()
                         # zero-3 doesn't support backward twice, so need an additional forward here
-                        logits = trainer.engine(input_ids=input_ids.cuda()).logits
-                        loss = trainer.loss_fn(logits, labels)
+                        outputs = trainer.engine(inputs)
+                        loss = trainer.loss_fn(outputs, labels)
                 if trainer.lr_scheduler:
                     lr = trainer.lr_scheduler.step(global_step)
                 else:
