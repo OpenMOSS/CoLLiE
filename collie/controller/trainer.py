@@ -299,41 +299,51 @@ class Trainer(TrainerEventTrigger):
         :param dataloader: 用于训练的数据集，为 ``Iterable`` 对象 ，当为 ``None`` 时，使用由 ``train_dataset`` 生成的 ``train_dataloader``
         """
         train_dataloader = self.train_dataloader
-        loss = 0.0
+        loss = None
         if dataloader is not None:
             train_dataloader = dataloader
 
         self.on_train_begin()
-        with progress(range(self.epoch_idx, self.config.train_epochs), desc="Training Epoch", disable=env.rank != 0, completed=self.epoch_idx, total=self.config.train_epochs) as tqbar_epoch:
-            for self.epoch_idx in tqbar_epoch:
-                self.on_train_epoch_begin()
-                tqbar_epoch.set_description(f"Training Epoch: {self.epoch_idx} / {self.config.train_epochs}")
-
-                with progress(train_dataloader, desc="Training Batch: ", disable=env.rank != 0, completed=self.batch_idx, total=self.steps_per_epoch) as tqbar_batch:
-                    for self.batch_idx, batch in enumerate(tqbar_batch, start=self.batch_idx):
-                        tqbar_batch.set_description(f"Training Batch: {self.batch_idx} / {self.steps_per_epoch}")
-                        self.data_provider_handler()
-                        self.engine.train()
-                        self.on_train_batch_begin(batch)
-                        with self.monitor as item:
-                            loss = self.train_fn(self, batch, self.global_batch_idx)
-                            item.update({"loss": round(loss, 4),
-                                         "lr": self.lr,
-                                         "batch": batch,
-                                         "batch_idx": self.batch_idx,
-                                         "epoch_idx": self.epoch_idx,
-                                         "global_batch_idx": self.global_batch_idx,
-                                         "memory_allocated": torch.cuda.max_memory_allocated(),
-                                         "mode": "train"}
-                                )
-                        tqbar_batch.set_postfix(Loss=round(loss, 4))
-                        self.on_train_batch_end(loss)
-                        if self.config.eval_per_n_steps > 0 and (self.batch_idx + 1) % self.config.eval_per_n_steps == 0:
-                            self.eval()
-                if self.config.eval_per_n_epochs > 0 and (self.epoch_idx + 1) % self.config.eval_per_n_epochs == 0:
+        tqbar_epoch = progress(
+            range(self.epoch_idx, self.config.train_epochs),
+            desc="Training Epoch", disable=env.rank != 0,
+            completed=self.epoch_idx, total=self.config.train_epochs
+        )
+        tqbar_batch = progress(
+            train_dataloader, desc="Training Batch: ",
+            disable=env.rank != 0, total=self.steps_per_epoch
+        )
+        for self.epoch_idx in tqbar_epoch:
+            self.on_train_epoch_begin()
+            tqbar_epoch.set_description(f"Training Epoch: {self.epoch_idx} / {self.config.train_epochs}")
+            tqbar_batch.reset(
+                f"Training Batch: {self.batch_idx} / {self.steps_per_epoch}",
+                completed=self.batch_idx,
+            )
+            for self.batch_idx, batch in enumerate(tqbar_batch, start=self.batch_idx):
+                tqbar_batch.set_description(f"Training Batch: {self.batch_idx} / {self.steps_per_epoch}")
+                self.data_provider_handler()
+                self.engine.train()
+                self.on_train_batch_begin(batch)
+                with self.monitor as item:
+                    loss = self.train_fn(self, batch, self.global_batch_idx)
+                    item.update({"loss": round(loss, 4),
+                                    "lr": self.lr,
+                                    "batch": batch,
+                                    "batch_idx": self.batch_idx,
+                                    "epoch_idx": self.epoch_idx,
+                                    "global_batch_idx": self.global_batch_idx,
+                                    "memory_allocated": torch.cuda.max_memory_allocated(),
+                                    "mode": "train"}
+                        )
+                tqbar_batch.set_postfix(Loss=round(loss, 4))
+                self.on_train_batch_end(loss)
+                if self.config.eval_per_n_steps > 0 and (self.batch_idx + 1) % self.config.eval_per_n_steps == 0:
                     self.eval()
-                self.on_train_epoch_end()
-                self.batch_idx = 0
+            if self.config.eval_per_n_epochs > 0 and (self.epoch_idx + 1) % self.config.eval_per_n_epochs == 0:
+                self.eval()
+            self.on_train_epoch_end()
+            self.batch_idx = 0
         self.on_train_end()
         self.epoch_idx = 0
                 
