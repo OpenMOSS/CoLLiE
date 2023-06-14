@@ -47,6 +47,10 @@ class Trainer(TrainerEventTrigger):
         * transformers 提供的模型 ``transformers.PreTrainedModel`` 只支持 `ZeRO`
         
     :param config: 用于训练和验证的配置
+    :param tokenizer: 用于训练和验证的分词器，该分词器将用于:
+        * 保存模型时 `trainer.save_model` 时自动同时保存 `tokenizer`
+        * 使用 :class:`~collie.controller.evaluator.Evaluator` 进行基于生成的验证时，使用 `tokenizer` 对生成的结果进行解码
+        若无上述需求，可不传入 `tokenizer`
     :param loss_fn: 用于计算 loss 的函数，默认使用 :meth:`~collie.module.GPTLMLoss`
     :param train_fn: 用于训练的函数，默认使用 :meth:`~collie.controller.Trainer.train_fn`
     :param eval_fn: 用于验证的函数，默认使用 :meth:`~collie.controller.Evaluator.eval_fn`
@@ -167,9 +171,9 @@ class Trainer(TrainerEventTrigger):
                 "Note that you have set both `evaluators` and `eval_dataset` "
                 "and the later will not take effect."
             )
-
-        if (evaluators is None or (hasattr(evaluators, "__len__") and len(evaluators) == 0)) and self.eval_dataset is not None:
+        if evaluators is None:
             evaluators = []
+        if ((hasattr(evaluators, "__len__") and len(evaluators) == 0)) and self.eval_dataset is not None:
             evaluator = Evaluator(model=model, dataset=eval_dataset, metrics=metrics, eval_fn=eval_fn,
                 config=config, collate_fn=eval_dataset_collate_fn, data_provider=None,
                 generation_config=generation_config)
@@ -178,6 +182,8 @@ class Trainer(TrainerEventTrigger):
         if not isinstance(evaluators, Sequence):
             evaluators = [evaluators]
         for evaluator in evaluators:
+            if self.tokenizer is not None:
+                evaluator.tokenizer = self.tokenizer
             evaluator.engine = self.engine
             evaluator.data_provider = self.data_provider
 
@@ -383,14 +389,13 @@ class Trainer(TrainerEventTrigger):
             loss = trainer.engine.train_batch(batch)
         else:
             inputs, labels = batch
-            inputs = {key: value.cuda() for key, value in inputs.items()}
             # concat prompt labels for p-tuning
             if trainer.config.peft_config and trainer.config.peft_config.peft_type in ["PROMPT_TUNING", "P_TUNING"]:
                 batch_size = inputs["input_ids"].shape[0]
                 prefix_labels = torch.full((batch_size, trainer.config.peft_config.num_virtual_tokens), -100).to(labels.device)
                 labels = torch.cat((prefix_labels, labels), dim=1)
 
-            outputs = trainer.engine(inputs)
+            outputs = trainer.engine(**inputs)
             loss = trainer.loss_fn(outputs, labels)
             if not isinstance(trainer.optimizer, InplaceSGD):
                 trainer.engine.backward(loss)
@@ -402,7 +407,7 @@ class Trainer(TrainerEventTrigger):
                     if trainer.optimizer.zero_enabled:
                         trainer.engine.optimizer.get_param_coordinator(training=True).reset_step()
                         # zero-3 doesn't support backward twice, so need an additional forward here
-                        outputs = trainer.engine(inputs)
+                        outputs = trainer.engine(**inputs)
                         loss = trainer.loss_fn(outputs, labels)
                 if trainer.lr_scheduler:
                     lr = trainer.lr_scheduler.step(global_step)

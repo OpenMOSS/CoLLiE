@@ -166,6 +166,7 @@ class LlamaLayer(nn.Module):
         else:
             self.hidden_states = None
         assert inputs["hidden_states"].ndim == 3, f"hidden_states.shape must be (B, N, H), but got {inputs['hidden_states'].shape}"
+        inputs["attention_mask"] = inputs.get("attention_mask", torch.ones_like(inputs["input_ids"]).to(inputs["hidden_states"].device))
         batch_size, seq_len, _ = inputs["hidden_states"].shape
         head_dim = self.config.hidden_size // self.config.num_attention_heads
         _hidden_states = self.input_layernorm(inputs["hidden_states"])
@@ -191,7 +192,7 @@ class LlamaLayer(nn.Module):
             assert FlashAttention is not None, \
                 "Detected flash_attn is not installed. See https://github.com/HazyResearch/flash-attention"
             qkv = torch.stack([query, key, value], dim=2)
-            output, _ = FlashAttention()(qkv, causal=True)
+            output, _ = FlashAttention()(qkv, key_padding_mask=inputs["attention_mask"], causal=True)
             output = rearrange(output, "b n h d -> b n (h d)")
             output = F.dropout(output, p=self.config.dropout,
                                training=self.training)
@@ -205,8 +206,10 @@ class LlamaLayer(nn.Module):
                 mask = torch.triu(mask, diagonal=1).to(
                     attention_score.device)
                 attention_score = attention_score + mask
+            attention_mask = (1.0 - inputs["attention_mask"].unsqueeze(1).unsqueeze(2)) * torch.finfo(
+                attention_score.dtype).min
             attention_score = F.softmax(
-                attention_score, dim=-1).type_as(value)
+                attention_score + attention_mask, dim=-1).type_as(value)
             output = torch.matmul(attention_score, value)
             output = output.transpose(1, 2).contiguous().view(
                 batch_size, seq_len + start_pos, -1)
@@ -229,7 +232,8 @@ class LlamaLayer(nn.Module):
                 return custom_forward
             inputs.update(torch.utils.checkpoint.checkpoint(
                 create_custom_forward(self),
-                inputs
+                inputs,
+                use_reentrant=False
             ))
         else:
             inputs.update(self._forward(inputs))
@@ -260,7 +264,10 @@ class LlamaForCausalLM(CollieModelForCausalLM):
         self.config = PretrainedConfig(is_decoder=True)
         self.main_input_name = "input_ids"
 
-    def forward(self, inputs: dict, **kwargs):
+    def forward(self, input_ids: torch.Tensor, attention_mask: Optional[torch.Tensor] = None, **kwargs):
+        inputs = {"input_ids": input_ids}
+        if attention_mask is not None:
+            inputs["attention_mask"] = attention_mask
         inputs["hidden_states"] = self.embed_tokens(inputs["input_ids"])
         all_hidden_states = ()
         for layer in self.layers:
@@ -287,8 +294,10 @@ class LlamaForCausalLM(CollieModelForCausalLM):
             self._clean_past_key_values(self.layers)
         else:
             input_ids = input_ids[:, -1].unsqueeze(-1)
+            if attention_mask is not None:
+                attention_mask = attention_mask[:, -1].unsqueeze(-1)
             self._set_past_key_values(self.layers, past_key_values)
-        return {"input_ids": input_ids}
+        return {"input_ids": input_ids, "attention_mask:": attention_mask}
 
     def clean(self):
         self._clean_hidden_states([*self.layers, self.lm_head])

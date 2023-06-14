@@ -72,7 +72,7 @@ class ColliePipelineEngine(PipelineEngine):
             total_loss = None
         self.total_loss = None
         # special case for generation
-        gradient_accumulation_steps = batch[0].shape[0]
+        gradient_accumulation_steps = batch[0]["input_ids"].shape[0]
         batch = _split_batch(batch, 1, gradient_accumulation_steps)
         data_iter = iter(batch)
         

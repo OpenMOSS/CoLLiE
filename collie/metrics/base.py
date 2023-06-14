@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 import torch.distributed as dist
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
+from functools import reduce
 
 import torch
 
@@ -63,7 +64,12 @@ class BaseMetric(ABC):
         if self.trainer.config.dp_size > 1:
             group = self.trainer.engine.mpu.get_data_parallel_group()
             for key in result.keys():
-                gather_list = [torch.zeros_like(result[key]).to(result[key].dtype).to(result[key].device) for _ in range(self.trainer.config.dp_size)]
-                dist.all_gather(gather_list, result[key], group=group)
-                result[key] = torch.cat(gather_list, dim=0)
+                if isinstance(result[key], torch.Tensor):
+                    gather_list = [torch.zeros_like(result[key]).to(result[key].dtype).to(result[key].device) for _ in range(self.trainer.config.dp_size)]
+                    dist.all_gather(gather_list, result[key], group=group)
+                    result[key] = torch.cat(gather_list, dim=0)
+                elif isinstance(result[key], Sequence):
+                    gather_list = [None for _ in range(self.trainer.config.dp_size)]
+                    dist.all_gather_object(gather_list, result[key], group=group)
+                    result[key] = reduce(lambda x, y: list(x) + list(y), gather_list)
         return result

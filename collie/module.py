@@ -285,17 +285,22 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
         self._clean_hidden_states()
         return res
         
-    def forward(self, input_ids: torch.Tensor, **kwargs) -> torch.Tensor:
+    def forward(self, input_ids: torch.Tensor, attention_mask: Optional[torch.Tensor] = None, **kwargs) -> torch.Tensor:
         """ 进行一次流水线模型的前向传播
         """
         past_key_values=self._get_past_key_values()
+        inputs = {"input_ids": input_ids}
+        if attention_mask is not None:
+            inputs["attention_mask"] = attention_mask
         if past_key_values is not None:
-            input_ids = input_ids[:, -1:]
-        batch = (input_ids, input_ids)
-        logits = self.engine.generate_batch(batch)
+            inputs["input_ids"] = inputs["input_ids"][:, -1:]
+            if "attention_mask" in inputs.keys():
+                inputs["attention_mask"] = inputs["attention_mask"][:, -1:]
+        batch = (inputs, {"labels": inputs["input_ids"]})
+        outputs = self.engine.generate_batch(batch)
         return CausalLMOutputWithPast(
             loss=None,
-            logits=logits,
+            logits=outputs["logits"],
             past_key_values=self._get_past_key_values(),
             hidden_states=self._get_hidden_states(),
             attentions=None
@@ -310,7 +315,7 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
         """ 准备流水线模型的输入
         """
         if use_cache:
-            logger.warning("use_cache is not supported for pipeline generation. Setting use_cache to False")
+            # logger.warning("use_cache is not supported for pipeline generation. Setting use_cache to False")
             self.generation_config.use_cache = False
             use_cache = False
         self._set_use_cache(use_cache)
@@ -318,7 +323,7 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
             self._clean_past_key_values()
         else:
             self._set_past_key_values(past_key_values)
-        return {"input_ids": input_ids}
+        return {"input_ids": input_ids, "attention_mask": attention_mask}
     
     def can_generate(self) -> bool:
         """ 判断当前流水线模型是否可以进行生成
