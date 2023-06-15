@@ -1,7 +1,7 @@
 from typing import Dict, Optional
 from .base import BaseMetric
 
-class PplMetric(BaseMetric):
+class PPLMetric(BaseMetric):
     """
     计算困惑度 Perplexity 的 Metric。
     """

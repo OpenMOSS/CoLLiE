@@ -15,6 +15,7 @@ from functools import reduce
 
 import torch
 import deepspeed
+import numpy as np
 import torch.distributed as dist
 from torch.optim.lr_scheduler import _LRScheduler
 from deepspeed.accelerator import get_accelerator
@@ -258,7 +259,7 @@ class Trainer(TrainerEventTrigger):
         generated_ids = generation_model.generate(
             input_ids=input_ids.cuda(), 
             attention_mask=torch.ones_like(input_ids).cuda(), 
-            generation_config=self.generation_config,
+            generation_config=self.data_provider.generation_config,
             streamer=streamer if use_stream else None
         )
         if not use_stream:
@@ -319,7 +320,10 @@ class Trainer(TrainerEventTrigger):
         loss = 0.0
         if dataloader is not None:
             train_dataloader = dataloader
-
+        # if env.rank == 0:
+        #     torch.set_printoptions(threshold=np.inf)
+        #     logger.info("Sample of train_dataset:")
+        #     logger.info(next(iter(train_dataloader)))
         self.on_train_begin()
         with progress(range(self.epoch_idx, self.config.train_epochs), desc="Training Epoch", disable=env.rank != 0, completed=self.epoch_idx, total=self.config.train_epochs) as tqbar_epoch:
             for self.epoch_idx in tqbar_epoch:

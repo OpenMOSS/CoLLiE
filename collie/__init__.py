@@ -19,9 +19,9 @@ from .module import PipelineGenerationMixin, ColumnParallelLinear, \
 from .controller import Trainer, Evaluator, PerplexityEvaluator, \
     ClassficationEvaluator
 from .config import CollieConfig
-from .metrics import BaseMetric, DecodeMetric, AccuracyMetric, PplMetric
+from .metrics import BaseMetric, DecodeMetric, AccuracyMetric, PPLMetric, BleuMetric
 from .data import CollieDatasetForClassification, CollieBatchSampler, \
-    CollieDataLoader, CollieDatasetForTraining
+    CollieDataLoader, CollieDatasetForTraining, CollieDatasetForGeneration
 
 __all__ = [
     # controller
@@ -82,11 +82,13 @@ __all__ = [
     'BaseMetric',
     'DecodeMetric', 
     'AccuracyMetric', 
-    'PplMetric',
+    'PPLMetric',
+    'BleuMetric',
     
     #data
     'CollieDatasetForClassification', 
     'CollieBatchSampler', 
     'CollieDataLoader', 
     'CollieDatasetForTraining',
+    'CollieDatasetForGeneration'
 ]

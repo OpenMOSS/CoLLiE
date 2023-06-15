@@ -1,6 +1,6 @@
 import sys
 sys.path.append("..")
-from collie import Trainer, PerplexityEvaluator, LlamaForCausalLM, CollieConfig, PplMetric, AccuracyMetric, DecodeMetric, CollieDatasetForTraining, CollieDatasetForClassification, \
+from collie import Trainer, PerplexityEvaluator, LlamaForCausalLM, CollieConfig, PPLMetric, AccuracyMetric, DecodeMetric, CollieDatasetForTraining, CollieDatasetForClassification, \
     LossMonitor, TGSMonitor, MemoryMonitor, EvalMonitor, GradioProvider, ClassficationEvaluator, LRMonitor
 from transformers import LlamaTokenizer
 from datasets import load_dataset
@@ -48,8 +48,8 @@ train_dataset = [
 #     } for sample in load_dataset("imdb", split="train")
 # ]
 ### Prepare perplexity evaluation dataset
-radio = 0.01
-eval_dataset_ppl, train_dataset = train_dataset[:int(len(train_dataset) * radio)], train_dataset[int(len(train_dataset) * radio):]
+ratio = 0.01
+eval_dataset_ppl, train_dataset = train_dataset[:int(len(train_dataset) * ratio)], train_dataset[int(len(train_dataset) * ratio):]
 ### Prepare classification evaluation dataset
 eval_dataset_cls = [
     {
@@ -74,7 +74,7 @@ evaluator_ppl = PerplexityEvaluator(
         EvalMonitor(config)
     ],
     metrics={
-        "ppl": PplMetric(gather_result=True)
+        "ppl": PPLMetric(gather_result=True)
     },
 )
 evaluator_cls = ClassficationEvaluator(

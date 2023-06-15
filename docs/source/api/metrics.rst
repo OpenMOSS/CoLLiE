@@ -22,4 +22,4 @@ Metrics
    BaseMetric
    AccuracyMetric
    DecodeMetric
-   PplMetric
+   PPLMetric

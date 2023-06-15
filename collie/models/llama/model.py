@@ -166,7 +166,6 @@ class LlamaLayer(nn.Module):
         else:
             self.hidden_states = None
         assert inputs["hidden_states"].ndim == 3, f"hidden_states.shape must be (B, N, H), but got {inputs['hidden_states'].shape}"
-        inputs["attention_mask"] = inputs.get("attention_mask", torch.ones_like(inputs["input_ids"]).to(inputs["hidden_states"].device))
         batch_size, seq_len, _ = inputs["hidden_states"].shape
         head_dim = self.config.hidden_size // self.config.num_attention_heads
         _hidden_states = self.input_layernorm(inputs["hidden_states"])
@@ -187,7 +186,7 @@ class LlamaLayer(nn.Module):
                 key = torch.cat([self.past_key_values[0], key], dim=1)
                 value = torch.cat([self.past_key_values[1], value], dim=1)
             self.past_key_values = [key, value]
-
+        inputs["attention_mask"] = inputs.get("attention_mask", torch.ones((query.shape[0], query.shape[1])).to(inputs["hidden_states"].device))
         if self.config.use_flash:
             assert FlashAttention is not None, \
                 "Detected flash_attn is not installed. See https://github.com/HazyResearch/flash-attention"
@@ -264,8 +263,9 @@ class LlamaForCausalLM(CollieModelForCausalLM):
         self.config = PretrainedConfig(is_decoder=True)
         self.main_input_name = "input_ids"
 
-    def forward(self, input_ids: torch.Tensor, attention_mask: Optional[torch.Tensor] = None, **kwargs):
+    def forward(self, input_ids: torch.Tensor, **kwargs):
         inputs = {"input_ids": input_ids}
+        attention_mask = kwargs.get("attention_mask", None)
         if attention_mask is not None:
             inputs["attention_mask"] = attention_mask
         inputs["hidden_states"] = self.embed_tokens(inputs["input_ids"])
@@ -294,10 +294,8 @@ class LlamaForCausalLM(CollieModelForCausalLM):
             self._clean_past_key_values(self.layers)
         else:
             input_ids = input_ids[:, -1].unsqueeze(-1)
-            if attention_mask is not None:
-                attention_mask = attention_mask[:, -1].unsqueeze(-1)
             self._set_past_key_values(self.layers, past_key_values)
-        return {"input_ids": input_ids, "attention_mask:": attention_mask}
+        return {"input_ids": input_ids, "attention_mask": attention_mask}
 
     def clean(self):
         self._clean_hidden_states([*self.layers, self.lm_head])

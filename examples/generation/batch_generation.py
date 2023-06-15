@@ -21,7 +21,7 @@ config.eval_batch_size = 4
 config.ds_config = {
     "fp16": {"enabled": True}
 }
-
+config.use_flash = False
 
 dataset = CollieDatasetForTraining([
     {"text": "It's a beautiful day to"},
