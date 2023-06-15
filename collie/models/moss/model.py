@@ -15,10 +15,10 @@ from collie.module import (ColumnParallelLinearWithoutBias,
                            RowParallelLinearWithoutBias,
                            VocabParallelEmbedding,
                            ColumnParallelLMHead)
-from collie.driver.io.file import FileIODriver
-from collie.driver.io.petrel import PetrelIODriver
+from collie.driver.io import IODriver
 from collie.models.base import CollieModelForCausalLM
 from collie.utils import env, progress
+from collie.utils.utils import dict_as_params
 from collie.config import CollieConfig
 from .utils import (apply_rotary_pos_emb, create_sinusoidal_positions,
                     set_index_dict, _state_dict_to_save, _state_dict_to_load,
@@ -53,12 +53,10 @@ class MossAttention(nn.Module):
         self.scale_attn = torch.sqrt(torch.tensor(self.head_dim, dtype=torch.float32)).to(torch.get_default_dtype())
         self.qkv_proj = ColumnParallelLinearWithoutBias(
             self.embed_dim, self.embed_dim * 3, bias=False, gather_output=True,
-            use_cpu_initialization=config.use_cpu_initialization
         )
 
         self.out_proj = RowParallelLinearWithoutBias(
             self.embed_dim, self.embed_dim, bias=False,
-            use_cpu_initialization=config.use_cpu_initialization,
             input_is_parallel=False
         )
         self.rotary_dim = config.rotary_dim
@@ -206,17 +204,15 @@ class MossMLP(nn.Module):
 
         self.fc_in = ColumnParallelLinearWithoutBias(
             embed_dim, intermediate_size, gather_output=False,
-            use_cpu_initialization=config.use_cpu_initialization
         )
         self.fc_out = RowParallelLinearWithoutBias(
             intermediate_size, embed_dim, input_is_parallel=True,
-            use_cpu_initialization=config.use_cpu_initialization
         )
 
         self.act = NewGELUActivation()
         self.dropout = nn.Dropout(config.resid_pdrop)
 
-    def forward(self, hidden_states: Optional[torch.FloatTensor]) -> torch.FloatTensor:
+    def forward(self, hidden_states) -> torch.FloatTensor:
         hidden_states = self.fc_in(hidden_states)
         hidden_states = self.act(hidden_states)
         hidden_states = self.fc_out(hidden_states)
@@ -234,7 +230,7 @@ class MossBlock(nn.Module):
         self.config = config
         self.idx = layer_idx
 
-        self.use_cache = True
+        self.use_cache = False
         self.past_key_values = None
         self.hidden_states = None
 
@@ -270,7 +266,9 @@ class MossBlock(nn.Module):
 
         return outputs  # hidden_states, present, (attentions)
 
-    def forward(self, hidden_states):
+    def forward(self, inputs):
+        hidden_states = inputs["hidden_states"]
+        attention_mask = inputs.get("attention_mask", None)
         if not self.training:
             self.hidden_states = hidden_states
         use_cache = not self.training and self.use_cache
@@ -302,7 +300,7 @@ class MossBlock(nn.Module):
                 create_custom_forward(self._forward),
                 hidden_states,
                 None,
-                None,
+                attention_mask,
                 position_ids,
             )
         else:
@@ -310,7 +308,7 @@ class MossBlock(nn.Module):
                 hidden_states,
                 position_ids=position_ids,
                 layer_past=self.past_key_values,
-                attention_mask=None,
+                attention_mask=attention_mask,
                 head_mask=None,
                 use_cache=use_cache
             )
@@ -318,8 +316,12 @@ class MossBlock(nn.Module):
         if use_cache:
             self.past_key_values = outputs[1]
 
-        # hidden_states 
-        return outputs[0]
+        # hidden_states
+        if attention_mask is not None:
+            return {"hidden_states": outputs[0],
+                    "attention_mask": attention_mask}
+        else:
+            return {"hidden_states": outputs[0]}
 
 
 class MossForCausalLM(CollieModelForCausalLM):
@@ -332,25 +334,33 @@ class MossForCausalLM(CollieModelForCausalLM):
         super().__init__(config)
         self.embed_dim = config.n_embd
         self.vocab_size = config.vocab_size
-        self.wte = VocabParallelEmbedding(config.vocab_size, self.embed_dim,
-                                          use_cpu_initialization=config.use_cpu_initialization)
+        self.wte = VocabParallelEmbedding(config.vocab_size, self.embed_dim)
         self.drop = nn.Dropout(config.embd_pdrop)
         self.h = nn.ModuleList([
             MossBlock(config, i) for i in range(config.n_layer)
         ])
         self.ln_f = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_epsilon)
-        self.lm_head = ColumnParallelLMHead(
-            config.n_embd, config.vocab_size, use_cpu_initialization=config.use_cpu_initialization
-        )
+        self.lm_head = ColumnParallelLMHead(config.n_embd, config.vocab_size)
 
-    def forward(self, input_ids, **kwargs):
+    def forward(self, input_ids, attention_mask=None, **kwargs):
+        batch_size = input_ids.shape[0]
+        if attention_mask is not None:
+            if batch_size <= 0:
+                raise ValueError("batch_size has to be defined and > 0")
+            attention_mask = attention_mask.view(batch_size, -1)
+            attention_mask = attention_mask[:, None, None, :]
+            attention_mask = attention_mask.to(dtype=self.dtype)
+            attention_mask = (1.0 - attention_mask) * torch.finfo(self.dtype).min
         inputs_embed = self.wte(input_ids)
         hidden_states = self.drop(inputs_embed)
 
         all_hidden_states = ()
-        for l in self.h:
+        for i, l in enumerate(self.h):
             all_hidden_states += (hidden_states,)
-            hidden_states = l(hidden_states)
+            hidden_states = l(
+                {"hidden_states": hidden_states,
+                 "attention_mask": attention_mask}
+            )
 
         hidden_states = self.ln_f(hidden_states)
         logits = self.lm_head(hidden_states)
@@ -367,37 +377,64 @@ class MossForCausalLM(CollieModelForCausalLM):
                                       past_key_values: Optional[list] = None,
                                       attention_mask: Optional[torch.Tensor] = None,
                                       **kwargs):
-        self._set_use_cache(self.h, self.generation_config.use_cache)
+        self._set_use_cache(self.h, kwargs.get("use_cache", self.generation_config.use_cache))
         if past_key_values is None:
             self._clean_past_key_values(self.h)
         else:
             input_ids = input_ids[:, -1].unsqueeze(-1)
             self._set_past_key_values(self.h, past_key_values)
-        return {"input_ids": input_ids}
+        return {"input_ids": input_ids, "attention_mask": attention_mask}
     
     def clean(self):
         self._clean_hidden_states([*self.h, self.lm_head])
         self._clean_past_key_values(self.h)
+        self._set_use_cache(self.h, False)
     
     @classmethod
     def pipeline_layers(cls, config):
         if isinstance(config, str):
             config = CollieConfig.from_pretrained(config)
+
+        def pre_forward(input_dict):
+            input_ids = input_dict["input_ids"]
+            attention_mask = input_dict.get("attention_mask", None)
+            batch_size = input_ids.shape[0]
+            if attention_mask is not None:
+                if batch_size <= 0:
+                    raise ValueError("batch_size has to be defined and > 0")
+                attention_mask = attention_mask.view(batch_size, -1)
+                attention_mask = attention_mask[:, None, None, :]
+                dtype = torch.float32
+                if "fp16" in config.ds_config:
+                    if config.ds_config["fp16"].get("enabled", False):
+                        dtype = torch.float16
+                if "bf16" in config.ds_config:
+                    if config.ds_config["bf_16"].get("enabled", False):
+                        dtype = torch.bfloat16
+                attention_mask = attention_mask.to(dtype=dtype)
+                attention_mask = (1.0 - attention_mask) * torch.finfo(dtype).min
+                input_dict["attention_mask"] = attention_mask
+
+            return input_dict
+
         layers = [
-            VocabParallelEmbedding(
-                config.vocab_size, config.n_embd,
-                use_cpu_initialization=config.use_cpu_initialization
+            pre_forward,
+            dict_as_params("input_ids", "hidden_states")(
+                VocabParallelEmbedding, config.vocab_size, config.n_embd,
             ),
-            nn.Dropout(config.embd_pdrop),
+            dict_as_params("hidden_states", "hidden_states")(
+                nn.Dropout, config.embd_pdrop
+            ),
         ]
         layers += [
             LayerSpec(MossBlock, config, i) for i in range(config.n_layer)
         ]
         layers += [
-            nn.LayerNorm(config.n_embd, eps=config.layer_norm_epsilon),
-            ColumnParallelLMHead(
-                config.n_embd, config.vocab_size,
-                use_cpu_initialization=config.use_cpu_initialization
+            dict_as_params("hidden_states", "hidden_states")(
+                nn.LayerNorm, config.n_embd, eps=config.layer_norm_epsilon
+            ),
+            dict_as_params("hidden_states", "logits")(
+                ColumnParallelLMHead, config.n_embd, config.vocab_size,
             )
         ]
 
@@ -422,12 +459,11 @@ class MossForCausalLM(CollieModelForCausalLM):
         :return: 一个字典，每个字典都包含当前 rank 上模型需要的权重。
         """
         assert format in ["hf", "meta"], f"Only support hf and meta , not `{format}`."
-        assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
         # Actually Moss only supports `hf` format
         if isinstance(config, str):
             config = CollieConfig.from_pretrained(config)
-        IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
-        if not IODriver.exists(path) and protocol == "file":
+        io_driver = IODriver.from_protocol(protocol)
+        if not io_driver.exists(path) and protocol == "file":
             raise FileNotFoundError(f"folder {path} not found.")
 
         # 如果开启了进程互斥，那么每个进程都会显示进度条，否则只显示 RANK0 的
@@ -437,29 +473,25 @@ class MossForCausalLM(CollieModelForCausalLM):
                 dist.barrier()
             if cur_rank != env.rank:
                 continue
-            if IODriver.exists(os.path.join(path, "config.json")):
-                # update config from config.json
-                new_config = json.loads(IODriver.load(os.path.join(path, "config.json"), mode="r"))
-                config.model_config.update(new_config)
             # 如果存在 pytorch_model.bin.index.json 文件的话，此时不同的 pp 进程可以按需加载自己需要的权重
             index_file = os.path.join(path, "pytorch_model.bin.index.json")
             # start load
             state_dict = OrderedDict()
-            if IODriver.exists(index_file) and env.is_pipeline:
+            if io_driver.exists(index_file) and env.is_pipeline:
                 # 有 index 且是流水线
-                weight_map = json.loads(IODriver.load(index_file, mode="r"))["weight_map"]
+                weight_map = json.loads(io_driver.load(index_file, mode="r"))["weight_map"]
                 # layers 表示当前 rank 自己需要的层
                 cur_names = _weight_name_in_current_rank(weight_map.keys())
                 weights = set(weight_map[name] for name in cur_names)
             else:
                 # 如果没有 pytorch_model.bin.index.json 文件的话，那么就加载所有的权重
-                weights = [weight for weight in IODriver.list(path) if weight.endswith(".bin")]
+                weights = [weight for weight in io_driver.list(path) if weight.endswith(".bin")]
 
             desc = "Loading state dict"
             if process_exclusion:
                 desc += f" on pp={env.pp_rank} tp={env.tp_rank} dp={env.dp_rank}"
             for weight in progress(weights, desc, disable=hide_progress):
-                part_state_dict = IODriver.load(os.path.join(path, weight), mode="rb")
+                part_state_dict = io_driver.load(os.path.join(path, weight), mode="rb")
                 state_dict.update(_state_dict_to_load(
                     part_state_dict, env.tp_rank, config.tp_size,
                     process_exclusion
@@ -489,15 +521,14 @@ class MossForCausalLM(CollieModelForCausalLM):
         :param process_exclusion: 是否每个 rank 各自独立、互斥地保存模型权重。在模
             型规模较大时，该参数可以帮助节省内存。
         """
-        assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
-        IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
+        io_driver = IODriver.from_protocol(protocol)
         if env.rank == 0:
             config.save_pretrained(path)
 
         # gather to tp rank 0
         desc = "Saving state dict"
         # 没有 process_exclusion 的时候就不显示了
-        hide_progress = process_exclusion and env.rank != 0
+        hide_progress = not process_exclusion or env.rank != 0
         for cur_pp_rank in progress(range(env.pp_size), desc, disable=hide_progress):
             if process_exclusion:
                 dist.barrier()
@@ -520,13 +551,13 @@ class MossForCausalLM(CollieModelForCausalLM):
                 ckpt_name = f"pytorch_model-{env.pp_rank+1:05d}-of-{config.pp_size:05d}.bin"
                 index_dict = set_index_dict(state_dict, ckpt_name)
                 tmp_index_file = os.path.join(path, "_tmp_index_{}.json")
-                IODriver.save(
+                io_driver.save(
                     json.dumps(index_dict), tmp_index_file.format(env.pp_rank)
                 )
             else:
                 ckpt_name = f"pytorch_model.bin"
             ckpt_path = os.path.join(path, ckpt_name)
-            IODriver.save(state_dict, ckpt_path)
+            io_driver.save(state_dict, ckpt_path)
         dist.barrier()
 
         # Only save and merge on rank0
@@ -536,7 +567,7 @@ class MossForCausalLM(CollieModelForCausalLM):
             total_size = 0
             weight_map = {}
             for _file in tmp_index_files:
-                _index_dict = json.loads(IODriver.load(_file, mode="r"))
+                _index_dict = json.loads(io_driver.load(_file, mode="r"))
                 total_size += _index_dict["total_size"]
                 weight_map.update(_index_dict["weight_map"])
                 os.remove(_file)
@@ -544,7 +575,7 @@ class MossForCausalLM(CollieModelForCausalLM):
                 "metadata": {"total_size": total_size},
                 "weight_map": weight_map
             }
-            IODriver.save(
+            io_driver.save(
                 json.dumps(merged_dict, indent=2, sort_keys=True) + "\n",
                 os.path.join(path, "pytorch_model.bin.index.json")
             )

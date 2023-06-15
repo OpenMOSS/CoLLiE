@@ -29,9 +29,7 @@ class ResultsMonitor:
 
     :param monitor: 监控的 metric 值。
 
-        * 为 ``None`` 时，
-          CoLLiE 将尝试使用 :class:`.Trainer` 中设置的 `monitor` 值（如果有设
-          置）。
+        * 为 ``None`` 时，不设置监控值。
         * 为 ``str`` 时，
           CoLLiE 将尝试直接使用该名称从 ``evaluation`` 的结果中寻找，如果最终在
           ``evaluation`` 结果中没有找到完全一致的名称，则将使用最长公共字符串算法
@@ -232,20 +230,13 @@ class HasMonitorCallback(ResultsMonitor, Callback):
         super().__init__(monitor, larger_better)
         self.must_have_monitor = must_have_monitor
 
-    def on_after_trainer_initialized(self, trainer, driver):
-        r"""如果本身的 monitor 没有设置，则根据 Trainer 中的 monitor 设置
-        monitor 。同时对于必须要有 monitor 设置的 callback ，该函数会进行检查。
+    def on_after_trainer_initialized(self, trainer):
+        r"""对于必须要有 monitor 设置的 callback ，该函数会进行检查。
 
         :param trainer:
-        :param driver:
         :return:
         """
         if self.must_have_monitor and self.monitor is None:
             raise RuntimeError(
                 f'No `monitor` is set for {self.log_name}. '
                 f'You can set it in the initialization or through Trainer.')
-
-    def on_sanity_check_end(self, trainer, sanity_check_res):
-        # 主要核对一下 monitor 是否存在。
-        if self.monitor is not None:
-            self.get_monitor_value(results=sanity_check_res)

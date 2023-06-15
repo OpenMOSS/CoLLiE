@@ -14,7 +14,7 @@ class FileIODriver(IODriver):
         else:
             with open(path, 'r') as f:
                 return f.read()
-            
+
     @staticmethod
     def load_buffer(path: str):
         assert os.path.exists(path), f"File {path} does not exist."
@@ -23,7 +23,7 @@ class FileIODriver(IODriver):
             buffer.write(f.read())
             buffer.seek(0)
             return buffer
-            
+
     @staticmethod
     def save(obj, path: str, append: bool = False):
         folder = os.path.dirname(path)
@@ -37,15 +37,15 @@ class FileIODriver(IODriver):
                     f.write(obj)
         else:
             torch.save(obj, path)
-            
+
     @staticmethod
     def exists(path: str) -> bool:
         return os.path.exists(path)
-    
+
     @staticmethod
     def list(path: str):
         return os.listdir(path)
-    
+
     @staticmethod
     def walk(path: str, suffix: str = None):
         if suffix is None:
@@ -57,7 +57,7 @@ class FileIODriver(IODriver):
                     file_list.append(os.path.join(root, f))
 
         return file_list
-    
+
     @staticmethod
     def delete(path: str):
         shutil.rmtree(path)

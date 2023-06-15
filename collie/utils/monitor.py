@@ -18,6 +18,7 @@ from collie.utils import dictToObj
 from collie.utils.dist_utils import env
 
 import time
+import datetime
 from typing import Sequence
 from functools import reduce
 
@@ -33,16 +34,26 @@ def get_monitor(config: CollieConfig):
     用于获取DeepSpeed监控器实例的函数。通过这个函数，可以启用一个或多个监控后端（如PyTorch的Tensorboard、WandB和简单的CSV文件）实时记录指标。
     
     :param config:一个CollieConfig对象，用于配置监控器的行为
-    :return: (MonitorMaster | DummyDeepSpeedMonitor)如果传入的CollieConfig已经包含有Monitor的相关配置，则返回MonitorMaster实例；否则返回DummyDeepSpeedMonitor实例。
+    :return: (MonitorMaster | DummyDeepSpeedMonitor) 如果传入的CollieConfig已经包含有Monitor的相关配置，则返回MonitorMaster实例；否则返回DummyDeepSpeedMonitor实例。
     """
     if "monitor_config" in config.ds_config.keys():
         config.ds_config["monitor_config"]["enabled"] = True
+        if "tag" in config.ds_config["monitor_config"].keys():
+            tag = config.ds_config["monitor_config"]["tag"]
+        else:
+            tag = ""
         if "tensorboard" not in config.ds_config["monitor_config"].keys():
             config.ds_config["monitor_config"]["tensorboard"] = {"enabled": False}
+        else:
+            config.ds_config["monitor_config"]["tensorboard"]["job_name"] = tag + datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
         if "wandb" not in config.ds_config["monitor_config"].keys():
             config.ds_config["monitor_config"]["wandb"] = {"enabled": False}
+        else:
+            config.ds_config["monitor_config"]["wandb"]["job_name"] = tag + datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
         if "csv_monitor" not in config.ds_config["monitor_config"].keys():
             config.ds_config["monitor_config"]["csv_monitor"] = {"enabled": False}
+        else:
+            config.ds_config["monitor_config"]["csv_monitor"]["job_name"] = tag + datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
         return MonitorMaster(dictToObj(config.ds_config["monitor_config"]))
     else:
         return DummyDeepSpeedMonitor(config.ds_config)
@@ -50,22 +61,24 @@ def get_monitor(config: CollieConfig):
 class BaseMonitor:
     """
     BaseMonitor是一个基础的监控器类，用于记录模型训练过程中的统计信息。
-    其中，`trainer` 会将需要统计的数据存放到 `item` 中，目前 item 的内容为:
+    其中，`trainer` 会将需要统计的数据存放到 `item` 中，目前 item 的内容为：
+
         .. code-block::
-        item = {
-            "batch": (input_ids, labels),
-            "epoch_idx": 0,
-            "batch_idx": 1,
-            "global_batch_idx": 1,
-            "loss": 0.1,
-            "eval_result": {
-                "acc": 0.1,
-                "ppl": 0.1,
-                ...
-            },
-            "memory_allocated": 7000000000,
-            "mode": "train"
-        }
+
+            item = {
+                "batch": (input_ids, labels),
+                "epoch_idx": 0,
+                "batch_idx": 1,
+                "global_batch_idx": 1,
+                "loss": 0.1,
+                "eval_result": {
+                    "acc": 0.1,
+                    "ppl": 0.1,
+                    ...
+                },
+                "memory_allocated": 7000000000,
+                "mode": "train"
+            }
         
     :param config: 用户传入的config，类型为CollieConfig
     """
@@ -101,7 +114,7 @@ class TGSMonitor(BaseMonitor):
     
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self.item["mode"] == "train" and "batch" in self.item.keys():
-            self.monitor.write_events([(f"TGS", reduce(lambda x, y: x * y, self.item["batch"][0].shape) / (env.pp_size * env.tp_size * (time.time() - self.start)), self.item['global_batch_idx'])])
+            self.monitor.write_events([(f"TGS", reduce(lambda x, y: x * y, self.item["batch"][0]["input_ids"].shape) / (env.pp_size * env.tp_size * (time.time() - self.start)), self.item['global_batch_idx'])])
         
 class MemoryMonitor(BaseMonitor):
     """ 用来记录每个step的内存占用
@@ -121,10 +134,16 @@ class EvalMonitor(BaseMonitor):
     """ 用来记录每个step的eval结果，仅支持 **int** 和 **float** 类型的结果
     """
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if 'eval_result' in self.item.keys() and self.item["mode"] == "eval":
+        if 'eval_result' in self.item.keys() and 'global_batch_idx' in self.item.keys() and self.item["mode"] == "eval":
             for key, value in self.item['eval_result'].items():
-                if isinstance(value, float) or isinstance(value, int):
-                    self.monitor.write_events([(f"Metric {key}", value, self.item['epoch_idx'])])
+                self.monitor.write_events([(f"Metric {key}", value, self.item["global_batch_idx"])])
+            
+class LRMonitor(BaseMonitor):
+    """用来记录每个step的learning rate
+    """
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if 'loss' in self.item.keys() and self.item["mode"] == "train":
+            self.monitor.write_events([(f"Learning Rate", self.item['lr'], self.item['global_batch_idx'])])  
         
 class _MultiMonitors:
     def __init__(self, monitors: Sequence[BaseMonitor]) -> None:
@@ -137,7 +156,6 @@ class _MultiMonitors:
         return self.item
     
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if env.pp_rank == 0 and env.tp_rank == 0 and env.dp_rank == 0:
-            for monitor in self.monitors:
-                monitor.item = self.item
-                monitor.__exit__(exc_type, exc_val, exc_tb)
+        for monitor in self.monitors:
+            monitor.item = self.item
+            monitor.__exit__(exc_type, exc_val, exc_tb)

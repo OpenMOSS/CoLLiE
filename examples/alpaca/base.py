@@ -13,11 +13,13 @@ from transformers.generation.utils import GenerationConfig
 from collie.models.llama.model import LlamaForCausalLM
 from collie.metrics.decode import DecodeMetric
 from collie.module import GPTLMLoss, PipelineGenerationMixin
-from collie.trainer.trainer import Trainer
+from collie.controller.trainer import Trainer
 from collie.log import logger
 from collie.utils import env, setup_distribution
 from collie.utils.monitor import StepTimeMonitor, TGSMonitor, MemoryMonitor, LossMonitor, EvalMonitor
 from collie.optim.lion import Lion
+from collie.optim.sophiag import SophiaG
+from collie.optim.adan import Adan
 
 from alpaca_metric import AlpacaDecodeMetric
 from alpaca import AlpacaDataset, train_collate_fn, eval_collate_fn
@@ -89,7 +91,8 @@ class BaseAlpaca:
         model.load_state_dict(state_dict)
         
         # optimizer = optim.Adam(model.parameters(), lr=2e-5)
-        optimizer = Lion(model.parameters(), lr=1e-6)
+        # optimizer = Lion(model.parameters(), lr=1e-6)
+        optimizer = SophiaG(model.parameters(), lr=2e-5)
 
         # monitor
         monitors = [

@@ -1,17 +1,17 @@
 .. role:: hidden
    :class: hidden-section
 
-CoLLiE.trainer
+CoLLiE.controller
 ===================================
 
-.. contents:: CoLLiE.trainer
+.. contents:: CoLLiE.controller
    :depth: 2
    :local:
    :backlinks: top
 
-.. currentmodule:: collie.trainer
+.. currentmodule:: collie.controller
 
-Trainer
+Controller
 ----------------
 
 .. autosummary::
@@ -21,3 +21,5 @@ Trainer
 
    Trainer
    Evaluator
+   PerplexityEvaluator
+   ClassficationEvaluator

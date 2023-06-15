@@ -20,7 +20,7 @@ class PetrelIODriver(IODriver):
             return obj
         else:
             return obj.decode()
-        
+
     @staticmethod
     def load_buffer(path: str):
         from petrel_client.client import Client
@@ -30,7 +30,7 @@ class PetrelIODriver(IODriver):
         buffer.write(obj)
         buffer.seek(0)
         return buffer
-            
+
     @staticmethod
     def save(obj, path: str, append: bool = False):
         from petrel_client.client import Client
@@ -46,19 +46,19 @@ class PetrelIODriver(IODriver):
         buffer.seek(0)
         client.put(path, buffer)
         buffer.close()
-            
+
     @staticmethod
     def exists(path: str) -> bool:
         from petrel_client.client import Client
         client = Client()
         return client.contains(path) or client.isdir(path)
-    
+
     @staticmethod
     def list(path: str):
         from petrel_client.client import Client
         client = Client()
         return list(client.list(path))
-    
+
     @staticmethod
     def walk(path: str, suffix: Optional[str]=None):
         if not path.endswith("/"):
@@ -72,8 +72,7 @@ class PetrelIODriver(IODriver):
                 if suffix is None or sub_path.endswith(suffix):
                     file_list.append(sub_path)
         return file_list
-        
-    
+
     @staticmethod
     def delete(path: str):
         from petrel_client.client import Client

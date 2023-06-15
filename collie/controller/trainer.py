@@ -9,13 +9,13 @@ import os
 import json
 import logging
 import glob
-import math
 from typing import Optional, Callable, Union, Tuple, Iterable, Any, Dict, Sequence, List
 from collections import OrderedDict
 from functools import reduce
 
 import torch
 import deepspeed
+import numpy as np
 import torch.distributed as dist
 from torch.optim.lr_scheduler import _LRScheduler
 from deepspeed.accelerator import get_accelerator
@@ -23,11 +23,11 @@ from deepspeed.runtime.pipe.engine import PipelineEngine
 from deepspeed.runtime.engine import DeepSpeedSchedulerCallable
 from transformers.generation.utils import GenerationConfig
 from transformers.modeling_utils import PreTrainedModel
+from transformers import PreTrainedTokenizerBase
 
 from collie.config import CollieConfig
 from collie.module import PipelineGenerationMixin, GPTLMLoss, PipelineModel
-from collie.driver.io.file import FileIODriver
-from collie.driver.io.petrel import PetrelIODriver
+from collie.driver.io import IODriver
 from collie.log import logger
 from collie.utils import progress, env, setup_ds_engine, BaseProvider, _GenerationStreamer, is_zero3_enabled, BaseMonitor, _MultiMonitors, broadcast_tensor, ColliePadder
 from collie.optim import InplaceSGD
@@ -44,13 +44,17 @@ class Trainer(TrainerEventTrigger):
 
     :param model: 用于训练和验证的模型，可以使用 **CoLLie** 实现的模型或 transformers 提供的模型：
 
-        * **CoLLie** 实现的模型 :class:`~collie.CollieModelForCausalLM` 可支持的并行方式包括：张量并行、流水线并行、`ZeRO`
+        * **CoLLie** 实现的模型 :class:`.CollieModelForCausalLM` 可支持的并行方式包括：张量并行、流水线并行、`ZeRO`
         * transformers 提供的模型 ``transformers.PreTrainedModel`` 只支持 `ZeRO`
         
     :param config: 用于训练和验证的配置
+    :param tokenizer: 用于训练和验证的分词器，该分词器将用于:
+        * 保存模型时 `trainer.save_model` 时自动同时保存 `tokenizer`
+        * 使用 :class:`~collie.controller.evaluator.Evaluator` 进行基于生成的验证时，使用 `tokenizer` 对生成的结果进行解码
+        若无上述需求，可不传入 `tokenizer`
     :param loss_fn: 用于计算 loss 的函数，默认使用 :meth:`~collie.module.GPTLMLoss`
-    :param train_fn: 用于训练的函数，默认使用 :meth:`~collie.trainer.Trainer.train_fn`
-    :param eval_fn: 用于验证的函数，默认使用 :meth:`~collie.trainer.Trainer.eval_fn`
+    :param train_fn: 用于训练的函数，默认使用 :meth:`~collie.controller.Trainer.train_fn`
+    :param eval_fn: 用于验证的函数，默认使用 :meth:`~collie.controller.Evaluator.eval_fn`
     :param optimizer: 训练过程中的优化器，当为 `None` 的时候会尝试使用 ``config.ds_config`` 定义的优化器
     :param lr_scheduler: 训练过程中的学习率调度器；
     :param train_dataset: 用于训练的数据集。
@@ -100,10 +104,13 @@ class Trainer(TrainerEventTrigger):
 
         * Collie 自己的 ``metric``：详见 :class:`.BaseMetric`
         * 继承 Collie 基类的自定义 Metric
+    :param evaluators: 验证器。当传入多个 :class:`.Evaluator` 时会依次执行
+        evaluator 的验证方法。
     """
     def __init__(self, 
                  model: torch.nn.Module,
                  config: CollieConfig,
+                 tokenizer: Optional[PreTrainedTokenizerBase] = None,
                  loss_fn: Callable = GPTLMLoss(),
                  train_fn: Optional[Callable] = None,
                  eval_fn: Optional[Callable] = None,
@@ -119,6 +126,7 @@ class Trainer(TrainerEventTrigger):
                  monitors: Sequence[BaseMonitor] = [],
                  metrics: Optional[Dict] = None,
                  evaluators: Optional[List] = None) -> None:
+        self.config = config
         if isinstance(optimizer, InplaceSGD):
             if config.pp_size > 1:
                 raise ValueError("InplaceSGD is incompatible with pipeline parallelism.")
@@ -130,6 +138,7 @@ class Trainer(TrainerEventTrigger):
                 self.config.ds_config["gradient_accumulation_steps"] = 1
 
         self.model = model
+        self.tokenizer = tokenizer
         self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
         self.train_dataset = train_dataset
@@ -141,12 +150,18 @@ class Trainer(TrainerEventTrigger):
             self.eval_fn = eval_fn
         self.train_dataset_collate_fn = train_dataset_collate_fn
         self.eval_dataset_collate_fn = eval_dataset_collate_fn
+        if self.tokenizer is not None and self.tokenizer.pad_token_id is not None \
+            and isinstance(self.train_dataset_collate_fn, ColliePadder) \
+                and "input_ids" not in self.train_dataset_collate_fn.padding_token_id.keys():
+            self.train_dataset_collate_fn.padding_token_id["input_ids"] = self.tokenizer.pad_token_id
+        if self.tokenizer is not None and self.tokenizer.pad_token_id is not None \
+            and isinstance(self.eval_dataset_collate_fn, ColliePadder) \
+                and "input_ids" not in self.eval_dataset_collate_fn.padding_token_id.keys():
+            self.train_dataset_collate_fn.padding_token_id["input_ids"] = self.tokenizer.pad_token_id
         self.generation_config = generation_config
-
-        self.config = config
+        
         self.communicate_buffer_shape = None
         self.setup_parallel_model()
-        get_accelerator().empty_cache()
         self.data_provider = data_provider
         self.monitor = _MultiMonitors(monitors)
         if self.data_provider is not None and dist.get_rank() == 0:
@@ -157,21 +172,21 @@ class Trainer(TrainerEventTrigger):
                 "Note that you have set both `evaluators` and `eval_dataset` "
                 "and the later will not take effect."
             )
-
-        if evaluators is None or (hasattr(evaluators, "__len__") and len(evaluators) == 0):
-            if eval_dataset is not None:
-                evaluators = Evaluator(model=model, dataset=eval_dataset, metrics=metrics, eval_fn=eval_fn,
-                    config=config, collate_fn=eval_dataset_collate_fn, data_provider=None,
-                    generation_config=generation_config)
-                evaluators.engine = self.engine
-                evaluators.monitor = self.monitor
-                evaluators.data_provider = self.data_provider
-            else:
-                evaluators = []
+        if evaluators is None:
+            evaluators = []
+        if ((hasattr(evaluators, "__len__") and len(evaluators) == 0)) and self.eval_dataset is not None:
+            evaluator = Evaluator(model=model, dataset=eval_dataset, metrics=metrics, eval_fn=eval_fn,
+                config=config, collate_fn=eval_dataset_collate_fn, data_provider=None,
+                generation_config=generation_config)
+            evaluator.monitor = self.monitor
+            evaluators.append(evaluator)
         if not isinstance(evaluators, Sequence):
             evaluators = [evaluators]
         for evaluator in evaluators:
+            if self.tokenizer is not None:
+                evaluator.tokenizer = self.tokenizer
             evaluator.engine = self.engine
+            evaluator.data_provider = self.data_provider
 
         self.evaluators = evaluators
 
@@ -244,12 +259,11 @@ class Trainer(TrainerEventTrigger):
         generated_ids = generation_model.generate(
             input_ids=input_ids.cuda(), 
             attention_mask=torch.ones_like(input_ids).cuda(), 
-            generation_config=self.generation_config,
+            generation_config=self.data_provider.generation_config,
             streamer=streamer if use_stream else None
         )
         if not use_stream:
             self.data_provider.put_feedback(generated_ids[0].cpu())
-        get_accelerator().empty_cache()
 
     def setup_parallel_model(self):
         """
@@ -280,7 +294,6 @@ class Trainer(TrainerEventTrigger):
             )
         self.config.train_micro_batch_size = self.engine.train_micro_batch_size_per_gpu()
         self.config.gradient_accumulation_steps = self.engine.gradient_accumulation_steps()
-
         # train_dataloader
         if self.train_dataset is None:
             self.train_dataloader = None
@@ -304,44 +317,55 @@ class Trainer(TrainerEventTrigger):
         :param dataloader: 用于训练的数据集，为 ``Iterable`` 对象 ，当为 ``None`` 时，使用由 ``train_dataset`` 生成的 ``train_dataloader``
         """
         train_dataloader = self.train_dataloader
-        loss = 0.0
+        loss = None
         if dataloader is not None:
             train_dataloader = dataloader
-
+        # if env.rank == 0:
+        #     torch.set_printoptions(threshold=np.inf)
+        #     logger.info("Sample of train_dataset:")
+        #     logger.info(next(iter(train_dataloader)))
         self.on_train_begin()
-        with progress(range(self.epoch_idx, self.config.train_epochs), desc="Training Epoch", disable=env.rank != 0, completed=self.epoch_idx, total=self.config.train_epochs) as tqbar_epoch:
-            for self.epoch_idx in tqbar_epoch:
-                self.on_train_epoch_begin()
-                tqbar_epoch.set_description(f"Training Epoch: {self.epoch_idx} / {self.config.train_epochs}")
-
-                with progress(train_dataloader, desc="Training Batch: ", disable=env.rank != 0, completed=self.batch_idx, total=self.steps_per_epoch) as tqbar_batch:
-                    for self.batch_idx, batch in enumerate(tqbar_batch, start=self.batch_idx):
-                        tqbar_batch.set_description(f"Training Batch: {self.batch_idx} / {self.steps_per_epoch}")
-                        self.data_provider_handler()
-                        self.engine.train()
-                        get_accelerator().empty_cache()
-                        self.on_train_batch_begin(batch)
-                        with self.monitor as item:
-                            print(batch)
-                            loss = self.train_fn(self, batch, self.epoch_idx * self.steps_per_epoch + self.batch_idx)
-                            item.update({"loss": loss,
-                                         "batch": batch,
-                                         "batch_idx": self.batch_idx,
-                                         "epoch_idx": self.epoch_idx,
-                                         "global_batch_idx": self.global_batch_idx,
-                                         "memory_allocated": torch.cuda.max_memory_allocated(),
-                                         "mode": "train"})
-                        tqbar_batch.set_postfix(Loss=round(loss, 4))
-                        self.on_train_batch_end(loss)
-                        if self.config.eval_per_n_steps > 0 and (self.batch_idx + 1) % self.config.eval_per_n_steps == 0:
-                            self.eval()
-                if self.config.eval_per_n_epochs > 0 and (self.epoch_idx + 1) % self.config.eval_per_n_epochs == 0:
-                        self.eval()
-                self.on_train_epoch_end()
-                self.batch_idx = 0
-                if self.config.eval_per_n_epochs > 0 and (self.epoch_idx + 1) % self.config.eval_per_n_epochs == 0:
+        tqbar_epoch = progress(
+            range(self.epoch_idx, self.config.train_epochs),
+            desc="Training Epoch", disable=env.rank != 0,
+            completed=self.epoch_idx, total=self.config.train_epochs
+        )
+        tqbar_batch = progress(
+            train_dataloader, desc="Training Batch: ",
+            disable=env.rank != 0, total=self.steps_per_epoch
+        )
+        for self.epoch_idx in tqbar_epoch:
+            self.on_train_epoch_begin()
+            tqbar_epoch.set_description(f"Training Epoch: {self.epoch_idx} / {self.config.train_epochs}")
+            tqbar_batch.reset(
+                f"Training Batch: {self.batch_idx} / {self.steps_per_epoch}",
+                completed=self.batch_idx,
+            )
+            for self.batch_idx, batch in enumerate(tqbar_batch, start=self.batch_idx):
+                tqbar_batch.set_description(f"Training Batch: {self.batch_idx} / {self.steps_per_epoch}")
+                self.data_provider_handler()
+                self.engine.train()
+                self.on_train_batch_begin(batch)
+                with self.monitor as item:
+                    loss = self.train_fn(self, batch, self.global_batch_idx)
+                    item.update({"loss": round(loss, 4),
+                                    "lr": self.lr,
+                                    "batch": batch,
+                                    "batch_idx": self.batch_idx,
+                                    "epoch_idx": self.epoch_idx,
+                                    "global_batch_idx": self.global_batch_idx,
+                                    "memory_allocated": torch.cuda.max_memory_allocated(),
+                                    "mode": "train"}
+                        )
+                tqbar_batch.set_postfix(Loss=round(loss, 4))
+                self.on_train_batch_end(loss)
+                if self.config.eval_per_n_steps > 0 and (self.batch_idx + 1) % self.config.eval_per_n_steps == 0:
                     self.eval()
-                self.on_train_epoch_end()
+            if self.config.eval_per_n_epochs > 0 and (self.epoch_idx + 1) % self.config.eval_per_n_epochs == 0:
+                self.eval()
+            self.on_train_epoch_end()
+            self.batch_idx = 0
+        self.on_train_end()
         self.epoch_idx = 0
                 
     def eval(self, dataloader: Optional[Iterable] = None):
@@ -352,10 +376,11 @@ class Trainer(TrainerEventTrigger):
         if len(self.evaluators) == 0:
             return
         self.on_evaluate_begin()
-        eval_results = []
+        eval_results = {}
         for evaluator in self.evaluators:
+            evaluator.global_batch_idx = self.global_batch_idx
             results = evaluator.eval(dataloader)
-            eval_results.append(results)
+            eval_results.update(results)
         # TODO deal with results
         self.on_evaluate_end(results)
 
@@ -368,7 +393,7 @@ class Trainer(TrainerEventTrigger):
 
             .. note::
                 
-                根据提供的 ``train_dataset`` 和 ``train_dataset_collate_fn`` 的不同，`labels` 的类型也会有所不同，详见 :class:`~collie.trainer.Trainer`
+                根据提供的 ``train_dataset`` 和 ``train_dataset_collate_fn`` 的不同，`labels` 的类型也会有所不同，详见 :class:`.Trainer`
     
         :param global_step: 当前的全局步数
         
@@ -377,15 +402,15 @@ class Trainer(TrainerEventTrigger):
         if trainer.config.pp_size > 1:
             loss = trainer.engine.train_batch(batch)
         else:
-            input_ids, labels = batch
+            inputs, labels = batch
             # concat prompt labels for p-tuning
             if trainer.config.peft_config and trainer.config.peft_config.peft_type in ["PROMPT_TUNING", "P_TUNING"]:
-                batch_size = input_ids.shape[0]
+                batch_size = inputs["input_ids"].shape[0]
                 prefix_labels = torch.full((batch_size, trainer.config.peft_config.num_virtual_tokens), -100).to(labels.device)
                 labels = torch.cat((prefix_labels, labels), dim=1)
 
-            logits = trainer.engine(input_ids=input_ids.cuda()).logits
-            loss = trainer.loss_fn(logits, labels)
+            outputs = trainer.engine(**inputs)
+            loss = trainer.loss_fn(outputs, labels)
             if not isinstance(trainer.optimizer, InplaceSGD):
                 trainer.engine.backward(loss)
                 trainer.engine.step()
@@ -396,8 +421,8 @@ class Trainer(TrainerEventTrigger):
                     if trainer.optimizer.zero_enabled:
                         trainer.engine.optimizer.get_param_coordinator(training=True).reset_step()
                         # zero-3 doesn't support backward twice, so need an additional forward here
-                        logits = trainer.engine(input_ids=input_ids.cuda()).logits
-                        loss = trainer.loss_fn(logits, labels)
+                        outputs = trainer.engine(**inputs)
+                        loss = trainer.loss_fn(outputs, labels)
                 if trainer.lr_scheduler:
                     lr = trainer.lr_scheduler.step(global_step)
                 else:
@@ -406,36 +431,32 @@ class Trainer(TrainerEventTrigger):
                 if trainer.optimizer.zero_enabled:  # TODO: should tp do this too?
                     trainer.engine.optimizer.get_param_coordinator(training=True).reset_step()
         return loss.detach().cpu().item()
+    
+    @property
+    def lr(self):
+        if self.lr_scheduler:
+            lr = self.lr_scheduler.get_last_lr()[0]
+        else:
+            lr = self.optimizer.param_groups[0]['lr']
+        return lr
 
-    def save_checkpoint(self, path: str, process_exclusion: bool = False, mode: str = "trainer", **kwargs):...
-    def save_checkpoint(self, path: str, process_exclusion: bool = False, mode: str = "trainer", 
-                        protocol: str="file", **kwargs):
-        """保存训练器断点功能
+    def save_model(self, path: str, process_exclusion: bool = False, **kwargs):...
+    def save_model(self, path: str, process_exclusion: bool = False,
+                   protocol: str = "file", **kwargs):
+        """
+        保存模型。
 
-        :param path: 断点保存路径
+        :param path: 模型保存路径
         :param process_exclusion: 是否开启进程互斥，当开启流水线并行时开启此项可以节省内存（仅限 **CoLLie** 内实现的模型，对 `transformers` 提供的模型本项无效）
-        :param mode: 断点保存模式，支持 ``'trainer'`` 和 ``'model'`` 两种模式
-
-            * ``'trainer'`` 模式下保存的断点包含了训练器的状态，包括模型参数、`epoch_idx` 和 `batch_idx` 等数据集状态、以及优化器的状态等
-            * ``'model'`` 模式下保存的断点仅包含模型的状态，不包含训练器的状态
         """
         dist.barrier()
-        assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
-        assert mode in ["trainer", "model"], f"Only support `trainer` and `model` mode, not `{mode}`."
-        IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
-        IODriver.makedirs(path, exist_ok=True)
-        if mode == "model":
-            if isinstance(self.engine.module, CollieModelForCausalLM) or isinstance(self.engine.module, PipelineModel):
-                if is_zero3_enabled(self.config):
-                    with deepspeed.zero.GatheredParameters(list(self.engine.module.parameters(recurse=True))):
-                        self.engine.module.save_parallel_state_dict(
-                            state_dict=self.engine.module.state_dict(),
-                            path=path,
-                            config=self.config,
-                            process_exclusion=process_exclusion,
-                            protocol=protocol
-                        )
-                else:
+        io_driver = IODriver.from_protocol(protocol)
+        io_driver.makedirs(path, exist_ok=True)
+        self.on_save_model()
+        if isinstance(self.engine.module, CollieModelForCausalLM) or isinstance(self.engine.module, PipelineModel):
+            if is_zero3_enabled(self.config):
+                self.engine.optimizer.checkpoint_event_prologue()
+                with deepspeed.zero.GatheredParameters(list(self.engine.module.parameters(recurse=True))):
                     self.engine.module.save_parallel_state_dict(
                         state_dict=self.engine.module.state_dict(),
                         path=path,
@@ -443,184 +464,215 @@ class Trainer(TrainerEventTrigger):
                         process_exclusion=process_exclusion,
                         protocol=protocol
                     )
-            elif isinstance(self.engine.module, PreTrainedModel):
-                if is_zero3_enabled(self.config):
-                    with deepspeed.zero.GatheredParameters(list(self.engine.module.parameters(recurse=True))):
-                        self.engine.module.save_pretrained(
-                            save_directory=path,
-                            **kwargs
-                        )
-                else:
+                self.engine.optimizer.checkpoint_event_epilogue()
+            else:
+                self.engine.module.save_parallel_state_dict(
+                    state_dict=self.engine.module.state_dict(),
+                    path=path,
+                    config=self.config,
+                    process_exclusion=process_exclusion,
+                    protocol=protocol
+                )
+        elif isinstance(self.engine.module, PreTrainedModel):
+            if is_zero3_enabled(self.config):
+                self.engine.optimizer.checkpoint_event_prologue()
+                with deepspeed.zero.GatheredParameters(list(self.engine.module.parameters(recurse=True))):
                     self.engine.module.save_pretrained(
                         save_directory=path,
                         **kwargs
                     )
-        if mode == "trainer":
-            # save parallel_settings
-            if env.dp_rank == 0:
-                dist_config = {
-                    "dp_size": env.dp_size, "tp_size": env.tp_size,
-                    "pp_size": env.pp_size
-                }
-                IODriver.save(json.dumps(dist_config), os.path.join(path, "collie.json"))
-            engine = self.engine
-            # DeepSpeedEngine.save_checkpoint
-            
-            if engine.zero_optimization_partition_weights():
-                # Prepare for checkpoint save by ensuring all parameters are partitioned
-                engine.optimizer.checkpoint_event_prologue()
+                self.engine.optimizer.checkpoint_event_epilogue()
+            else:
+                self.engine.module.save_pretrained(
+                    save_directory=path,
+                    **kwargs
+                )
 
-            ## DeepSpeedEngine._save_checkpoint
-            zero_optimizer_state = engine.zero_optimization() or engine.bfloat16_enabled()
-            state = dict(module=engine.module.state_dict(), 
-                         optimizer=engine.optimizer.state_dict() if engine.optimizer and not zero_optimizer_state else None,
-                        lr_scheduler=engine.lr_scheduler.state_dict() if engine.lr_scheduler is not None else None,
-                        data_sampler=engine.training_dataloader.data_sampler.state_dict() if
-                        (engine.training_dataloader is not None and engine.curriculum_learning_enabled()) else None,
-                        sparse_tensor_module_names=engine.sparse_tensor_module_names,
-                        skipped_steps=engine.skipped_steps,
-                        global_steps=engine.global_steps,
-                        global_samples=engine.global_samples)
+    def load_model(self, path: str, process_exclusion: bool = False, **kwargs):...
+    def load_model(self, path: str, process_exclusion: bool = False,
+                   protocol: str = 'file', **kwargs):
+        io_driver = IODriver.from_protocol(protocol)
+        assert io_driver.exists(path), f"`{path}` does not exist."
+        self.on_load_model()
+        if isinstance(self.engine.module, CollieModelForCausalLM) or isinstance(self.engine.module, PipelineModel):
+            if is_zero3_enabled(self.config):
+                self.engine.optimizer.checkpoint_event_prologue()
+                with deepspeed.zero.GatheredParameters(list(self.engine.module.parameters(recurse=True)), modifier_rank=0):
+                    if env.rank == 0:
+                        self.engine.module.load_state_dict(self.engine.module.load_parallel_state_dict(
+                            path=path, config=self.config, process_exclusion=process_exclusion, protocol=protocol
+                        ))
+                self.engine.optimizer.checkpoint_event_epilogue()
+            else:
+                self.engine.module.load_state_dict(
+                    self.engine.module.load_parallel_state_dict(
+                        path=path, config=self.config, process_exclusion=process_exclusion, protocol=protocol
+                    )
+                )
+        elif isinstance(self.engine.module, PreTrainedModel):
+            if is_zero3_enabled(self.config):
+                index = None
+                if io_driver.exists(os.path.join(path, "pytorch_model.bin.index.json")):
+                    weight_map = json.loads(io_driver.load(os.path.join(path, "pytorch_model.bin.index.json"), mode="r"))["weight_map"]
+                    index = OrderedDict()
+                    for key, value in weight_map.items():
+                        if value not in index.keys():
+                            index[value] = [key]
+                        else:
+                            index[value].append(key)
+                self.engine.optimizer.checkpoint_event_prologue()
+                if index is not None:
+                    for key, value in index.items():
+                        with deepspeed.zero.GatheredParameters([self.engine.module.state_dict()[attr] for attr in value], modifier_rank=0):
+                            if env.dp_rank == 0:
+                                state_dict = io_driver.load(os.path.join(path, key), mode="br")
+                                for attr in value:
+                                    self.engine.module.state_dict()[attr].copy_(state_dict[attr])
+                else:
+                    with deepspeed.zero.GatheredParameters(list(self.engine.module.parameters(recurse=True)), modifier_rank=0):
+                        if env.dp_rank == 0:
+                            state_dict = reduce(lambda x, y: {**x, **y}, [io_driver.load(file, mode="rb") for file in glob.glob(os.path.join(path, "*.bin"))])
+                            self.engine.module.load_state_dict(state_dict)
+                self.engine.optimizer.checkpoint_event_epilogue()
+            else:
+                index = None
+                if io_driver.exists(os.path.join(path, "pytorch_model.bin.index.json")):
+                    weight_map = json.loads(io_driver.load(os.path.join(path, "pytorch_model.bin.index.json"), mode="r"))["weight_map"]
+                    index = OrderedDict()
+                    for key, value in weight_map.items():
+                        if value not in index.keys():
+                            index[value] = [key]
+                        else:
+                            index[value].append(key)
+                if index is not None:
+                    for key, value in index.items():
+                        state_dict = io_driver.load(os.path.join(path, key), mode="br")
+                        for attr in value:
+                            self.engine.module.state_dict()[attr].copy_(state_dict[attr])
+                else:
+                    state_dict = reduce(lambda x, y: {**x, **y}, [io_driver.load(file) for file in glob.glob(os.path.join(path, "*.bin"))])
+                    self.engine.module.load_state_dict(state_dict)
 
-            if env.rank == 0 or engine.zero_optimization_partition_weights():
-                IODriver.save(state, os.path.join(path, self.checkpoint_file))
+    def save_checkpoint(self, path: str, process_exclusion: bool = False, **kwargs):...
+    def save_checkpoint(self, path: str, process_exclusion: bool = False, 
+                        protocol: str="file", **kwargs):
+        """保存训练器断点功能
 
-            if engine.save_zero_checkpoint:
-                self._save_zero_checkpoint(path, IODriver)
+        :param path: 断点保存路径
+        :param process_exclusion: 是否开启进程互斥，当开启流水线并行时开启此项可以节省内存（仅限 **CoLLie** 内实现的模型，对 `transformers` 提供的模型本项无效）
+        """
+        dist.barrier()
+        io_driver = IODriver.from_protocol(protocol)
+        io_driver.makedirs(path, exist_ok=True)
+        callback_states = self.on_save_checkpoint()
+        # save parallel_settings
+        if env.dp_rank == 0:
+            dist_config = {
+                "dp_size": env.dp_size, "tp_size": env.tp_size,
+                "pp_size": env.pp_size
+            }
+            io_driver.save(json.dumps(dist_config), os.path.join(path, "collie.json"))
+        engine = self.engine
+        # DeepSpeedEngine.save_checkpoint
 
-            if engine.zero_optimization_partition_weights():
-                engine.optimizer.checkpoint_event_epilogue()
+        self.save_model(path, protocol=protocol)
+
+        if engine.zero_optimization_partition_weights():
+            # Prepare for checkpoint save by ensuring all parameters are partitioned
+            engine.optimizer.checkpoint_event_prologue()
+        
+        ## DeepSpeedEngine._save_checkpoint
+        zero_optimizer_state = engine.zero_optimization() or engine.bfloat16_enabled()
+        state = dict(optimizer=engine.optimizer.state_dict() if engine.optimizer and not zero_optimizer_state else None,
+                    lr_scheduler=engine.lr_scheduler.state_dict() if engine.lr_scheduler is not None else None,
+                    data_sampler=engine.training_dataloader.data_sampler.state_dict() if
+                    (engine.training_dataloader is not None and engine.curriculum_learning_enabled()) else None,
+                    sparse_tensor_module_names=engine.sparse_tensor_module_names,
+                    skipped_steps=engine.skipped_steps,
+                    global_steps=engine.global_steps,
+                    global_samples=engine.global_samples,
+                    callback_states=callback_states)
+
+        if env.rank == 0 or engine.zero_optimization_partition_weights():
+            io_driver.save(state, os.path.join(path, self.checkpoint_file))
+
+        if engine.save_zero_checkpoint:
+            self._save_zero_checkpoint(path, io_driver)
+
+        if engine.zero_optimization_partition_weights():
+            engine.optimizer.checkpoint_event_epilogue()
 
         dist.barrier()
 
-    def load_checkpoint(self, path: str, process_exclusion: bool = False, mode: str = "trainer", **kwargs):...
-    def load_checkpoint(self, path: str, process_exclusion: bool = False, mode: str = "trainer",
+    def load_checkpoint(self, path: str, process_exclusion: bool = False, **kwargs):...
+    def load_checkpoint(self, path: str, process_exclusion: bool = False,
                         protocol: str = 'file', **kwargs):
         """训练器断点加载
 
         :param path: 断点保存路径
         :param process_exclusion: 是否开启进程互斥，当开启流水线并行时开启此项可以节省内存（仅限 **CoLLie** 内实现的模型，对 ``transformers`` 提供的模型本项无效）
-        :param mode: 断点加载模式，支持 ``'trainer'`` 和 ``'model'`` 两种模式
-
-            * ``'trainer'`` 模式下加载的断点包含了训练器的状态，包括模型参数、``epoch_idx`` 和 ``batch_idx`` 等数据集状态、以及优化器的状态等
-            * ``'model'`` 模式下加载的断点仅包含模型的状态，不包含训练器的状态
         """
-        assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
-        assert mode in ["trainer", "model"], f"Only support `trainer` and `model` mode, not `{mode}`."
-        IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
-        assert IODriver.exists(path), f"`{path}` does not exist."
+        io_driver = IODriver.from_protocol(protocol)
+        assert io_driver.exists(path), f"`{path}` does not exist."
         engine = self.engine
-        if mode == "model":
-            if isinstance(self.engine.module, CollieModelForCausalLM) or isinstance(self.engine.module, PipelineModel):
-                if is_zero3_enabled(self.config):
-                    if env.dp_rank == 0:
-                        state_dict = self.engine.module.load_parallel_state_dict(
-                            path=path, config=self.config, process_exclusion=process_exclusion, protocol=protocol
-                            )
-                    for attr in state_dict.keys():
-                        with deepspeed.zero.GatheredParameters(self.engine.module.state_dict()[attr], modifier_rank=0):
-                            if env.dp_rank == 0:
-                                self.engine.module.state_dict()[attr].copy_(state_dict[attr])
-                else:
-                    self.engine.module.load_state_dict(
-                        self.engine.module.load_parallel_state_dict(
-                            path=path, config=self.config, process_exclusion=process_exclusion, protocol=protocol
-                        )
-                    )
-            elif isinstance(self.engine.module, PreTrainedModel):
-                if is_zero3_enabled(self.config):
-                    index = None
-                    if IODriver.exists(os.path.join(path, "pytorch_model.bin.index.json")):
-                        weight_map = json.loads(IODriver.load(os.path.join(path, "pytorch_model.bin.index.json"), mode="r"))["weight_map"]
-                        index = OrderedDict()
-                        for key, value in weight_map.items():
-                            if value not in index.keys():
-                                index[value] = [key]
-                            else:
-                                index[value].append(key)
-                    if index is not None:
-                        for key, value in index.items():
-                            with deepspeed.zero.GatheredParameters([self.engine.module.state_dict()[attr] for attr in value], modifier_rank=0):
-                                if env.dp_rank == 0:
-                                    state_dict = IODriver.load(os.path.join(path, key), mode="br")
-                                    for attr in value:
-                                        self.engine.module.state_dict()[attr].copy_(state_dict[attr])
-                    else:
-                        with deepspeed.zero.GatheredParameters(list(self.engine.module.parameters(recurse=True)), modifier_rank=0):
-                            if env.dp_rank == 0:
-                                state_dict = reduce(lambda x, y: {**x, **y}, [IODriver.load(file, mode="rb") for file in glob.glob(os.path.join(path, "*.bin"))])
-                                self.engine.module.load_state_dict(state_dict)
-                else:
-                    index = None
-                    if IODriver.exists(os.path.join(path, "pytorch_model.bin.index.json")):
-                        weight_map = json.loads(IODriver.load(os.path.join(path, "pytorch_model.bin.index.json"), mode="r"))["weight_map"]
-                        index = OrderedDict()
-                        for key, value in weight_map.items():
-                            if value not in index.keys():
-                                index[value] = [key]
-                            else:
-                                index[value].append(key)
-                    if index is not None:
-                        for key, value in index.items():
-                            state_dict = IODriver.load(os.path.join(path, key), mode="br")
-                            for attr in value:
-                                self.engine.module.state_dict()[attr].copy_(state_dict[attr])
-                    else:
-                        state_dict = reduce(lambda x, y: {**x, **y}, [IODriver.load(file, "b") for file in glob.glob(os.path.join(path, "*.bin"))])
-                        self.engine.module.load_state_dict(state_dict)
-        if mode == "trainer":
-            # check
-            loaded_args = json.loads(IODriver.load(os.path.join(path, "collie.json"), "r"))
-            assert loaded_args["dp_size"] == env.dp_size and \
-                loaded_args["tp_size"] == env.tp_size and \
-                loaded_args["pp_size"] == env.pp_size, \
-                "Loaded checkpoint's world_size is not equal to the current " \
-                f"settings: dp * tp * pp {loaded_args['dp_size']} * " \
-                f"{loaded_args['tp_size']} * {loaded_args['pp_size']}" \
-                f"!= {env.dp_size} * {env.tp_size} * {env.pp_size}."
+        # check
+        loaded_args = json.loads(io_driver.load(os.path.join(path, "collie.json"), "r"))
+        assert loaded_args["dp_size"] == env.dp_size and \
+            loaded_args["tp_size"] == env.tp_size and \
+            loaded_args["pp_size"] == env.pp_size, \
+            "Loaded checkpoint's world_size is not equal to the current " \
+            f"settings: dp * tp * pp {loaded_args['dp_size']} * " \
+            f"{loaded_args['tp_size']} * {loaded_args['pp_size']}" \
+            f"!= {env.dp_size} * {env.tp_size} * {env.pp_size}."
+        
+        self.load_model(path, protocol=protocol)
 
-            # DeepSpeed.load_checkpoint
-            if engine.zero_optimization_partition_weights():
-                ckpt_file = self.checkpoint_file
-            else:
-                ckpt_file = "collie_dp0_pp0_tp0.pt"
-            checkpoint = IODriver.load(os.path.join(path, ckpt_file), "b")
+        # DeepSpeed.load_checkpoint
+        if engine.zero_optimization_partition_weights():
+            ckpt_file = self.checkpoint_file
+        else:
+            ckpt_file = "collie_dp0_pp0_tp0.pt"
+        checkpoint = io_driver.load(os.path.join(path, ckpt_file), "b")
 
-            module = checkpoint["module"]
-            engine.module.load_state_dict(module)
+        if engine.zero_optimization_partition_weights():
+            # Prepare for checkpoint load by ensuring all parameters are partitioned
+            self.optimizer.checkpoint_event_prologue()
 
-            has_zero_optimizer_state = engine.zero_optimization() or engine.bfloat16_enabled()
-            if engine.optimizer is not None and not has_zero_optimizer_state:
-                engine.optimizer.load_state_dict(checkpoint['optimizer'])
+        has_zero_optimizer_state = engine.zero_optimization() or engine.bfloat16_enabled()
 
-            if engine.lr_scheduler is not None:
-                engine.lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
+        if engine.optimizer is not None and not has_zero_optimizer_state:
+            engine.optimizer.load_state_dict(checkpoint['optimizer'])
 
-            if engine.training_dataloader is not None and engine.curriculum_learning_enabled(
-            ) and 'data_sampler' in checkpoint:
-                engine.training_dataloader.data_sampler.load_state_dict(checkpoint['data_sampler'])
+        if engine.lr_scheduler is not None:
+            engine.lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
 
-            if 'sparse_tensor_module_names' in checkpoint:
-                sparse_tensor_module_names = checkpoint['sparse_tensor_module_names']
-            elif 'csr_tensor_module_names' in checkpoint:
-                sparse_tensor_module_names = checkpoint['csr_tensor_module_names']
-            else:
-                sparse_tensor_module_names = None
-            if sparse_tensor_module_names is not None:
-                engine.sparse_tensor_module_names = sparse_tensor_module_names
+        if engine.training_dataloader is not None and engine.curriculum_learning_enabled(
+        ) and 'data_sampler' in checkpoint:
+            engine.training_dataloader.data_sampler.load_state_dict(checkpoint['data_sampler'])
 
-            engine.global_steps = checkpoint['global_steps']
-            engine.global_samples = checkpoint.get('global_samples', engine.global_steps * engine.train_batch_size())
-            engine.skipped_steps = checkpoint['skipped_steps']
+        if 'sparse_tensor_module_names' in checkpoint:
+            sparse_tensor_module_names = checkpoint['sparse_tensor_module_names']
+        elif 'csr_tensor_module_names' in checkpoint:
+            sparse_tensor_module_names = checkpoint['csr_tensor_module_names']
+        else:
+            sparse_tensor_module_names = None
+        if sparse_tensor_module_names is not None:
+            engine.sparse_tensor_module_names = sparse_tensor_module_names
 
-            load_zero_checkpoint = engine.zero_optimization() or engine.bfloat16_enabled()
-            if load_zero_checkpoint:
-                success = self._load_zero_checkpoint(path, IODriver)
-                if not success:
-                    engine.optimizer._restore_from_bit16_weights()
+        engine.global_steps = checkpoint['global_steps']
+        engine.global_samples = checkpoint.get('global_samples', engine.global_steps * engine.train_batch_size())
+        engine.skipped_steps = checkpoint['skipped_steps']
 
-            if engine.zero_optimization_partition_weights():
-                engine.optimizer.checkpoint_event_epilogue()
+        load_zero_checkpoint = engine.zero_optimization() or engine.bfloat16_enabled()
+        if load_zero_checkpoint:
+            success = self._load_zero_checkpoint(path, io_driver)
+            if not success:
+                engine.optimizer._restore_from_bit16_weights()
+
+        if engine.zero_optimization_partition_weights():
+            engine.optimizer.checkpoint_event_epilogue()
+
+        self.on_load_checkpoint(checkpoint["callback_states"])
 
     def _save_zero_checkpoint(self, path, driver):
         """保存 `ZeRO` 的状态

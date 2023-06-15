@@ -1,7 +1,7 @@
 import sys
 import torch
 sys.path.append("../..")
-from collie.trainer.trainer import Trainer
+from collie.controller.trainer import Trainer
 from collie.metrics.decode import DecodeMetric
 from collie.config import CollieConfig
 from collie.utils import setup_distribution

@@ -1,7 +1,8 @@
 import sys
 
 
-sys.path.append("../..")
+sys.path.append("../../")
+sys.path.append("/mnt/petrelfs/gutianle/Megatron-LM/")
 print(sys.path)
 
 from transformers import LlamaTokenizer, AutoConfig, AutoModelForCausalLM
@@ -10,11 +11,11 @@ from peft import get_peft_model, LoraConfig, TaskType
 
 from collie.utils import setup_distribution
 from collie.config import CollieConfig
-from collie.trainer.trainer import Trainer
+from collie.controller.trainer import Trainer
 from collie.metrics.decode import DecodeMetric
 from collie.models.llama.model import LlamaForCausalLM
 
-model_path = "/home/ubuntu/projects/collie/cache/llama-7b"
+model_path = "decapoda-research/llama-65b-hf"
 config = CollieConfig.from_pretrained(model_path)
 print("config loaded")
 config.pp_size = 1
@@ -42,7 +43,7 @@ config.ds_config = {
     "zero_force_ds_cpu_optimizer": False,
 }
 setup_distribution(config)
-model = LlamaForCausalLM.from_pretrained(model_path, config)
+model = LlamaForCausalLM.from_config(config)
 peft_config = LoraConfig(
     r=8,
     lora_alpha=32,

@@ -25,9 +25,8 @@ except ModuleNotFoundError:
 from collie.log.logger import logger
 from collie.config import load_config
 from collie.config import CollieConfig
-from collie.utils import progress, env
-from collie.driver.io.file import FileIODriver
-from collie.driver.io.petrel import PetrelIODriver
+from collie.utils import progress, env, dict_as_params
+from collie.driver.io import IODriver
 from collie.models.base import CollieModelForCausalLM
 from collie.module import ColumnParallelLinearWithoutBias, RowParallelLinearWithoutBias, ColumnParallelLMHead
 
@@ -157,19 +156,19 @@ class LlamaLayer(nn.Module):
             eps=config.rms_norm_eps
         )
         # 务必保持变量名一致
-        self.use_cache = True
+        self.use_cache = False
         self.past_key_values = None
         self.hidden_states = None
 
-    def _forward(self, hidden_states: torch.Tensor):
+    def _forward(self, inputs: dict):
         if not self.training:
-            self.hidden_states = hidden_states
+            self.hidden_states = inputs["hidden_states"]
         else:
             self.hidden_states = None
-        assert hidden_states.ndim == 3, f"hidden_states.shape must be (B, N, H), but got {hidden_states.shape}"
-        batch_size, seq_len, _ = hidden_states.shape
+        assert inputs["hidden_states"].ndim == 3, f"hidden_states.shape must be (B, N, H), but got {inputs['hidden_states'].shape}"
+        batch_size, seq_len, _ = inputs["hidden_states"].shape
         head_dim = self.config.hidden_size // self.config.num_attention_heads
-        _hidden_states = self.input_layernorm(hidden_states)
+        _hidden_states = self.input_layernorm(inputs["hidden_states"])
         query, key, value = self.self_attn["q_proj"](_hidden_states), self.self_attn["k_proj"](
             _hidden_states), self.self_attn["v_proj"](_hidden_states)
         query, key, value = rearrange(query, "b n (h d) -> b n h d", d=head_dim), \
@@ -187,12 +186,12 @@ class LlamaLayer(nn.Module):
                 key = torch.cat([self.past_key_values[0], key], dim=1)
                 value = torch.cat([self.past_key_values[1], value], dim=1)
             self.past_key_values = [key, value]
-
+        inputs["attention_mask"] = inputs.get("attention_mask", torch.ones((query.shape[0], query.shape[1])).to(inputs["hidden_states"].device))
         if self.config.use_flash:
             assert FlashAttention is not None, \
                 "Detected flash_attn is not installed. See https://github.com/HazyResearch/flash-attention"
             qkv = torch.stack([query, key, value], dim=2)
-            output, _ = FlashAttention()(qkv, causal=True)
+            output, _ = FlashAttention()(qkv, key_padding_mask=inputs["attention_mask"], causal=True)
             output = rearrange(output, "b n h d -> b n (h d)")
             output = F.dropout(output, p=self.config.dropout,
                                training=self.training)
@@ -206,32 +205,38 @@ class LlamaLayer(nn.Module):
                 mask = torch.triu(mask, diagonal=1).to(
                     attention_score.device)
                 attention_score = attention_score + mask
+            attention_mask = (1.0 - inputs["attention_mask"].unsqueeze(1).unsqueeze(2)) * torch.finfo(
+                attention_score.dtype).min
             attention_score = F.softmax(
-                attention_score, dim=-1).type_as(value)
+                attention_score + attention_mask, dim=-1).type_as(value)
             output = torch.matmul(attention_score, value)
             output = output.transpose(1, 2).contiguous().view(
                 batch_size, seq_len + start_pos, -1)
             output = F.dropout(output, p=self.config.dropout,
                                training=self.training)
         output = output[:, start_pos:, :]
-        hidden_states = hidden_states + self.self_attn["o_proj"](output)
-        _hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = hidden_states + F.dropout(self.mlp["down_proj"](F.silu(self.mlp["gate_proj"](
+        inputs["hidden_states"] = inputs["hidden_states"] + self.self_attn["o_proj"](output)
+        _hidden_states = self.post_attention_layernorm(inputs["hidden_states"])
+        inputs["hidden_states"] = inputs["hidden_states"] + F.dropout(self.mlp["down_proj"](F.silu(self.mlp["gate_proj"](
             _hidden_states)) * self.mlp["up_proj"](_hidden_states)), p=self.config.dropout, training=self.training)
-        return hidden_states
+        return {
+            "hidden_states": inputs["hidden_states"]
+        }
 
-    def forward(self, hidden_states: torch.Tensor):
+    def forward(self, inputs: dict):
         if self.config.checkpointing and self.training:
             def create_custom_forward(module):
-                def custom_forward(*inputs):
-                    return module._forward(*inputs)
+                def custom_forward(*args):
+                    return module._forward(*args)
                 return custom_forward
-            return torch.utils.checkpoint.checkpoint(
+            inputs.update(torch.utils.checkpoint.checkpoint(
                 create_custom_forward(self),
-                hidden_states
-            )
+                inputs,
+                use_reentrant=False
+            ))
         else:
-            return self._forward(hidden_states)
+            inputs.update(self._forward(inputs))
+        return inputs
 
 
 class LlamaForCausalLM(CollieModelForCausalLM):
@@ -259,18 +264,21 @@ class LlamaForCausalLM(CollieModelForCausalLM):
         self.main_input_name = "input_ids"
 
     def forward(self, input_ids: torch.Tensor, **kwargs):
-        assert input_ids.ndim == 2, f"input_ids.shape must be (B, N), but got {input_ids.shape}"
-        hidden_states = self.embed_tokens(input_ids)
+        inputs = {"input_ids": input_ids}
+        attention_mask = kwargs.get("attention_mask", None)
+        if attention_mask is not None:
+            inputs["attention_mask"] = attention_mask
+        inputs["hidden_states"] = self.embed_tokens(inputs["input_ids"])
         all_hidden_states = ()
         for layer in self.layers:
-            all_hidden_states += (hidden_states,)
-            hidden_states = layer(hidden_states)
-        hidden_states = self.norm(hidden_states)
-        logits = self.lm_head(hidden_states)
+            all_hidden_states += (inputs["hidden_states"],)
+            inputs.update(layer(inputs))
+        inputs["hidden_states"] = self.norm(inputs["hidden_states"])
+        inputs["logits"] = self.lm_head(inputs["hidden_states"])
 
         return CausalLMOutputWithPast(
             loss=None,
-            logits=logits,
+            logits=inputs["logits"],
             past_key_values=self._get_past_key_values(self.layers),
             hidden_states=all_hidden_states,
             attentions=None
@@ -281,17 +289,18 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                                       past_key_values: Optional[list] = None,
                                       attention_mask: Optional[torch.Tensor] = None,
                                       **kwargs):
-        self._set_use_cache(self.layers, self.generation_config.use_cache)
+        self._set_use_cache(self.layers, kwargs.get("use_cache", self.generation_config.use_cache))
         if past_key_values is None:
             self._clean_past_key_values(self.layers)
         else:
             input_ids = input_ids[:, -1].unsqueeze(-1)
             self._set_past_key_values(self.layers, past_key_values)
-        return {"input_ids": input_ids}
+        return {"input_ids": input_ids, "attention_mask": attention_mask}
 
     def clean(self):
         self._clean_hidden_states([*self.layers, self.lm_head])
         self._clean_past_key_values(self.layers)
+        self._set_use_cache(self.layers, False)
 
     @classmethod
     def pipeline_layers(cls, config: CollieConfig):
@@ -304,16 +313,18 @@ class LlamaForCausalLM(CollieModelForCausalLM):
             config = CollieConfig.from_pretrained(config)
         return [TiedLayerSpec(
             "embed_tokens",
+            dict_as_params(input_keys="input_ids", output_keys="hidden_states"),
             tensor_parallel.VocabParallelEmbedding,
             config.vocab_size,
             config.hidden_size),
             *[LayerSpec(LlamaLayer, config)
               for _ in range(config.num_hidden_layers)],
-            LayerSpec(RMSNormalize,
+            LayerSpec(dict_as_params(input_keys="hidden_states", output_keys="hidden_states"), RMSNormalize,
                       dim=config.hidden_size,
                       eps=config.rms_norm_eps),
             TiedLayerSpec(
             "embed_tokens",
+            dict_as_params(input_keys="hidden_states", output_keys="logits"),
             ColumnParallelLMHead,
             config.hidden_size,
             config.vocab_size,
@@ -339,11 +350,10 @@ class LlamaForCausalLM(CollieModelForCausalLM):
             properly to match the current rank.
         """
         assert format in ["hf", "meta"], "Only support hf and meta format"
-        assert protocol in ["file", "petrel"], "Only support file and petrel protocol"
         if isinstance(config, str):
             config = CollieConfig.from_pretrained(config)
-        IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
-        if not IODriver.exists(path):
+        io_driver = IODriver.from_protocol(protocol)
+        if not io_driver.exists(path):
             raise FileNotFoundError(f"folder {path} not found.")
         state_dict = OrderedDict()
         weights = []
@@ -365,8 +375,8 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                     parts = env.pipeline_parts
                 if format == "hf":
                     # 如果存在 pytorch_model.bin.index.json 文件的话，此时不同的 pp 进程可以按需加载自己需要的权重
-                    if IODriver.exists(os.path.join(path, "pytorch_model.bin.index.json")) and "COLLIE_PP_PARTS" in os.environ.keys():
-                        weight_map = json.loads(IODriver.load(os.path.join(path, "pytorch_model.bin.index.json"), mode="r"))["weight_map"]
+                    if io_driver.exists(os.path.join(path, "pytorch_model.bin.index.json")) and "COLLIE_PP_PARTS" in os.environ.keys():
+                        weight_map = json.loads(io_driver.load(os.path.join(path, "pytorch_model.bin.index.json"), mode="r"))["weight_map"]
                         # layers 表示自己需要的层
                         layers = list(range(parts[int(os.environ["COLLIE_PP_RANK"])], parts[int(os.environ["COLLIE_PP_RANK"]) + 1]))
                         # 筛选出形似 model.layers.0 这样的层。包含两个条件：1. 有数字的层；2. 数字加一要在 layers 里面（因为最开始还有个 embedding 占一层）
@@ -385,10 +395,10 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                             weights.append(weight_map["model.norm.weight"])
                     else:
                         # 如果没有 pytorch_model.bin.index.json 文件的话，那么就加载所有的权重
-                        weights = [weight for weight in IODriver.list(path) if weight.endswith(".bin")]
+                        weights = [weight for weight in io_driver.list(path) if weight.endswith(".bin")]
                     with progress(weights, desc="Loading state dict", total=len(weights), disable=hide_progress) as pbar:
                         for weight in pbar:
-                            part_state_dict = IODriver.load(os.path.join(path, weight), mode="rb")
+                            part_state_dict = io_driver.load(os.path.join(path, weight), mode="rb")
                             for key in list(part_state_dict.keys()):
                                 # 对 q_proj.weight 和 k_proj.weight 进行 reshape
                                 if key.endswith("q_proj.weight") or key.endswith("k_proj.weight"):
@@ -407,8 +417,8 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                     inv_freq = 1.0 / (10000.0 ** (torch.arange(0, (config.hidden_size // config.num_attention_heads),
                                 2).float() / (config.hidden_size // config.num_attention_heads)))
                     # 根据 meta 中的 params.json 更新一下用户配置
-                    if IODriver.exists(os.path.join(path, "params.json")):
-                        params = json.loads(IODriver.load(os.path.join(path, "params.json"), mode="r"))
+                    if io_driver.exists(os.path.join(path, "params.json")):
+                        params = json.loads(io_driver.load(os.path.join(path, "params.json"), mode="r"))
                         for key, value in {
                             "hidden_size": params["dim"],
                             "intermediate_size": params["multiple_of"] * ((int(2 * 4 * config.hidden_size / 3) + params["multiple_of"] - 1) // params["multiple_of"]),
@@ -418,12 +428,12 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                         }.items():
                             setattr(config, key, value)
                     # 权重全部加载
-                    weights = [weight for weight in IODriver.list(path) if (weight.endswith(".pt") or weight.endswith(".pth"))]
+                    weights = [weight for weight in io_driver.list(path) if (weight.endswith(".pt") or weight.endswith(".pth"))]
                     # 因为 meta 的权重默认 按照张量并行分割，cat 的时候存在顺序问题，所以先排序一下
                     weights = sorted(weights, key=lambda x: int(x.split(".")[1]))
                     with progress(weights, desc="Loading state dict", total=len(weights), disable=hide_progress) as pbar:
                         for weight in pbar:
-                            part_state_dict = IODriver.load(os.path.join(path, weight), mode="rb")
+                            part_state_dict = io_driver.load(os.path.join(path, weight), mode="rb")
                             for key in list(part_state_dict.keys()):
                                 # if key.startswith("layers"):
                                 #     layer = int(key.split(".")[1])
@@ -533,8 +543,7 @@ class LlamaForCausalLM(CollieModelForCausalLM):
         The format of saved state dict should be the same as that of
         `huggingface`.
         """
-        assert protocol in ["file", "petrel"], f"Only support file and petrel protocol, not `{protocol}`."
-        IODriver = FileIODriver if protocol == 'file' else PetrelIODriver
+        io_driver = IODriver.from_protocol(protocol)
         def reshape_wq_wk(w: torch.Tensor):
             return w.view(config.num_attention_heads,
                           config.hidden_size // config.num_attention_heads // 2,
@@ -609,13 +618,13 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                                 total_size += weight_size
                             index_dict = dict(total_size=total_size, weight_map=weight_map)
                             tmp_index_file = os.path.join(path, "_tmp_index_{}.json")
-                            IODriver.save(
+                            io_driver.save(
                                 json.dumps(index_dict), tmp_index_file.format(env.pp_rank)
                             )
                         else:
                             ckpt_name = f"pytorch_model.bin"
                         ckpt_path = os.path.join(path, ckpt_name)
-                        IODriver.save(state_dict, ckpt_path)
+                        io_driver.save(state_dict, ckpt_path)
                 if dist.is_initialized() and process_exclusion:
                     dist.barrier()
         dist.barrier()
@@ -627,7 +636,7 @@ class LlamaForCausalLM(CollieModelForCausalLM):
             total_size = 0
             weight_map = {}
             for _file in tmp_index_files:
-                _index_dict = json.loads(IODriver.load(_file, mode="r"))
+                _index_dict = json.loads(io_driver.load(_file, mode="r"))
                 total_size += _index_dict["total_size"]
                 weight_map.update(_index_dict["weight_map"])
                 os.remove(_file)
@@ -635,7 +644,7 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                 "metadata": {"total_size": total_size},
                 "weight_map": weight_map
             }
-            IODriver.save(
+            io_driver.save(
                 json.dumps(merged_dict, indent=2, sort_keys=True) + "\n",
                 os.path.join(path, "pytorch_model.bin.index.json")
             )

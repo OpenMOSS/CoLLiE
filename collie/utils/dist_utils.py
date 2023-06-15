@@ -10,16 +10,20 @@ import torch
 from torch import distributed as dist
 from torch.multiprocessing import Process
 import deepspeed
+from deepspeed.monitor.wandb import WandbMonitor
 from deepspeed.runtime.utils import set_random_seed
 from deepspeed.runtime.zero.stage_1_and_2 import DeepSpeedZeroOptimizer
-from deepspeed.runtime.engine import DeepSpeedOptimizerCallable, DeepSpeedSchedulerCallable
-from deepspeed.runtime.pipe.engine import PipelineEngine
+from deepspeed.runtime.engine import DeepSpeedEngine, DeepSpeedOptimizerCallable, DeepSpeedSchedulerCallable
 from deepspeed.accelerator import get_accelerator
+from deepspeed.runtime import zero
+from deepspeed.runtime.hybrid_engine import DeepSpeedHybridEngine
+from deepspeed.runtime.config import DeepSpeedConfig
+from deepspeed.runtime.pipe import PipelineModule, LayerSpec
+
 from megatron.core import parallel_state, tensor_parallel
 
 from typing import Union, Optional
 
-from collie.utils.utils import _split_batch
 from collie.config import load_config, CollieConfig
 from .peft_utils import patch_peft
 
@@ -62,6 +66,7 @@ def setup_ds_engine(
         lr_scheduler: Optional[Union[torch.optim.lr_scheduler._LRScheduler, DeepSpeedSchedulerCallable]] = None
 ):
     """ 启动 DeepSpeed 引擎。
+
     :param config: **CoLLie** 的配置
     :param model: 模型
     :param optimizer: 优化器
@@ -77,7 +82,7 @@ def setup_ds_engine(
         from collie.module import PipelineModel
         assert isinstance(model, CollieModelForCausalLM) or isinstance(model, PipelineModel), "Currently pipeline or tensor parallelism only supports Collie models."
     model = model.cuda()
-    engine, optimizer, _, lr_scheduler = deepspeed.initialize(
+    engine, optimizer, _, lr_scheduler = initialize(
         model=model,
         optimizer=optimizer,
         lr_scheduler=lr_scheduler,
@@ -200,58 +205,6 @@ def set_seed(config):
     tensor_parallel.model_parallel_cuda_manual_seed(config.seed)
     set_random_seed(config.seed)
 
-def patch_pipeline_engine(config):
-    """
-    改写 ``PipelineEngine`` 的 :meth:`train_batch` 和 :meth:`eval_batch`。
-
-    用于适应 **CoLLiE** 的训练和生成过程。
-    """
-    PipelineEngine.buffer_shape = None
-    raw_train_batch = copy.deepcopy(PipelineEngine.train_batch)
-    raw_eval_batch = copy.deepcopy(PipelineEngine.eval_batch)
-    def train_batch(self, batch):
-        # batch tuple, batch_size is micro_batch * accumulate_steps
-        if self.buffer_shape is None:
-            self.buffer_shape = batch[0].shape
-        elif self.buffer_shape != batch[0].shape:
-            self.buffer_shape = batch[0].shape
-            self.reset_activation_shape()
-        batch = _split_batch(batch, self.train_micro_batch_size_per_gpu(),
-                             self.gradient_accumulation_steps())
-        data_iter = iter(batch)
-        return raw_train_batch(self, data_iter)
-
-    def eval_batch(self, batch):
-        if self.buffer_shape is None:
-            self.buffer_shape = batch[0].shape
-        elif self.buffer_shape != batch[0].shape:
-            self.buffer_shape = batch[0].shape
-            self.reset_activation_shape()
-        if self.total_loss is not None:
-            total_loss = self.total_loss.detach().clone()
-        else:
-            total_loss = None
-        self.total_loss = None
-        batch = _split_batch(batch, config.eval_batch_size,
-                             self.gradient_accumulation_steps())
-        data_iter = iter(batch)
-        logits = raw_eval_batch(self, data_iter, return_logits=False,
-                                    compute_loss=False, reduce_output=None)
-        # logits: list
-        # len(logits) = micro_batch_nums
-        # Assume batch first
-        if logits is not None:
-            assert isinstance(logits, list), type(logits)
-            logits = torch.cat(logits, dim=0)
-        src_rank = self.grid.stage_to_global(self.num_stages - 1)
-        logits = broadcast_tensor(logits, src=src_rank,
-                                  group=env.pp_group)
-        self.total_loss = total_loss
-        return logits
-
-    PipelineEngine.train_batch = train_batch
-    PipelineEngine.eval_batch = eval_batch
-
 def patch_deepspeed(config):
     if hasattr(config, "ds_config") \
             and "zero_optimization" in config.ds_config.keys() \
@@ -287,7 +240,26 @@ def patch_deepspeed(config):
                 continue
 
     DeepSpeedZeroOptimizer.initialize_optimizer_states = safe_initialize_optimizer_states
-    patch_pipeline_engine(config)
+    
+    raw_wandb_init = copy.deepcopy(WandbMonitor.__init__)
+    def collie_wandb_init(self, wandb_config):
+        raw_wandb_init(self, wandb_config)
+        import wandb
+        wandb.run.name = wandb_config.job_name
+    WandbMonitor.__init__ = collie_wandb_init
+
+    # LayerSpec
+    def layer_spec_init(self, typename, *module_args, **module_kwargs):
+        self.typename = typename
+        self.module_args = module_args
+        self.module_kwargs = module_kwargs
+
+        if dist.is_initialized():
+            self.global_rank = dist.get_rank()
+        else:
+            self.global_rank = -1
+    LayerSpec.__init__ = layer_spec_init
+        
 
 def patch_megatron():
     parallel_state.get_model_parallel_world_size = lambda: parallel_state.get_tensor_model_parallel_world_size()
@@ -558,3 +530,89 @@ def launch(target: callable,
         processes.append(Process(target=_wrapper, args=(environ,)))
     [p.start() for p in processes]
     [p.join() for p in processes]
+
+def initialize(args=None,
+               model: torch.nn.Module = None,
+               optimizer = None,
+               model_parameters: Optional[torch.nn.Module] = None,
+               training_data: Optional[torch.utils.data.Dataset] = None,
+               lr_scheduler = None,
+               mpu=None,
+               dist_init_required: Optional[bool] = None,
+               collate_fn=None,
+               config=None,
+               config_params=None):
+
+    # Disable zero.Init context if it's currently enabled
+    zero.partition_parameters.shutdown_init_context()
+
+    assert model is not None, "deepspeed.initialize requires a model"
+
+    global dist
+    from deepspeed import comm as dist
+    dist_backend = get_accelerator().communication_backend_name()
+    dist.init_distributed(dist_backend=dist_backend, dist_init_required=dist_init_required)
+
+    # Set config using config_params for backwards compat
+    if config is None and config_params is not None:
+        config = config_params
+
+    # Check for deepscale_config for backwards compat
+    if hasattr(args, "deepscale_config") and args.deepscale_config is not None:
+        if hasattr(args, "deepspeed_config"):
+            assert (args.deepspeed_config is
+                    None), "Not sure how to proceed, we were given both a deepscale_config and deepspeed_config"
+        args.deepspeed_config = args.deepscale_config
+        args.deepscale_config = None
+
+    # Check that we have only one config passed
+    if hasattr(args, "deepspeed_config") and args.deepspeed_config is not None:
+        assert config is None, "Not sure how to proceed, we were given deepspeed configs in the deepspeed arguments and deepspeed.initialize() function call"
+        config = args.deepspeed_config
+    assert config != None, "DeepSpeed requires --deepspeed_config to specify configuration file"
+
+    if not isinstance(model, PipelineModule):
+        config_class = DeepSpeedConfig(config, mpu)
+        if config_class.hybrid_engine.enabled:
+            engine = DeepSpeedHybridEngine(args=args,
+                                           model=model,
+                                           optimizer=optimizer,
+                                           model_parameters=model_parameters,
+                                           training_data=training_data,
+                                           lr_scheduler=lr_scheduler,
+                                           mpu=mpu,
+                                           dist_init_required=dist_init_required,
+                                           collate_fn=collate_fn,
+                                           config=config,
+                                           config_class=config_class)
+        else:
+            engine = DeepSpeedEngine(args=args,
+                                     model=model,
+                                     optimizer=optimizer,
+                                     model_parameters=model_parameters,
+                                     training_data=training_data,
+                                     lr_scheduler=lr_scheduler,
+                                     mpu=mpu,
+                                     dist_init_required=dist_init_required,
+                                     collate_fn=collate_fn,
+                                     config=config,
+                                     config_class=config_class)
+    else:
+        from .pipeline_engine import ColliePipelineEngine  
+        assert mpu is None, "mpu must be None with pipeline parallelism"
+        mpu = model.mpu()
+        config_class = DeepSpeedConfig(config, mpu)
+        engine = ColliePipelineEngine(args=args,
+                                model=model,
+                                optimizer=optimizer,
+                                model_parameters=model_parameters,
+                                training_data=training_data,
+                                lr_scheduler=lr_scheduler,
+                                mpu=mpu,
+                                dist_init_required=dist_init_required,
+                                collate_fn=collate_fn,
+                                config=config,
+                                config_class=config_class)
+
+    return_items = [engine, engine.optimizer, engine.training_dataloader, engine.lr_scheduler]
+    return tuple(return_items)
