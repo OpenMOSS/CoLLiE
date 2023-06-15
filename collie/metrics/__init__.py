@@ -3,11 +3,13 @@
 from .base import BaseMetric
 from .decode import DecodeMetric
 from .accuracy import AccuracyMetric
-from .ppl import PplMetric
+from .ppl import PPLMetric
+from .bleu import BleuMetric
 
 __all__ = [
     'BaseMetric',
     'DecodeMetric',
     'AccuracyMetric',
-    'PplMetric'
+    'PPLMetric',
+    'BleuMetric'
 ]

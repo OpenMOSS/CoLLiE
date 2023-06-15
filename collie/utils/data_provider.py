@@ -12,18 +12,20 @@ import time
 import pandas as pd
 from torch.multiprocessing import Process, Queue
 from transformers.generation.streamers import BaseStreamer
-from transformers import PreTrainedTokenizer
+from transformers import PreTrainedTokenizer, GenerationConfig
 import torch
 
 class BaseProvider:
     """ BaseProvider 为异步数据提供器的基类，提供了一些基本的接口
     """
     def __init__(self, 
-                 stream: bool = False) -> None:
+                 stream: bool = False,
+                 generation_config: GenerationConfig = GenerationConfig()) -> None:
         self.data = Queue()
         self.feedback = Queue()
         self.stream = stream
         self.provider_started = False
+        self.generation_config = generation_config
         
     def provider_handler(self):
         """ provider_handler 为异步数据提供器的主要逻辑，需要被子类重写，主要功能为异步地收集数据并放入队列 `self.data` 中
@@ -67,8 +69,9 @@ class GradioProvider(BaseProvider):
     def __init__(self, 
                  tokenizer: PreTrainedTokenizer,
                  port: int = 7878,
-                 stream: bool = False) -> None:
-        super().__init__(stream)
+                 stream: bool = False,
+                 generation_config: GenerationConfig = GenerationConfig()) -> None:
+        super().__init__(stream=stream, generation_config=generation_config)
         self.tokenizer = tokenizer
         self.port = port
         
@@ -97,8 +100,9 @@ class DashProvider(BaseProvider):
     def __init__(self, 
                  tokenizer: PreTrainedTokenizer,
                  port: int = 7878,
-                 stream: bool = False) -> None:
-        super().__init__(stream)
+                 stream: bool = False,
+                 generation_config: GenerationConfig = GenerationConfig()) -> None:
+        super().__init__(stream=stream, generation_config=generation_config)
         self.tokenizer = tokenizer
         self.port = port
     

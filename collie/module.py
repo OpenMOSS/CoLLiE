@@ -294,8 +294,6 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
             inputs["attention_mask"] = attention_mask
         if past_key_values is not None:
             inputs["input_ids"] = inputs["input_ids"][:, -1:]
-            if "attention_mask" in inputs.keys():
-                inputs["attention_mask"] = inputs["attention_mask"][:, -1:]
         batch = (inputs, {"labels": inputs["input_ids"]})
         outputs = self.engine.generate_batch(batch)
         return CausalLMOutputWithPast(

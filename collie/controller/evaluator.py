@@ -170,8 +170,8 @@ class Evaluator:
             generation_model = evaluator.engine.module
         generated_ids = generation_model.generate(input_ids=inputs["input_ids"], attention_mask=inputs["attention_mask"], 
                                               generation_config=evaluator.generation_config)
-        
-        result = {"pred": [evaluator.tokenizer.decode(sample, skip_special_tokens=evaluator.skip_special_tokens) for sample in generated_ids]}
+        prompt_length = inputs["input_ids"].shape[1]
+        result = {"pred": [evaluator.tokenizer.decode(sample[prompt_length:], skip_special_tokens=evaluator.skip_special_tokens) for sample in generated_ids]}
         if "target" in labels.keys():
             result["target"] = [evaluator.tokenizer.decode(sample, skip_special_tokens=evaluator.skip_special_tokens) for sample in labels["target"]]
         return result
@@ -206,7 +206,7 @@ class Evaluator:
         generated_ids = generation_model.generate(
             input_ids=input_ids.cuda(), 
             attention_mask=torch.ones_like(input_ids).cuda(), 
-            generation_config=self.generation_config,
+            generation_config=self.data_provider.generation_config,
             streamer=streamer if use_stream else None
         )
         if not use_stream:
@@ -235,10 +235,10 @@ class PerplexityEvaluator(Evaluator):
     
         :return: 一次验证的结果，为 `Dict` 类型，该结果会被传入 `metric` 的 `update` 方法中
         """
+        inputs, labels = batch
         if evaluator.config.pp_size > 1:
-            logits = evaluator.engine.eval_batch(batch)
+            outputs = evaluator.engine.eval_batch(batch)
         else:
-            inputs, labels = batch
             # concat prompt labels for p-tuning
             if evaluator.config.peft_config and evaluator.config.peft_config.peft_type in ["PROMPT_TUNING", "P_TUNING"]:
                 batch_size = inputs["input_ids"].shape[0]
@@ -246,7 +246,7 @@ class PerplexityEvaluator(Evaluator):
                     prefix_labels = torch.full((batch_size, evaluator.config.peft_config.num_virtual_tokens), -100).to(labels["labels"].device)
                     labels["labels"] = torch.cat((prefix_labels, labels["labels"]), dim=1)
             outputs = evaluator.engine(**inputs)
-        ppl = evaluator.loss_fn(outputs, labels)
+        ppl = torch.exp(evaluator.loss_fn(outputs, labels))
         return {
             "ppl": ppl.detach().clone().view(1,).cuda(),
             # **{key: value.cuda() for key, value in batch[1].items() if isinstance(value, torch.Tensor)}
