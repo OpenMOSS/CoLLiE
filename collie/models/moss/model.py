@@ -383,7 +383,7 @@ class MossForCausalLM(CollieModelForCausalLM):
         else:
             input_ids = input_ids[:, -1].unsqueeze(-1)
             self._set_past_key_values(self.h, past_key_values)
-        return {"input_ids": input_ids}
+        return {"input_ids": input_ids, "attention_mask": attention_mask}
     
     def clean(self):
         self._clean_hidden_states([*self.h, self.lm_head])
