@@ -3,6 +3,8 @@ from copy import deepcopy
 from typing import Callable, Dict, Optional, Tuple, Union
 
 from collie.log.logger import logger
+from collie.driver.io import IODriver
+from collie.utils import env
 from .has_monitor_callback import ResultsMonitor
 
 __all__ = ['TopkSaver']
@@ -62,6 +64,18 @@ class Saver:
         save_fn(folder, self.process_exclusion, **self.kwargs)
 
         return folder
+    
+    def rm(self, folder_name):
+        r"""移除 folder/folder_name 。其中 folder 为用户在初始化指定，
+        timestamp 为当前脚本的启动时间。
+
+        :param folder_name: 需要移除的路径。
+        :return:
+        """
+        folder = os.path.join(self.save_folder, folder_name)
+        io_driver = IODriver.from_protocol(self.kwargs.get("protocol", "file"))
+        if env.rank == 0:
+            io_driver.delete(folder)
 
     def state_dict(self):
         states = {'save_folder': str(self.save_folder)}
@@ -152,6 +166,7 @@ class TopkSaver(ResultsMonitor, Saver):
         存；大于 0 的数为保存 ``topk`` 个；
     :param monitor: 监控的 metric 值：
 
+        * 为 ``None`` 时，不设置监控值。
         * 为 ``str`` 时，
           collie 将尝试直接使用该名称从 ``evaluation`` 的结果中寻找，如果最终在
           ``evaluation`` 结果中没有找到完全一致的名称，则将使用最长公共字符串算法

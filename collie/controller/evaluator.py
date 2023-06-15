@@ -5,6 +5,7 @@ import torch.distributed as dist
 from deepspeed.runtime.pipe.engine import PipelineEngine
 from deepspeed.accelerator import get_accelerator
 from transformers.generation.utils import GenerationConfig
+from transformers import PreTrainedTokenizerBase
 
 from collie.module import PipelineGenerationMixin, GPTLMLoss
 from collie.data.dataloader import CollieDataLoader
@@ -19,7 +20,7 @@ class Evaluator:
 
     :param model: 用于训练和验证的模型，可以使用 **CoLLie** 实现的模型或 transformers 提供的模型：
 
-        * **CoLLie** 实现的模型 :class:`~collie.CollieModelForCausalLM` 可支持的并行方式包括：张量并行、流水线并行、`ZeRO`
+        * **CoLLie** 实现的模型 :class:`.CollieModelForCausalLM` 可支持的并行方式包括：张量并行、流水线并行、`ZeRO`
         * transformers 提供的模型 ``transformers.PreTrainedModel`` 只支持 `ZeRO`
     :param dataset: 用于验证的数据集。
         **CoLLie** 可接收的 ``dataset`` 为可迭代对象，例如 ``torch.utils.data.Dataset``
@@ -30,6 +31,9 @@ class Evaluator:
                 
             * `a` 即 ``input_ids``， 为 ``torch.Tensor`` 类型，表示模型的的输入
             * `b` 可以为 ``torch.Tensor``，也可以是由 ``torch.Tensor`` 组成的任意长度的 `Tuple`，此项会作为 `loss_fn` 的第二个参数传入
+    :param tokenizer: 用于训练和验证的分词器，该分词器将用于:
+        * 使用 :class:`~collie.controller.evaluator.Evaluator` 进行基于生成的验证时，使用 `tokenizer` 对生成的结果进行解码
+        若无上述需求，可不传入 `tokenizer`
     :param eval_fn: 您可以传入该参数来定制每次评测一个 batch 的数据时所执行的函数。该函数应接受的两个参数为 ``evaluator`` 和 ``batch``，
         返回值为 Dict 类型；若为 `None`, 默认调用 Evaluator 自带的 eval_fn。       
     :param config: 用于验证的配置，必须删除关于 ``optimizer`` 的字段
@@ -60,11 +64,12 @@ class Evaluator:
     :param monitors: 用于监控训练过程的监控器，详见 :class:`~collie.utils.monitor.BaseMonitor`
     """
 
-    def __init__(self, model, dataset: torch.utils.data.Dataset, metrics: Optional[Dict] = None, eval_fn: Optional[Callable]=None,
+    def __init__(self, model, dataset: torch.utils.data.Dataset, tokenizer: Optional[PreTrainedTokenizerBase] = None, metrics: Optional[Dict] = None, eval_fn: Optional[Callable]=None,
                  config: Optional[CollieConfig] = None, collate_fn: Optional[Callable] = ColliePadder(padding_left=True), data_provider: Optional[BaseProvider] = None,
-                 generation_config: GenerationConfig = GenerationConfig(), monitors: Sequence[BaseMonitor] = []):
+                 generation_config: GenerationConfig = GenerationConfig(), monitors: Sequence[BaseMonitor] = [], skip_special_tokens: bool = True):
         self.engine = None
         self.model = model
+        self.tokenizer = tokenizer
         self.metrics = metrics
         self.metric_wrapper = _MetricsWrapper(self.metrics, self)
         self.config = config
@@ -75,6 +80,8 @@ class Evaluator:
         self.eval_dataloader = None
         self.data_provider = data_provider
         self.monitor = _MultiMonitors(monitors)
+        self.global_batch_idx = 0
+        self.skip_special_tokens = skip_special_tokens
 
     def init_engine(self):
         """
@@ -85,12 +92,6 @@ class Evaluator:
                                      f"{dist.get_world_size()} != {self.config.tp_size} * {self.config.dp_size} * {self.config.dp_size}.")
             self.config.dp_size = dist.get_world_size() // (self.config.tp_size * self.config.pp_size)
             logger.rank_zero_warning(f"Set dp_size to {self.config.dp_size}.")
-        if self.config.pp_size > 1:
-            # GPTLMLoss 是 Module，会被 nn.Module 加入 _Modules
-            # 如果 loss_fn 是一个函数就会在此时报错
-            if not isinstance(self.loss_fn, torch.nn.Module):
-                del self.model.loss_fn
-            self.model.loss_fn = self.loss_fn
         self.engine, _, _, _ = setup_ds_engine(
             model=self.model,
             config=self.config,
@@ -121,8 +122,6 @@ class Evaluator:
 
         with progress(eval_dataloader, desc="Evaluating Batch: ", disable=env.rank != 0, total=self.eval_steps) as tqbar_batch:
             for batch_idx, batch in enumerate(tqbar_batch):
-                if batch_idx >= self.eval_steps:
-                    break
                 tqbar_batch.set_description(f"Evaluating Batch: {batch_idx} / {self.eval_steps}")
                 self.data_provider_handler()
                 self.engine.eval()
@@ -136,7 +135,10 @@ class Evaluator:
                     for k in list(metric_results[key].keys()):
                         metric_results[f"{key}#{k}"] = metric_results[key][k]
                     del metric_results[key]
-            item.update({"eval_result": metric_results, "mode": "eval"})
+            item.update({
+                "eval_result": metric_results, 
+                "global_batch_idx": self.global_batch_idx,
+                "mode": "eval"})
         self.metric_wrapper.reset()
 
         if len(metric_results) > 0 and env.rank == 0:  # 如果 metric 不为 None 需要 print 。
@@ -158,19 +160,21 @@ class Evaluator:
     
         :return: 一次验证的结果，为 `Dict` 类型，该结果会被传入 `metric` 的 `update` 方法中
         """
-        input_ids, labels = batch
+        assert evaluator.tokenizer is not None, "You must provide a tokenizer to decode the generated results."
+        inputs, labels = batch
         if isinstance(evaluator.engine, PipelineEngine):
             generation_model = PipelineGenerationMixin(
                 engine=evaluator.engine
             )
         else:
             generation_model = evaluator.engine.module
-        generated_ids = generation_model.generate(input_ids=input_ids.cuda(), attention_mask=torch.ones_like(input_ids).cuda(), 
+        generated_ids = generation_model.generate(input_ids=inputs["input_ids"], attention_mask=inputs["attention_mask"], 
                                               generation_config=evaluator.generation_config)
-        return {
-            "generated_ids": generated_ids,
-            # **labels
-        }
+        
+        result = {"pred": [evaluator.tokenizer.decode(sample, skip_special_tokens=evaluator.skip_special_tokens) for sample in generated_ids]}
+        if "target" in labels.keys():
+            result["target"] = [evaluator.tokenizer.decode(sample, skip_special_tokens=evaluator.skip_special_tokens) for sample in labels["target"]]
+        return result
 
     def data_provider_handler(self):
         """当初始化 :class:`collie.Evaluator` 的过程中提供了 ``data_provider`` 时会使用此方法。
@@ -234,15 +238,15 @@ class PerplexityEvaluator(Evaluator):
         if evaluator.config.pp_size > 1:
             logits = evaluator.engine.eval_batch(batch)
         else:
-            input_ids, labels = batch
+            inputs, labels = batch
             # concat prompt labels for p-tuning
             if evaluator.config.peft_config and evaluator.config.peft_config.peft_type in ["PROMPT_TUNING", "P_TUNING"]:
-                batch_size = input_ids.shape[0]
+                batch_size = inputs["input_ids"].shape[0]
                 if "labels" in labels.keys():
                     prefix_labels = torch.full((batch_size, evaluator.config.peft_config.num_virtual_tokens), -100).to(labels["labels"].device)
                     labels["labels"] = torch.cat((prefix_labels, labels["labels"]), dim=1)
-            logits = evaluator.engine(input_ids=input_ids.cuda()).logits
-        ppl = evaluator.loss_fn(logits, batch[1])
+            outputs = evaluator.engine(**inputs)
+        ppl = evaluator.loss_fn(outputs, labels)
         return {
             "ppl": ppl.detach().clone().view(1,).cuda(),
             # **{key: value.cuda() for key, value in batch[1].items() if isinstance(value, torch.Tensor)}
@@ -263,15 +267,18 @@ class ClassficationEvaluator(PerplexityEvaluator):
     
         :return: 一次验证的结果，为 `Dict` 类型，该结果会被传入 `metric` 的 `update` 方法中
         """
-        input_ids_group, labels_group = batch
-        assert isinstance(input_ids_group, tuple), "input_ids must be a list for classification task."
-        pred = torch.zeros((input_ids_group[0].shape[0], len(input_ids_group)))
-        for idx, input_ids in enumerate(input_ids_group):
+        inputs_group, labels_group = batch
+        assert isinstance(inputs_group["input_ids"], Sequence), f"input_ids must be a list for classification task. But got {type(inputs_group['input_ids'])}."
+        assert isinstance(inputs_group["attention_mask"], Sequence), f"input_ids must be a list for classification task. But got {type(inputs_group['attention_mask'])}."
+        pred = torch.zeros((inputs_group["input_ids"][0].shape[0], len(inputs_group["input_ids"])))
+        for idx, input_ids in enumerate(inputs_group["input_ids"]):
             assert isinstance(input_ids, torch.Tensor), "input_ids must be a list of torch.Tensor for classification task."
-            labels = {"labels": labels_group["labels"][idx], 
-                      **{key: value for key, value in labels_group.items() if key != "labels"}}
+            inputs = {"input_ids": input_ids.cuda(), "attention_mask": inputs_group["attention_mask"][idx].cuda(), 
+                      **{key: value.cuda() for key, value in inputs_group.items() if key not in ("input_ids", "attention_mask")}}
+            labels = {"labels": labels_group["labels"][idx].cuda(), 
+                      **{key: value.cuda() for key, value in labels_group.items() if key != "labels"}}
             if evaluator.config.pp_size > 1:
-                logits = evaluator.engine.eval_batch((input_ids, labels))
+                logits = evaluator.engine.eval_batch((inputs, labels))["logits"]
             else:
                 # concat prompt labels for p-tuning
                 if evaluator.config.peft_config and evaluator.config.peft_config.peft_type in ["PROMPT_TUNING", "P_TUNING"]:
@@ -279,7 +286,7 @@ class ClassficationEvaluator(PerplexityEvaluator):
                     if "labels" in labels.keys():
                         prefix_labels = torch.full((batch_size, evaluator.config.peft_config.num_virtual_tokens), -100).to(labels["labels"].device)
                         labels["labels"] = torch.cat((prefix_labels, labels["labels"]), dim=1)
-                logits = evaluator.engine(input_ids=input_ids.cuda()).logits
+                logits = evaluator.engine(**inputs)["logits"]
             for sample_idx in range(input_ids.shape[0]):
                 pred[sample_idx, idx] = evaluator.loss_fn(logits[sample_idx: sample_idx + 1, :], labels["labels"][sample_idx: sample_idx + 1, :]).detach().cpu().item()
         pred = pred.argmin(dim=1)

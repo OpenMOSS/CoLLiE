@@ -22,6 +22,7 @@ from deepspeed.runtime.pipe.engine import PipelineEngine
 from deepspeed.runtime.engine import DeepSpeedSchedulerCallable
 from transformers.generation.utils import GenerationConfig
 from transformers.modeling_utils import PreTrainedModel
+from transformers import PreTrainedTokenizerBase
 
 from collie.config import CollieConfig
 from collie.module import PipelineGenerationMixin, GPTLMLoss, PipelineModel
@@ -42,13 +43,17 @@ class Trainer(TrainerEventTrigger):
 
     :param model: 用于训练和验证的模型，可以使用 **CoLLie** 实现的模型或 transformers 提供的模型：
 
-        * **CoLLie** 实现的模型 :class:`~collie.CollieModelForCausalLM` 可支持的并行方式包括：张量并行、流水线并行、`ZeRO`
+        * **CoLLie** 实现的模型 :class:`.CollieModelForCausalLM` 可支持的并行方式包括：张量并行、流水线并行、`ZeRO`
         * transformers 提供的模型 ``transformers.PreTrainedModel`` 只支持 `ZeRO`
         
     :param config: 用于训练和验证的配置
+    :param tokenizer: 用于训练和验证的分词器，该分词器将用于:
+        * 保存模型时 `trainer.save_model` 时自动同时保存 `tokenizer`
+        * 使用 :class:`~collie.controller.evaluator.Evaluator` 进行基于生成的验证时，使用 `tokenizer` 对生成的结果进行解码
+        若无上述需求，可不传入 `tokenizer`
     :param loss_fn: 用于计算 loss 的函数，默认使用 :meth:`~collie.module.GPTLMLoss`
-    :param train_fn: 用于训练的函数，默认使用 :meth:`~collie.trainer.Trainer.train_fn`
-    :param eval_fn: 用于验证的函数，默认使用 :meth:`~collie.trainer.Trainer.eval_fn`
+    :param train_fn: 用于训练的函数，默认使用 :meth:`~collie.controller.Trainer.train_fn`
+    :param eval_fn: 用于验证的函数，默认使用 :meth:`~collie.controller.Evaluator.eval_fn`
     :param optimizer: 训练过程中的优化器，当为 `None` 的时候会尝试使用 ``config.ds_config`` 定义的优化器
     :param lr_scheduler: 训练过程中的学习率调度器；
     :param train_dataset: 用于训练的数据集。
@@ -98,10 +103,13 @@ class Trainer(TrainerEventTrigger):
 
         * Collie 自己的 ``metric``：详见 :class:`.BaseMetric`
         * 继承 Collie 基类的自定义 Metric
+    :param evaluators: 验证器。当传入多个 :class:`.Evaluator` 时会依次执行
+        evaluator 的验证方法。
     """
     def __init__(self, 
                  model: torch.nn.Module,
                  config: CollieConfig,
+                 tokenizer: Optional[PreTrainedTokenizerBase] = None,
                  loss_fn: Callable = GPTLMLoss(),
                  train_fn: Optional[Callable] = None,
                  eval_fn: Optional[Callable] = None,
@@ -129,6 +137,7 @@ class Trainer(TrainerEventTrigger):
                 self.config.ds_config["gradient_accumulation_steps"] = 1
 
         self.model = model
+        self.tokenizer = tokenizer
         self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
         self.train_dataset = train_dataset
@@ -140,6 +149,14 @@ class Trainer(TrainerEventTrigger):
             self.eval_fn = eval_fn
         self.train_dataset_collate_fn = train_dataset_collate_fn
         self.eval_dataset_collate_fn = eval_dataset_collate_fn
+        if self.tokenizer is not None and self.tokenizer.pad_token_id is not None \
+            and isinstance(self.train_dataset_collate_fn, ColliePadder) \
+                and "input_ids" not in self.train_dataset_collate_fn.padding_token_id.keys():
+            self.train_dataset_collate_fn.padding_token_id["input_ids"] = self.tokenizer.pad_token_id
+        if self.tokenizer is not None and self.tokenizer.pad_token_id is not None \
+            and isinstance(self.eval_dataset_collate_fn, ColliePadder) \
+                and "input_ids" not in self.eval_dataset_collate_fn.padding_token_id.keys():
+            self.train_dataset_collate_fn.padding_token_id["input_ids"] = self.tokenizer.pad_token_id
         self.generation_config = generation_config
         
         self.communicate_buffer_shape = None
@@ -154,9 +171,9 @@ class Trainer(TrainerEventTrigger):
                 "Note that you have set both `evaluators` and `eval_dataset` "
                 "and the later will not take effect."
             )
-
-        if (evaluators is None or (hasattr(evaluators, "__len__") and len(evaluators) == 0)) and self.eval_dataset is not None:
+        if evaluators is None:
             evaluators = []
+        if ((hasattr(evaluators, "__len__") and len(evaluators) == 0)) and self.eval_dataset is not None:
             evaluator = Evaluator(model=model, dataset=eval_dataset, metrics=metrics, eval_fn=eval_fn,
                 config=config, collate_fn=eval_dataset_collate_fn, data_provider=None,
                 generation_config=generation_config)
@@ -165,6 +182,8 @@ class Trainer(TrainerEventTrigger):
         if not isinstance(evaluators, Sequence):
             evaluators = [evaluators]
         for evaluator in evaluators:
+            if self.tokenizer is not None:
+                evaluator.tokenizer = self.tokenizer
             evaluator.engine = self.engine
             evaluator.data_provider = self.data_provider
 
@@ -314,15 +333,16 @@ class Trainer(TrainerEventTrigger):
                         self.engine.train()
                         self.on_train_batch_begin(batch)
                         with self.monitor as item:
-                            loss, lr = self.train_fn(self, batch, self.epoch_idx * self.steps_per_epoch + self.batch_idx)
+                            loss = self.train_fn(self, batch, self.global_batch_idx)
                             item.update({"loss": round(loss, 4),
-                                         "lr": lr,
+                                         "lr": self.lr,
                                          "batch": batch,
                                          "batch_idx": self.batch_idx,
                                          "epoch_idx": self.epoch_idx,
                                          "global_batch_idx": self.global_batch_idx,
                                          "memory_allocated": torch.cuda.max_memory_allocated(),
-                                         "mode": "train"})
+                                         "mode": "train"}
+                                )
                         tqbar_batch.set_postfix(Loss=round(loss, 4))
                         self.on_train_batch_end(loss)
                         if self.config.eval_per_n_steps > 0 and (self.batch_idx + 1) % self.config.eval_per_n_steps == 0:
@@ -331,9 +351,6 @@ class Trainer(TrainerEventTrigger):
                     self.eval()
                 self.on_train_epoch_end()
                 self.batch_idx = 0
-                if self.config.eval_per_n_epochs > 0 and (self.epoch_idx + 1) % self.config.eval_per_n_epochs == 0:
-                    self.eval()
-                self.on_train_epoch_end()
         self.on_train_end()
         self.epoch_idx = 0
                 
@@ -347,6 +364,7 @@ class Trainer(TrainerEventTrigger):
         self.on_evaluate_begin()
         eval_results = {}
         for evaluator in self.evaluators:
+            evaluator.global_batch_idx = self.global_batch_idx
             results = evaluator.eval(dataloader)
             eval_results.update(results)
         # TODO deal with results
@@ -361,7 +379,7 @@ class Trainer(TrainerEventTrigger):
 
             .. note::
                 
-                根据提供的 ``train_dataset`` 和 ``train_dataset_collate_fn`` 的不同，`labels` 的类型也会有所不同，详见 :class:`~collie.trainer.Trainer`
+                根据提供的 ``train_dataset`` 和 ``train_dataset_collate_fn`` 的不同，`labels` 的类型也会有所不同，详见 :class:`.Trainer`
     
         :param global_step: 当前的全局步数
         
@@ -370,22 +388,18 @@ class Trainer(TrainerEventTrigger):
         if trainer.config.pp_size > 1:
             loss = trainer.engine.train_batch(batch)
         else:
-            input_ids, labels = batch
+            inputs, labels = batch
             # concat prompt labels for p-tuning
             if trainer.config.peft_config and trainer.config.peft_config.peft_type in ["PROMPT_TUNING", "P_TUNING"]:
-                batch_size = input_ids.shape[0]
+                batch_size = inputs["input_ids"].shape[0]
                 prefix_labels = torch.full((batch_size, trainer.config.peft_config.num_virtual_tokens), -100).to(labels.device)
                 labels = torch.cat((prefix_labels, labels), dim=1)
 
-            logits = trainer.engine(input_ids=input_ids.cuda()).logits
-            loss = trainer.loss_fn(logits, labels)
+            outputs = trainer.engine(**inputs)
+            loss = trainer.loss_fn(outputs, labels)
             if not isinstance(trainer.optimizer, InplaceSGD):
                 trainer.engine.backward(loss)
                 trainer.engine.step()
-                if trainer.lr_scheduler:
-                    lr = trainer.lr_scheduler.get_last_lr()[0]
-                else:
-                    lr = trainer.optimizer.param_groups[0]['lr']
             else:
                 # for inplace_sgd only
                 if trainer.optimizer.clip_grad_norm is not None:
@@ -393,8 +407,8 @@ class Trainer(TrainerEventTrigger):
                     if trainer.optimizer.zero_enabled:
                         trainer.engine.optimizer.get_param_coordinator(training=True).reset_step()
                         # zero-3 doesn't support backward twice, so need an additional forward here
-                        logits = trainer.engine(input_ids=input_ids.cuda()).logits
-                        loss = trainer.loss_fn(logits, labels)
+                        outputs = trainer.engine(**inputs)
+                        loss = trainer.loss_fn(outputs, labels)
                 if trainer.lr_scheduler:
                     lr = trainer.lr_scheduler.step(global_step)
                 else:
@@ -402,7 +416,15 @@ class Trainer(TrainerEventTrigger):
                 trainer.optimizer.backward_step(loss, lr)
                 if trainer.optimizer.zero_enabled:  # TODO: should tp do this too?
                     trainer.engine.optimizer.get_param_coordinator(training=True).reset_step()
-        return loss.detach().cpu().item(), lr
+        return loss.detach().cpu().item()
+    
+    @property
+    def lr(self):
+        if self.lr_scheduler:
+            lr = self.lr_scheduler.get_last_lr()[0]
+        else:
+            lr = self.optimizer.param_groups[0]['lr']
+        return lr
 
     def save_model(self, path: str, process_exclusion: bool = False, **kwargs):...
     def save_model(self, path: str, process_exclusion: bool = False,

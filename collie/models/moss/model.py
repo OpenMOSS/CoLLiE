@@ -18,6 +18,7 @@ from collie.module import (ColumnParallelLinearWithoutBias,
 from collie.driver.io import IODriver
 from collie.models.base import CollieModelForCausalLM
 from collie.utils import env, progress
+from collie.utils.utils import dict_as_params
 from collie.config import CollieConfig
 from .utils import (apply_rotary_pos_emb, create_sinusoidal_positions,
                     set_index_dict, _state_dict_to_save, _state_dict_to_load,
@@ -52,12 +53,10 @@ class MossAttention(nn.Module):
         self.scale_attn = torch.sqrt(torch.tensor(self.head_dim, dtype=torch.float32)).to(torch.get_default_dtype())
         self.qkv_proj = ColumnParallelLinearWithoutBias(
             self.embed_dim, self.embed_dim * 3, bias=False, gather_output=True,
-            use_cpu_initialization=config.use_cpu_initialization
         )
 
         self.out_proj = RowParallelLinearWithoutBias(
             self.embed_dim, self.embed_dim, bias=False,
-            use_cpu_initialization=config.use_cpu_initialization,
             input_is_parallel=False
         )
         self.rotary_dim = config.rotary_dim
@@ -205,17 +204,15 @@ class MossMLP(nn.Module):
 
         self.fc_in = ColumnParallelLinearWithoutBias(
             embed_dim, intermediate_size, gather_output=False,
-            use_cpu_initialization=config.use_cpu_initialization
         )
         self.fc_out = RowParallelLinearWithoutBias(
             intermediate_size, embed_dim, input_is_parallel=True,
-            use_cpu_initialization=config.use_cpu_initialization
         )
 
         self.act = NewGELUActivation()
         self.dropout = nn.Dropout(config.resid_pdrop)
 
-    def forward(self, hidden_states: Optional[torch.FloatTensor]) -> torch.FloatTensor:
+    def forward(self, hidden_states) -> torch.FloatTensor:
         hidden_states = self.fc_in(hidden_states)
         hidden_states = self.act(hidden_states)
         hidden_states = self.fc_out(hidden_states)
@@ -269,7 +266,8 @@ class MossBlock(nn.Module):
 
         return outputs  # hidden_states, present, (attentions)
 
-    def forward(self, hidden_states):
+    def forward(self, inputs):
+        hidden_states = inputs["hidden_states"]
         if not self.training:
             self.hidden_states = hidden_states
         use_cache = not self.training and self.use_cache
@@ -293,7 +291,7 @@ class MossBlock(nn.Module):
             def create_custom_forward(module):
                 def custom_forward(*inputs):
                     # None for past_key_value
-                    return module(*inputs)
+                    return {"hidden_states": module(*inputs)}
 
                 return custom_forward
 
@@ -317,8 +315,8 @@ class MossBlock(nn.Module):
         if use_cache:
             self.past_key_values = outputs[1]
 
-        # hidden_states 
-        return outputs[0]
+        # hidden_states
+        return {"hidden_states": outputs[0]}
 
 
 class MossForCausalLM(CollieModelForCausalLM):
@@ -331,16 +329,13 @@ class MossForCausalLM(CollieModelForCausalLM):
         super().__init__(config)
         self.embed_dim = config.n_embd
         self.vocab_size = config.vocab_size
-        self.wte = VocabParallelEmbedding(config.vocab_size, self.embed_dim,
-                                          use_cpu_initialization=config.use_cpu_initialization)
+        self.wte = VocabParallelEmbedding(config.vocab_size, self.embed_dim)
         self.drop = nn.Dropout(config.embd_pdrop)
         self.h = nn.ModuleList([
             MossBlock(config, i) for i in range(config.n_layer)
         ])
         self.ln_f = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_epsilon)
-        self.lm_head = ColumnParallelLMHead(
-            config.n_embd, config.vocab_size, use_cpu_initialization=config.use_cpu_initialization
-        )
+        self.lm_head = ColumnParallelLMHead(config.n_embd, config.vocab_size)
 
     def forward(self, input_ids, **kwargs):
         inputs_embed = self.wte(input_ids)
@@ -384,20 +379,22 @@ class MossForCausalLM(CollieModelForCausalLM):
         if isinstance(config, str):
             config = CollieConfig.from_pretrained(config)
         layers = [
-            VocabParallelEmbedding(
-                config.vocab_size, config.n_embd,
-                use_cpu_initialization=config.use_cpu_initialization
+            dict_as_params("input_ids", "hidden_states")(
+                VocabParallelEmbedding, config.vocab_size, config.n_embd,
             ),
-            nn.Dropout(config.embd_pdrop),
+            dict_as_params("hidden_states", "hidden_states")(
+                nn.Dropout, config.embd_pdrop
+            )
         ]
         layers += [
             LayerSpec(MossBlock, config, i) for i in range(config.n_layer)
         ]
         layers += [
-            nn.LayerNorm(config.n_embd, eps=config.layer_norm_epsilon),
-            ColumnParallelLMHead(
-                config.n_embd, config.vocab_size,
-                use_cpu_initialization=config.use_cpu_initialization
+            dict_as_params("hidden_states", "hidden_states")(
+                nn.LayerNorm, config.n_embd, eps=config.layer_norm_epsilon
+            ),
+            dict_as_params("hidden_states", "logits")(
+                ColumnParallelLMHead, config.n_embd, config.vocab_size,
             )
         ]
 
@@ -495,7 +492,7 @@ class MossForCausalLM(CollieModelForCausalLM):
         # gather to tp rank 0
         desc = "Saving state dict"
         # 没有 process_exclusion 的时候就不显示了
-        hide_progress = process_exclusion and env.rank != 0
+        hide_progress = not process_exclusion or env.rank != 0
         for cur_pp_rank in progress(range(env.pp_size), desc, disable=hide_progress):
             if process_exclusion:
                 dist.barrier()

@@ -12,7 +12,7 @@ from transformers.generation.utils import GenerationConfig
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 from collie.config import CollieConfig
-from collie.trainer.trainer import Trainer
+from collie.controller.trainer import Trainer
 from collie.metrics import BaseMetric
 from collie.models.llama.model import LlamaForCausalLM
 from collie.metrics.decode import DecodeMetric

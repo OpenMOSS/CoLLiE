@@ -19,6 +19,7 @@ class LoadBestModelCallback(HasMonitorCallback):
         节省一定的内存。
     :param monitor: 监控的 metric 值。
 
+        * 为 ``None`` 时，不设置监控值。
         * 为 ``str`` 时，
           CoLLiE 将尝试直接使用该名称从 ``evaluation`` 的结果中寻找，如果最终在
           ``evaluation`` 结果中没有找到完全一致的名称，则将使用最长公共字符串算法

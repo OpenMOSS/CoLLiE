@@ -36,6 +36,7 @@ class BaseProvider:
         """ start_provider 为异步数据提供器的启动函数，会在一个新的进程中启动 `provider_handler` 函数
         """
         process = Process(target=self.provider_handler)
+        process.daemon = True
         process.start()
         self.provider_started = True
         

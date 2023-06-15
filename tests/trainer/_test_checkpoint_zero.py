@@ -13,7 +13,7 @@ from collie.config import CollieConfig
 from collie.data import CollieDataLoader
 from collie.log import logger
 from collie.utils import env, setup_distribution
-from collie.trainer import Trainer
+from collie.controller import Trainer
 
 def compare(d1, d2, key=""):
     assert type(d1) == type(d2), f"Key: {key}, {type(d1)} vs {type(d2)}"
@@ -203,11 +203,11 @@ if __name__ == "__main__":
     pp_size = 1
     zero_stage = 3
     ## 用 collie 的模型保存
-    kwargs = dict(format="collie", load=False)
+    # kwargs = dict(format="collie", load=False)
     ## 用 hf 的模型传入 collie 保存
-    # kwargs = dict(format="hf", load=False)
+    kwargs = dict(format="hf", load=False)
     ## 用 collie 的模型加载
-    # kwargs = dict(format="collie", load=True)
+    kwargs = dict(format="collie", load=True)
     ## 用 hf 模型传入 collie 加载
     # kwargs = dict(format="hf", load=True)
 

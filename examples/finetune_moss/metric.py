@@ -21,43 +21,13 @@ class SFTAccMetric(BaseMetric):
         :param result: dict. Gathered result of eval_fn. Contains `right`,
             `total` in this case.
         """
-        self.right += sum(result["right"]).cpu().item()
-        self.total += sum(result["total"]).cpu().item()
+        if env.dp_size > 1:
+            self.right += sum(result["right"]).cpu().item()
+            self.total += sum(result["total"]).cpu().item()
+        else:
+            self.right += result["right"].cpu().item()
+            self.total += result["total"].cpu().item()
 
     def get_metric(self):
         acc = self.right / self.total
         return acc
-
-
-class SFTDecodeMetric(BaseMetric):
-    def __init__(self, tokenizer, gather_result=True):
-        super(SFTDecodeMetric, self).__init__(gather_result=gather_result)
-        self.tokenizer = tokenizer
-        self.sentences = []
-
-    def reset(self):
-        self.sentences = []
-
-    def update(self, result):
-        """
-
-        :param result: list. Gathered result of eval_fn. Contains `right`,
-            `total` in this case.
-        """
-        input_ids = [r for r in result['generate']]
-        decode_list = []
-        for i in range(len(input_ids)):
-            if isinstance(input_ids[i], torch.Tensor):
-                if input_ids[i].ndim == 2:
-                    input_ids[i] = list(map(lambda x: x.detach().cpu().tolist(), [*input_ids[i]]))
-                    decode_list.extend(input_ids[i])
-                else:
-                    input_ids[i] = input_ids[i].detach().cpu().tolist()
-                    decode_list.append(input_ids[i])
-            else:
-                decode_list.append(input_ids[i])
-        for ids in decode_list:
-            self.sentences.append(self.tokenizer.decode(ids))
-
-    def get_metric(self):
-        return {"decode": self.sentences}

@@ -60,26 +60,28 @@ class _ShardContainer(list):
         return json.loads(self.file.readline().decode())
     
 class CollieDatasetForTraining(Dataset):
-    """ **CoLLie** 中的基本数据格式，可用于预训练、微调、生成任务。需提供的数据格式形似:
+    """ **CoLLie** 中的基本数据格式，可用于预训练、微调、生成任务。需提供的数据格式形似：
+
+        .. code-block::
     
-        ```json
-        [
-            {
-                "text": "这是prompt部分的文本",
-            },
-            ...
-        ]
+            [
+                {
+                    "text": "这是prompt部分的文本",
+                },
+                ...
+            ]
         
         或者:
-        
-        ```json
-        [
-            {
-                "input": "这是prompt部分的文本",
-                "output": "这是output部分的文本"
-            },
-            ...
-        ]
+
+        .. code-block::
+
+            [
+                {
+                    "input": "这是prompt部分的文本",
+                    "output": "这是output部分的文本"
+                },
+                ...
+            ]
         
         当使用第二种数据格式时，只有 `output` 部分的 token 会参与 loss计算。
     """
@@ -123,9 +125,13 @@ class CollieDatasetForTraining(Dataset):
                 labels_mask = torch.tensor(self.dataset[index]["label_mask"]) if "label_mask" in self.dataset[index].keys() else None
         else:
             if "text" in self.dataset[0].keys():
-                input_ids = self.tokenizer(self.dataset[index]["text"], add_special_tokens=self.add_special_tokens).input_ids
+                inputs = self.tokenizer(self.dataset[index]["text"], add_special_tokens=self.add_special_tokens)
+                input_ids = inputs["input_ids"]
+                attention_mask = inputs["attention_mask"]
             elif "input" in self.dataset[0].keys() and "output" in self.dataset[0].keys():
-                input_ids = self.tokenizer(self.dataset[index]["input"] + self.dataset[index]["output"], add_special_tokens=self.add_special_tokens).input_ids
+                inputs = self.tokenizer(self.dataset[index]["input"] + self.dataset[index]["output"], add_special_tokens=self.add_special_tokens)
+                input_ids = inputs["input_ids"]
+                attention_mask = inputs["attention_mask"]
                 labels_mask = torch.ones_like(torch.tensor(input_ids))
                 context_length = len(self.tokenizer(self.dataset[index]["input"], add_special_tokens=self.add_special_tokens).input_ids)
                 _, eos_length = self._inspect_special_tokens_length()
@@ -135,11 +141,11 @@ class CollieDatasetForTraining(Dataset):
             else:
                 raise ValueError("Dataset must have one or two fields.")
         if labels_mask is None:
-            return input_ids, {
+            return {"input_ids": input_ids, "attention_mask": attention_mask}, {
                 "labels": input_ids
             }
         else:
-            return input_ids, {
+            return {"input_ids": input_ids, "attention_mask": attention_mask}, {
                 "labels": input_ids,
                 "labels_mask": labels_mask
             }
@@ -190,15 +196,16 @@ class CollieDatasetForClassification(CollieDatasetForTraining):
     """ **CoLLie** 中的分类任务数据集，须搭配 :class:`~collie.controller.evaluator.ClassficationEvaluator` 
         使用。需提供的数据格式形似:
     
-        ```json
-        [
-            {
-                "input": "这是prompt部分的文本",
-                "output": ["类别1", "类别2", "类别3"],
-                "target": 0
-            },
-            ...
-        ]
+        .. code-block::
+
+            [
+                {
+                    "input": "这是prompt部分的文本",
+                    "output": ["类别1", "类别2", "类别3"],
+                    "target": 0
+                },
+                ...
+            ]
     """
     def __getitem__(self, index) -> Tuple:
         if index > len(self):
@@ -210,10 +217,11 @@ class CollieDatasetForClassification(CollieDatasetForTraining):
         else:
             if "input" in self.dataset[0].keys() and "output" in self.dataset[0].keys() and "target" in self.dataset[0].keys():
                 input_ids = tuple([self.tokenizer(self.dataset[index]["input"] + output, add_special_tokens=self.add_special_tokens).input_ids for output in self.dataset[index]["output"]])
+                attention_mask = tuple([self.tokenizer(self.dataset[index]["input"] + output, add_special_tokens=self.add_special_tokens).attention_mask for output in self.dataset[index]["output"]])
                 target = self.dataset[index]["target"]
             else:
                 raise ValueError("CollieDatasetForClassification must have three fields (`input`, `output` and `target`).")
-        return input_ids, {
+        return {"input_ids": input_ids, "attention_mask": attention_mask}, {
             "labels": input_ids,
             "target": target
         }

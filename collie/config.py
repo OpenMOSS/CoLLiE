@@ -48,6 +48,7 @@ class CollieConfig:
     :param ds_config: **DeepSpeed** 的配置文件。可以是一个路径或字典。
     :param model_config: 模型设置。一般情况下无需手动设置，而是通过
         :meth:`from_pretrained` 获取，
+    :param peft_config: Peft 的配置。
     """
     seed: int = field(
         default=42,

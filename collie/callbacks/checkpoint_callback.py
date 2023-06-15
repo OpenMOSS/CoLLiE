@@ -97,7 +97,7 @@ class CheckpointCallback(Callback):
         self.last = last
 
     def on_after_trainer_initialized(self, trainer):
-        if self.topk_saver.topk_queue and trainer.evaluator is None:
+        if self.topk_saver.topk_queue and trainer.evaluators is None:
             logger.warning(
                 f'You set `topk={self.topk}`, but `eval_dataset` is '
                 'not set in Trainer.')

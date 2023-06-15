@@ -1,17 +1,17 @@
 .. role:: hidden
    :class: hidden-section
 
-CoLLiE.callbacks
+CoLLiE.data
 ===================================
 
-.. contents:: CoLLiE.callbacks
+.. contents:: CoLLiE.data
    :depth: 2
    :local:
    :backlinks: top
 
-.. currentmodule:: collie.callbacks
+.. currentmodule:: collie.data
 
-Callbacks
+Data
 ----------------
 
 .. autosummary::
@@ -19,7 +19,7 @@ Callbacks
    :nosignatures:
    :template: classtemplate.rst
 
-   Callback
-   HasMonitorCallback
-   CheckpointCallback
-   LoadBestModelCallback
+   CollieBatchSampler
+   CollieDataLoader
+   CollieDatasetForClassification
+   CollieDatasetForTraining

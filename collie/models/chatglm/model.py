@@ -259,7 +259,6 @@ class ChatGLMLayer(nn.Module):
                 batch_size, seq_len + start_pos, -1)
             output = F.dropout(output, p=self.config.dropout,
                                training=self.training)
-        # import pdb; pdb.set_trace()
         output = output[:, start_pos:, :]
         hidden_states = hidden_states.permute(1, 0, 2) * self.alpha + self.attention["dense"](output)
         hidden_states = self.post_attention_layernorm(hidden_states)
