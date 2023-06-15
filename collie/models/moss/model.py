@@ -292,7 +292,7 @@ class MossBlock(nn.Module):
             def create_custom_forward(module):
                 def custom_forward(*inputs):
                     # None for past_key_value
-                    return {"hidden_states": module(*inputs)}
+                    return module(*inputs)
 
                 return custom_forward
 
@@ -317,7 +317,11 @@ class MossBlock(nn.Module):
             self.past_key_values = outputs[1]
 
         # hidden_states
-        return {"hidden_states": outputs[0]}
+        if attention_mask is not None:
+            return {"hidden_states": outputs[0],
+                    "attention_mask": attention_mask}
+        else:
+            return {"hidden_states": outputs[0]}
 
 
 class MossForCausalLM(CollieModelForCausalLM):
@@ -353,7 +357,10 @@ class MossForCausalLM(CollieModelForCausalLM):
         all_hidden_states = ()
         for i, l in enumerate(self.h):
             all_hidden_states += (hidden_states,)
-            hidden_states = l(hidden_states)
+            hidden_states = l(
+                {"hidden_states": hidden_states,
+                 "attention_mask": attention_mask}
+            )
 
         hidden_states = self.ln_f(hidden_states)
         logits = self.lm_head(hidden_states)
@@ -466,10 +473,6 @@ class MossForCausalLM(CollieModelForCausalLM):
                 dist.barrier()
             if cur_rank != env.rank:
                 continue
-            if io_driver.exists(os.path.join(path, "config.json")):
-                # update config from config.json
-                new_config = json.loads(io_driver.load(os.path.join(path, "config.json"), mode="r"))
-                config.model_config.update(new_config)
             # 如果存在 pytorch_model.bin.index.json 文件的话，此时不同的 pp 进程可以按需加载自己需要的权重
             index_file = os.path.join(path, "pytorch_model.bin.index.json")
             # start load

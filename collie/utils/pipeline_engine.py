@@ -199,22 +199,22 @@ class ColliePipelineEngine(PipelineEngine):
             ds_checkpointing.reset()
 
         # Partition the outputs if we are not the last stage
-        # TODO Why partition?
-        if self.is_pipe_partitioned and not self.is_last_stage() and self.module.training:
-            part = None
+        if self.module.training:
+            _grad_key = None
             for key, value in outputs.items():
                 if value.requires_grad:
-                    assert part is None, "More than one tensors requires grad."
-                    part = PartitionedTensor(tensor=value, group=self.grid.get_slice_parallel_group())
+                    assert _grad_key is None, "More than one tensors requires grad."
+                    if self.is_pipe_partitioned and not self.is_last_stage():
+                        part = PartitionedTensor(tensor=value, group=self.grid.get_slice_parallel_group())
                     # Clear the large output data, but save the computation graph
                     # TODO 这里源代码没有.to，但现在必须加.to否则会无法send
-                    value.data = torch.zeros(1).to(self.device)
-                    self.pipe_buffers['output_tensors'][buffer_id] = value
-                    self.outputs_extra["_grad_key"] = key
-                    self.outputs_extra["_meta"] = part.to_meta()
-                    self.outputs_extra["_local_data"] = part.data()
-            assert part is not None
-            part = None
+                        value.data = torch.zeros(1).to(self.device)
+                        self.pipe_buffers['output_tensors'][buffer_id] = value
+                        self.outputs_extra["_meta"] = part.to_meta()
+                        self.outputs_extra["_local_data"] = part.data()
+                    _grad_key = key
+            assert _grad_key is not None, "None of the outputs has grad!"
+            self.outputs_extra["_grad_key"] = _grad_key
         self.pipe_buffers['outputs'][buffer_id] = outputs
 
         # Optionally compute loss on the last device
@@ -300,8 +300,7 @@ class ColliePipelineEngine(PipelineEngine):
 
         # This handles either a single tensor or tuple of tensors.
         if isinstance(outputs, dict):
-            out_tensors = [t for t in outputs.values() if t.is_floating_point()]
-            assert len(out_tensors) == len(grad_tensors)
+            out_tensors = outputs[self.outputs_extra["_grad_key"]]
             torch.autograd.backward(tensors=out_tensors, grad_tensors=grad_tensors)
         else:
             torch.autograd.backward(tensors=(outputs, ), grad_tensors=(grad_tensors, ))
@@ -479,11 +478,15 @@ class ColliePipelineEngine(PipelineEngine):
         if self.first_output_send:
             self.first_output_send = False
             self._send_tensor_meta(outputs, self.next_stage)
-            # extra
-            if self.is_pipe_partitioned and self.module.training:
-                self._send_string(self.outputs_extra["_grad_key"], self.next_stage)
-                self._send_tensor_meta(self.outputs_extra["_meta"], self.next_stage)
-                self._send_tensor_meta(self.outputs_extra["_local_data"], self.next_stage)
+            if self.module.training:
+                self._send_string(self.outputs_extra["_grad_key"],
+                                  self.next_stage)
+                # extra
+                if self.is_pipe_partitioned:
+                    self._send_tensor_meta(self.outputs_extra["_meta"],
+                                           self.next_stage)
+                    self._send_tensor_meta(self.outputs_extra["_local_data"],
+                                           self.next_stage)
 
         if isinstance(outputs, torch.Tensor):
             p2p.send(outputs, self.next_stage)
@@ -538,8 +541,8 @@ class ColliePipelineEngine(PipelineEngine):
                 if not tensor.is_floating_point():
                     assert tensor.grad is None
                     continue
-                else:
-                    assert tensor.grad is not None
+                if tensor.grad is None:
+                    continue
                 p2p.send(tensor.grad, self.prev_stage)
 
         # XXX Terrible hack
@@ -570,10 +573,11 @@ class ColliePipelineEngine(PipelineEngine):
         # Allocate the buffer if necessary
         if self.pipe_recv_buf is None:
             self.pipe_recv_buf = self._recv_tensor_meta(self.prev_stage)
-            if self.is_pipe_partitioned and self.module.training:
+            if self.module.training:
                 self.inputs_extra["_grad_key"] = self._recv_string(self.prev_stage)
-                self.inputs_extra["_meta"] = self._recv_tensor_meta(self.prev_stage)
-                self.inputs_extra["_local_data"] = self._recv_tensor_meta(self.prev_stage)
+                if self.is_pipe_partitioned:
+                    self.inputs_extra["_meta"] = self._recv_tensor_meta(self.prev_stage)
+                    self.inputs_extra["_local_data"] = self._recv_tensor_meta(self.prev_stage)
 
         if isinstance(self.pipe_recv_buf, torch.Tensor):
             p2p.recv(self.pipe_recv_buf, self.prev_stage)
@@ -607,9 +611,9 @@ class ColliePipelineEngine(PipelineEngine):
             # TODO 如何处理
             # if self.has_attention_mask or self.has_bool_tensors:
             #     recvd[-1] = recvd[-1].bool()
-
             for key, buffer in recvd.items():
-                buffer.requires_grad = buffer.is_floating_point()
+                    buffer.requires_grad = self.module.training and \
+                        (key == self.inputs_extra["_grad_key"])
 
         self.pipe_buffers['inputs'][buffer_id] = recvd
 
@@ -646,7 +650,7 @@ class ColliePipelineEngine(PipelineEngine):
                 #      if t.is_floating_point() ]
                 # )
             else:
-                sizes_and_dtypes = [(list(t.size()), t.dtype) for t in outputs.values() if t.is_floating_point()]
+                sizes_and_dtypes = [(list(t.size()), t.dtype) for t in outputs.values() if t.is_floating_point() and t.requires_grad]
             self.grad_layer = self._allocate_buffers(sizes_and_dtypes, num_buffers=1)[0]
 
         if isinstance(self.grad_layer, torch.Tensor):
