@@ -125,9 +125,13 @@ class CollieDatasetForTraining(Dataset):
                 labels_mask = torch.tensor(self.dataset[index]["label_mask"]) if "label_mask" in self.dataset[index].keys() else None
         else:
             if "text" in self.dataset[0].keys():
-                input_ids = self.tokenizer(self.dataset[index]["text"], add_special_tokens=self.add_special_tokens).input_ids
+                inputs = self.tokenizer(self.dataset[index]["text"], add_special_tokens=self.add_special_tokens)
+                input_ids = inputs["input_ids"]
+                attention_mask = inputs["attention_mask"]
             elif "input" in self.dataset[0].keys() and "output" in self.dataset[0].keys():
-                input_ids = self.tokenizer(self.dataset[index]["input"] + self.dataset[index]["output"], add_special_tokens=self.add_special_tokens).input_ids
+                inputs = self.tokenizer(self.dataset[index]["input"] + self.dataset[index]["output"], add_special_tokens=self.add_special_tokens)
+                input_ids = inputs["input_ids"]
+                attention_mask = inputs["attention_mask"]
                 labels_mask = torch.ones_like(torch.tensor(input_ids))
                 context_length = len(self.tokenizer(self.dataset[index]["input"], add_special_tokens=self.add_special_tokens).input_ids)
                 _, eos_length = self._inspect_special_tokens_length()
@@ -137,11 +141,11 @@ class CollieDatasetForTraining(Dataset):
             else:
                 raise ValueError("Dataset must have one or two fields.")
         if labels_mask is None:
-            return {"input_ids": input_ids}, {
+            return {"input_ids": input_ids, "attention_mask": attention_mask}, {
                 "labels": input_ids
             }
         else:
-            return {"input_ids": input_ids}, {
+            return {"input_ids": input_ids, "attention_mask": attention_mask}, {
                 "labels": input_ids,
                 "labels_mask": labels_mask
             }
@@ -213,10 +217,11 @@ class CollieDatasetForClassification(CollieDatasetForTraining):
         else:
             if "input" in self.dataset[0].keys() and "output" in self.dataset[0].keys() and "target" in self.dataset[0].keys():
                 input_ids = tuple([self.tokenizer(self.dataset[index]["input"] + output, add_special_tokens=self.add_special_tokens).input_ids for output in self.dataset[index]["output"]])
+                attention_mask = tuple([self.tokenizer(self.dataset[index]["input"] + output, add_special_tokens=self.add_special_tokens).attention_mask for output in self.dataset[index]["output"]])
                 target = self.dataset[index]["target"]
             else:
                 raise ValueError("CollieDatasetForClassification must have three fields (`input`, `output` and `target`).")
-        return {"input_ids": input_ids}, {
+        return {"input_ids": input_ids, "attention_mask": attention_mask}, {
             "labels": input_ids,
             "target": target
         }

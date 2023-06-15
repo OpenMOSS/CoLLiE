@@ -12,7 +12,7 @@ config.train_micro_batch_size = 1
 config.eval_batch_size = 2
 config.gradient_accumulation_steps = 4
 config.eval_per_n_steps = 300
-config.checkpointing = False
+# config.checkpointing = False
 config.ds_config = {
     "fp16": {
         "enabled": True

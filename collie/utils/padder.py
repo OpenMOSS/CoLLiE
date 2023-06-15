@@ -34,11 +34,11 @@ class ColliePadder:
         if isinstance(batch[0], torch.Tensor):
             pass
         elif isinstance(batch[0], (int, float)):
-            batch = [torch.tensor(x) for x in batch]
+            batch = [torch.tensor(x).cuda() for x in batch]
         elif isinstance(batch[0], np.ndarray):
-            batch = [torch.from_numpy(x) for x in batch]
+            batch = [torch.from_numpy(x).cuda() for x in batch]
         elif isinstance(batch[0], list):
-            batch = [torch.tensor(x) for x in batch]
+            batch = [torch.tensor(x).cuda() for x in batch]
         else:
             raise TypeError(f"Unsupported type: {type(batch[0])}")
         for i in range(len(batch)):
@@ -58,7 +58,7 @@ class ColliePadder:
                 batch[i] = F.pad(batch[i], [shape.pop() if d % 2 == 0 else 0 for d in range(len(shape) * 2)], value=padding_token_id)
             else:
                 batch[i] = F.pad(batch[i], [shape.pop() if (d + 1) % 2 == 0 else 0 for d in range(len(shape) * 2)], value=padding_token_id)
-        return torch.stack(batch, dim=0)
+        return torch.stack(batch, dim=0).cuda()
     
     def __call__(self, batch: List[Tuple]) -> Any:
         assert len(batch[0]) == 2, "Samples from dataset must be a tuple of size 2. Eg: (input_ids, labels)"
