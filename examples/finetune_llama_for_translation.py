@@ -4,7 +4,7 @@ import torch
 from datasets import load_dataset
 from transformers import LlamaTokenizer, GenerationConfig
 from collie import Trainer, PerplexityEvaluator, LlamaForCausalLM, CollieConfig, PPLMetric, AccuracyMetric, DecodeMetric, CollieDatasetForTraining, CollieDatasetForGeneration, \
-    LossMonitor, TGSMonitor, MemoryMonitor, EvalMonitor, GradioProvider, Evaluator, LRMonitor, BleuMetric
+    LossMonitor, TGSMonitor, MemoryMonitor, EvalMonitor, GradioProvider, Evaluator, LRMonitor, BleuMetric, DashProvider
 config = CollieConfig.from_pretrained("decapoda-research/llama-7b-hf")
 config.pp_size = 8
 config.train_micro_batch_size = 1
@@ -99,7 +99,7 @@ trainer = Trainer(
         MemoryMonitor(config),
         LRMonitor(config)
     ],
-    data_provider=GradioProvider(tokenizer, port=12888, stream=True,
+    data_provider=DashProvider(tokenizer, port=12888, stream=True,
                                  generation_config=GenerationConfig(
                                      eos_token_id=tokenizer.eos_token_id,
                                      pad_token_id=tokenizer.pad_token_id,

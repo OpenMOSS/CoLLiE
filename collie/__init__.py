@@ -12,7 +12,8 @@ from .utils import progress, setup_distribution, set_seed, env, \
     setup_ds_engine, zero3_load_state_dict, is_zero3_enabled, \
     broadcast_tensor, find_tensors, BaseProvider, GradioProvider, \
     _GenerationStreamer, BaseMonitor, StepTimeMonitor, TGSMonitor, \
-    MemoryMonitor, LossMonitor, EvalMonitor, LRMonitor, dict_as_params
+    MemoryMonitor, LossMonitor, EvalMonitor, LRMonitor, dict_as_params, \
+        DashProvider
 from .module import PipelineGenerationMixin, ColumnParallelLinear, \
     RowParallelLinearWithoutBias, LinearWithHiddenStates, \
     ColumnParallelLMHead, GPTLMLoss

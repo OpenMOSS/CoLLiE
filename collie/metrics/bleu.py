@@ -1,5 +1,3 @@
-import sys
-sys.path.append("/mnt/petrelfs/zhangshuo/projects/collie")
 from collie.metrics import BaseMetric
 
 import torch
@@ -342,12 +340,3 @@ class BleuMetric(BaseMetric):
             return self._compute_macro().item()
         elif self.average == "micro":
             return self._compute_micro().item()
-        
-if __name__ == "__main__":
-    m = BleuMetric(ngram=2)
-    result = {
-        "pred": ['10 or 15 years ago, here at Ted, Peter Skillman presented a design challenge called the Marshmallow Challenge.'],
-        "target": [['Several years ago here at TED, Peter Skillman introduced a design challenge called the marshmallow challenge.']]
-    }
-    m.update(result)
-    print(m.get_metric())
