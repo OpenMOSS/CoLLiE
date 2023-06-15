@@ -235,16 +235,18 @@ def _test_gpt2_data_provider():
         generation_config=GenerationConfig(max_new_tokens=32, 
                                         eos_token_id=tokenizer.eos_token_id),
         metrics={"decode": DecodeMetric(tokenizer=tokenizer)},
-        # data_provider=DashProvider(tokenizer, stream=True, port=50000),
+        data_provider=DashProvider(tokenizer, stream=True, port=7889),
+        # data_provider=GradioProvider(tokenizer=tokenizer, port=7879),
         config=config
     )
     trainer.train()
 
-# _test_llama()
-# _test_gpt2()
-# _test_init_engine()
-# _test_only_evaluator()
-_test_gpt2_data_provider()
+if __name__ == "__main__":
+    # _test_llama()
+    # _test_gpt2()
+    # _test_init_engine()
+    # _test_only_evaluator()
+    _test_gpt2_data_provider()
 
 # def test():
 #     from dash import Dash, html, Input, Output, dcc
