@@ -79,7 +79,7 @@ class CallbackManager:
     def on_save_checkpoint(self, trainer):
         r"""
         用于断点重训的 callback 的保存函数；
-        该函数主要涉及callback 的状态的保存；我们会调用每一个 callback 的
+        该函数主要涉及 callback 的状态的保存；我们会调用每一个 callback 的
         :func:`on_save_checkpoint` 方法，该方法应当返回一个字典，其中包含着
         断点重训应当保存的状态；
 
