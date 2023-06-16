@@ -122,6 +122,27 @@ class progress:
         """
         self.update(desc=desc)
 
+    def reset(
+        self, desc: Optional[str] = None, total: Optional[float] = None, completed: int = 0, visible: Optional[bool] = None, 
+        post_desc: Optional[str] = None,
+    ):
+        """
+        重置进度条，可以重置进度条的显示时间。
+
+        :param desc: 进度条最左侧的描述语句。
+        :param total: 遍历对象的总数。如果为 ``None`` 则不会发生改变。
+        :param completed: 标识进度条的总进度。
+        :param visible: 调整进度条是否可见。
+        :param post_desc: 进度条最右侧的补充描述语句。
+        """
+        if post_desc is None:
+            self.bar.reset(self.task_id, description=desc, total=total,
+                           completed=completed, visible=visible)
+        else:
+            self.bar.reset(self.task_id, description=desc, total=total,
+                           completed=completed, visible=visible,
+                           post_desc=post_desc)
+
     def update(
         self, desc: Optional[str] = None, total: Optional[float] = None,
         completed: Optional[float] = None, advance: Optional[float] = None,
@@ -416,11 +437,17 @@ def dict_as_params(input_keys: Union[str, Sequence[str]], output_keys: Union[str
             outputs = raw_foward(*inputs)
             if isinstance(output_keys, str):
                 dict_inputs[output_keys] = outputs
+                for k, v in dict_inputs.items():
+                    if k != output_keys:
+                        dict_inputs[k] = v.detach()
             elif isinstance(output_keys, Sequence):
                 assert isinstance(outputs, Sequence) and len(outputs) == len(output_keys), \
                     "outputs should be Sequence and have the same length as output_keys"
                 for k, v in zip(output_keys, outputs):
                     dict_inputs[k] = v
+                for k, v in dict_inputs.items():
+                    if k not in output_keys:
+                        dict_inputs[k] = v.detach()
             else:
                 raise ValueError(f"output_keys should be str or Sequence[str], but got {type(output_keys)}")
             return dict_inputs

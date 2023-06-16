@@ -24,7 +24,7 @@ def apply_rotary_pos_emb(tensor: torch.Tensor, sin: torch.Tensor, cos: torch.Ten
 def _name_to_pipeline(name):
     max_pipe_idx = max(env.pipeline_parts)
     if name.startswith("transformer.wte."):
-        pipe_name = name.replace("transformer.wte.", "0.")
+        pipe_name = name.replace("transformer.wte.", "1.")
     elif name.startswith("lm_head."):
         pipe_name = name.replace("lm_head.", f"{max_pipe_idx - 1}.")
     elif name.startswith("transformer.ln_f."):
@@ -35,7 +35,7 @@ def _name_to_pipeline(name):
         name_split = name.split(".")
         layer_idx = int(name_split[2])
         name_suffix = name_split[3:]
-        pipe_name = ".".join([str(layer_idx + 2)] + name_suffix)
+        pipe_name = ".".join([str(layer_idx + 3)] + name_suffix)
 
     return pipe_name
 
@@ -48,9 +48,10 @@ def _name_to_hf(name):
     name_split = name.split(".")
     parts = env.pipeline_parts
     layer_pipe_idx = int(name_split[0])
-    if layer_pipe_idx == 0:
-        # 0 -> embedding
-        # 1 -> dropout
+    if layer_pipe_idx == 1:
+        # 0 -> pre_forward
+        # 1 -> embedding
+        # 2 -> dropout
         hf_name = 'transformer.wte.weight'
     elif layer_pipe_idx == parts[-1] - 2:
         # one before last -> LayerNorm ln_f
@@ -62,7 +63,7 @@ def _name_to_hf(name):
         hf_name = 'lm_head.' + param_type
     else:
         # blocks
-        block_idx = layer_pipe_idx - 2
+        block_idx = layer_pipe_idx - 3
         # 15.ln_1.bias -> transformer.h.15.ln_1.bias
         attr_list = ['transformer', 'h', str(block_idx)] + name_split[1:]
         hf_name = '.'.join(attr_list)
@@ -84,10 +85,10 @@ def _weight_name_in_current_rank(names):
     for name in names:
         # 找到 MossBlock。idx 对应到 layers_idx 需要 +2
         if len(name.split(".")) > 2 and name.split(".")[2].isdigit() \
-            and (int(name.split(".")[2]) + 2) in layers:
+            and (int(name.split(".")[2]) + 3) in layers:
                 cur_names.append(name)
-        if 0 in layers and name.startswith("transformer.wte."):
-            # 0 层，embedding
+        if 1 in layers and name.startswith("transformer.wte."):
+            # 1 层，embedding
             cur_names.append(name)
         if max(parts) - 1 in layers and name.startswith("lm_head."):
             # 最后一个，lm_head

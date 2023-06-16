@@ -268,6 +268,7 @@ class MossBlock(nn.Module):
 
     def forward(self, inputs):
         hidden_states = inputs["hidden_states"]
+        attention_mask = inputs.get("attention_mask", None)
         if not self.training:
             self.hidden_states = hidden_states
         use_cache = not self.training and self.use_cache
@@ -291,7 +292,7 @@ class MossBlock(nn.Module):
             def create_custom_forward(module):
                 def custom_forward(*inputs):
                     # None for past_key_value
-                    return {"hidden_states": module(*inputs)}
+                    return module(*inputs)
 
                 return custom_forward
 
@@ -299,7 +300,7 @@ class MossBlock(nn.Module):
                 create_custom_forward(self._forward),
                 hidden_states,
                 None,
-                None,
+                attention_mask,
                 position_ids,
             )
         else:
@@ -307,7 +308,7 @@ class MossBlock(nn.Module):
                 hidden_states,
                 position_ids=position_ids,
                 layer_past=self.past_key_values,
-                attention_mask=None,
+                attention_mask=attention_mask,
                 head_mask=None,
                 use_cache=use_cache
             )
@@ -316,7 +317,11 @@ class MossBlock(nn.Module):
             self.past_key_values = outputs[1]
 
         # hidden_states
-        return {"hidden_states": outputs[0]}
+        if attention_mask is not None:
+            return {"hidden_states": outputs[0],
+                    "attention_mask": attention_mask}
+        else:
+            return {"hidden_states": outputs[0]}
 
 
 class MossForCausalLM(CollieModelForCausalLM):
@@ -337,14 +342,25 @@ class MossForCausalLM(CollieModelForCausalLM):
         self.ln_f = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_epsilon)
         self.lm_head = ColumnParallelLMHead(config.n_embd, config.vocab_size)
 
-    def forward(self, input_ids, **kwargs):
+    def forward(self, input_ids, attention_mask=None, **kwargs):
+        batch_size = input_ids.shape[0]
+        if attention_mask is not None:
+            if batch_size <= 0:
+                raise ValueError("batch_size has to be defined and > 0")
+            attention_mask = attention_mask.view(batch_size, -1)
+            attention_mask = attention_mask[:, None, None, :]
+            attention_mask = attention_mask.to(dtype=self.dtype)
+            attention_mask = (1.0 - attention_mask) * torch.finfo(self.dtype).min
         inputs_embed = self.wte(input_ids)
         hidden_states = self.drop(inputs_embed)
 
         all_hidden_states = ()
         for i, l in enumerate(self.h):
             all_hidden_states += (hidden_states,)
-            hidden_states = l(hidden_states)
+            hidden_states = l(
+                {"hidden_states": hidden_states,
+                 "attention_mask": attention_mask}
+            )
 
         hidden_states = self.ln_f(hidden_states)
         logits = self.lm_head(hidden_states)
@@ -367,7 +383,7 @@ class MossForCausalLM(CollieModelForCausalLM):
         else:
             input_ids = input_ids[:, -1].unsqueeze(-1)
             self._set_past_key_values(self.h, past_key_values)
-        return {"input_ids": input_ids}
+        return {"input_ids": input_ids, "attention_mask": attention_mask}
     
     def clean(self):
         self._clean_hidden_states([*self.h, self.lm_head])
@@ -378,13 +394,37 @@ class MossForCausalLM(CollieModelForCausalLM):
     def pipeline_layers(cls, config):
         if isinstance(config, str):
             config = CollieConfig.from_pretrained(config)
+
+        def pre_forward(input_dict):
+            input_ids = input_dict["input_ids"]
+            attention_mask = input_dict.get("attention_mask", None)
+            batch_size = input_ids.shape[0]
+            if attention_mask is not None:
+                if batch_size <= 0:
+                    raise ValueError("batch_size has to be defined and > 0")
+                attention_mask = attention_mask.view(batch_size, -1)
+                attention_mask = attention_mask[:, None, None, :]
+                dtype = torch.float32
+                if "fp16" in config.ds_config:
+                    if config.ds_config["fp16"].get("enabled", False):
+                        dtype = torch.float16
+                if "bf16" in config.ds_config:
+                    if config.ds_config["bf_16"].get("enabled", False):
+                        dtype = torch.bfloat16
+                attention_mask = attention_mask.to(dtype=dtype)
+                attention_mask = (1.0 - attention_mask) * torch.finfo(dtype).min
+                input_dict["attention_mask"] = attention_mask
+
+            return input_dict
+
         layers = [
+            pre_forward,
             dict_as_params("input_ids", "hidden_states")(
                 VocabParallelEmbedding, config.vocab_size, config.n_embd,
             ),
             dict_as_params("hidden_states", "hidden_states")(
                 nn.Dropout, config.embd_pdrop
-            )
+            ),
         ]
         layers += [
             LayerSpec(MossBlock, config, i) for i in range(config.n_layer)
@@ -433,10 +473,6 @@ class MossForCausalLM(CollieModelForCausalLM):
                 dist.barrier()
             if cur_rank != env.rank:
                 continue
-            if io_driver.exists(os.path.join(path, "config.json")):
-                # update config from config.json
-                new_config = json.loads(io_driver.load(os.path.join(path, "config.json"), mode="r"))
-                config.model_config.update(new_config)
             # 如果存在 pytorch_model.bin.index.json 文件的话，此时不同的 pp 进程可以按需加载自己需要的权重
             index_file = os.path.join(path, "pytorch_model.bin.index.json")
             # start load
