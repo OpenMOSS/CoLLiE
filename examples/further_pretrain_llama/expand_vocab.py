@@ -16,7 +16,7 @@ config.train_micro_batch_size = 8
 config.eval_batch_size = 8
 config.gradient_accumulation_steps = 16
 config.eval_per_n_epochs = 1
-config.train_epochs = 100
+config.train_epochs = 500
 config.ds_config = {
     "fp16": {
         "enabled": True
@@ -52,19 +52,6 @@ for p in chinese_spm.pieces:
         new_p.score = 0
         llama_spm.pieces.append(new_p)
 llama_tokenizer.sp_model.LoadFromSerializedProto(llama_spm.SerializeToString())
-# 准备模型并调整 embedding 层大小，设置只训练 embedding 和 lm_head 层，加速收敛
-model = LlamaForCausalLM.from_pretrained(
-    "/mnt/petrelfs/zhangshuo/model/llama-7b-hf", config=config)
-model.resize_token_embeddings(len(llama_tokenizer) + 7)  # 取个整
-for p in model.parameters():
-    p.requires_grad = False
-# 因为 embedding 和 lm_head 在 pipeline 的情况下被分割到了不同的进程，所以要判断一下自己是否有 embedding 层
-if model.get_input_embedding()[1] is not None:
-    model.get_input_embedding()[1].weight.requires_grad = True
-if model.get_lm_head()[1] is not None:
-    model.get_lm_head()[1].weight.requires_grad = True
-optimizer = torch.optim.AdamW(
-    filter(lambda p: p.requires_grad, model.parameters()), lr=2e-4)
 # 准备中英文混合预训练数据集
 dataset = CollieDatasetForTraining(
     dataset=[
@@ -84,7 +71,21 @@ dataset = CollieDatasetForTraining(
 ratio = 0.01
 eval_dataset, train_dataset = dataset[:int(
     len(dataset) * ratio)], dataset[int(len(dataset) * ratio):]
-
+# 准备模型并调整 embedding 层大小，设置只训练 embedding 和 lm_head 层，加速收敛
+model = LlamaForCausalLM.from_pretrained(
+    "/mnt/petrelfs/zhangshuo/model/llama-7b-hf", config=config)
+model.resize_token_embeddings(len(llama_tokenizer) + 7)  # 取个整
+for p in model.parameters():
+    p.requires_grad = False
+# 因为 embedding 和 lm_head 在 pipeline 的情况下被分割到了不同的进程，所以要判断一下自己是否有 embedding 层
+if model.get_input_embedding()[1] is not None:
+    model.get_input_embedding()[1].weight.requires_grad = True
+if model.get_lm_head()[1] is not None:
+    model.get_lm_head()[1].weight.requires_grad = True
+optimizer = torch.optim.AdamW(
+    filter(lambda p: p.requires_grad, model.parameters()), lr=2e-4)
+lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+    optimizer, T_max=config.train_epochs * len(train_dataset), eta_min=2e-6)
 # 准备验证器，指标为PPL
 evaluator = EvaluatorForPerplexity(
     model=model,
@@ -100,6 +101,7 @@ trainer = Trainer(
     config=config,
     train_dataset=train_dataset,
     optimizer=optimizer,
+    lr_scheduler=lr_scheduler,
     tokenizer=llama_tokenizer,
     monitors=[LossMonitor(config), TGSMonitor(config), MemoryMonitor(
         config), EvalMonitor(config), LRMonitor(config)],
