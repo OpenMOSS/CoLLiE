@@ -2,6 +2,6 @@
 """
 
 from .trainer import Trainer
-from .evaluator import Evaluator, PerplexityEvaluator, ClassficationEvaluator
+from .evaluator import Evaluator, EvaluatorForPerplexity, EvaluatorForClassfication, EvaluatorForGeneration
 
-__all__ = ['Trainer', 'Evaluator', 'PerplexityEvaluator', 'ClassficationEvaluator']
+__all__ = ['Trainer', 'Evaluator', 'EvaluatorForPerplexity', 'EvaluatorForClassfication', 'EvaluatorForGeneration']

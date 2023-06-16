@@ -17,8 +17,8 @@ from .utils import progress, setup_distribution, set_seed, env, \
 from .module import PipelineGenerationMixin, ColumnParallelLinear, \
     RowParallelLinearWithoutBias, LinearWithHiddenStates, \
     ColumnParallelLMHead, GPTLMLoss
-from .controller import Trainer, Evaluator, PerplexityEvaluator, \
-    ClassficationEvaluator
+from .controller import Trainer, Evaluator, EvaluatorForPerplexity, \
+    EvaluatorForClassfication, EvaluatorForGeneration
 from .config import CollieConfig
 from .metrics import BaseMetric, DecodeMetric, AccuracyMetric, PPLMetric, BleuMetric
 from .data import CollieDatasetForClassification, CollieBatchSampler, \
@@ -28,8 +28,9 @@ __all__ = [
     # controller
     'Trainer',
     'Evaluator',
-    'PerplexityEvaluator',
-    'ClassficationEvaluator',
+    'EvaluatorForPerplexity',
+    'EvaluatorForClassfication',
+    'EvaluatorForGeneration',
 
     # config
     'CollieConfig',

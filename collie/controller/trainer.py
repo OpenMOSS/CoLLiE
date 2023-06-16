@@ -50,23 +50,40 @@ class Trainer(TrainerEventTrigger):
     :param config: 用于训练和验证的配置
     :param tokenizer: 用于训练和验证的分词器，该分词器将用于:
         * 保存模型时 `trainer.save_model` 时自动同时保存 `tokenizer`
-        * 使用 :class:`~collie.controller.evaluator.Evaluator` 进行基于生成的验证时，使用 `tokenizer` 对生成的结果进行解码
+        * 使用 :class:`~collie.controller.evaluator.EvaluatorForGeneration` 进行基于生成的验证时，使用 `tokenizer` 对生成的结果进行解码
         若无上述需求，可不传入 `tokenizer`
     :param loss_fn: 用于计算 loss 的函数，默认使用 :meth:`~collie.module.GPTLMLoss`
     :param train_fn: 用于训练的函数，默认使用 :meth:`~collie.controller.Trainer.train_fn`
-    :param eval_fn: 用于验证的函数，默认使用 :meth:`~collie.controller.Evaluator.eval_fn`
+    :param eval_fn: 用于验证的函数
+
+        ..note::
+
+            **CoLLie** 未提供默认的验证策略，若未传入 ``eval_fn``，但传入了 ``eval_dataset``，则会抛出异常。若不需要自定义验证循环，
+            可以考虑使用 **CoLLie** 定义的多种验证器，例如 :class:`~collie.controller.evaluator.EvaluatorForPerplexity`、
+            :class:`~collie.controller.evaluator.EvaluatorForClassfication`、:class:`~collie.controller.evaluator.EvaluatorForGeneration` 等。
+        
     :param optimizer: 训练过程中的优化器，当为 `None` 的时候会尝试使用 ``config.ds_config`` 定义的优化器
     :param lr_scheduler: 训练过程中的学习率调度器；
     :param train_dataset: 用于训练的数据集。
     :param eval_dataset: 用于验证的数据集。
-        **CoLLie** 可接收的 ``train_dataset`` 和 ``eval_dataset`` 为可迭代对象，例如 ``torch.utils.data.Dataset`` 或 ``List``
+        **CoLLie** 可接收的 ``train_dataset`` 和 ``eval_dataset`` 为可迭代对象，例如 ``torch.utils.data.Dataset`` 或 ``List``。
+        可以使用 :class:`~collie.data.CollieDatasetForTraining` 快速将数据集转换为 **CoLLie** 可接收的数据集。
         
         .. note::
 
-            当未提供 ``train_dataset_collate_fn`` 或 ``eval_dataset_collate_fn`` 时，``train_dataset`` 和 ``eval_dataset`` 的取值应当为长度为 **2** 的 `Tuple` 类型，例如 `(a, b)`，其中:
+            当未提供 ``train_dataset_collate_fn`` 或 ``eval_dataset_collate_fn`` 时，``train_dataset`` 和 ``eval_dataset`` 
+            的取值应当为由 `Dict` 组成的长度为 **2** 的 `Tuple` 类型，例如 `(a, b)`，其中:
                 
-            * `a` 即 ``input_ids``， 为 ``torch.Tensor`` 类型，表示模型的的输入
-            * `b` 可以为 ``torch.Tensor``，也可以是由 ``torch.Tensor`` 组成的任意长度的 `Tuple`，此项会作为 `loss_fn` 的第二个参数传入
+            * `a` 为 ``Dict`` 类型，可能包含的字段包括:
+            
+                ** ``input_ids``, 为 ``torch.Tensor`` 类型，形状为 ``(B, S)``, 表示模型的的输入
+                ** ``attention_mask``, 为 ``torch.Tensor`` 类型，形状为 ``(B, S)``, 表示 padding mask
+                
+            * `b` 为 ``Dict`` 类型，可能包含的字段包括:
+
+                ** ``labels``, 为 ``torch.Tensor`` 类型，形状为 ``(B, S)``, 表示模型的的标签, 自回归地训练时应当与 ``input_ids`` 相同
+                
+            注意: 上述数据格式为训练所需的格式, 同时 **CoLLie** 提供了多种验证器, 所要求的格式各有不同, 详见 :class:`~collie.controller.evaluator.Evaluator`
     
     :param callbacks: 训练中触发的 :class:`.Callback` 类，可以是列表。
     :param train_dataset_collate_fn: 用于训练数据集的 `collate_fn`。
@@ -75,10 +92,18 @@ class Trainer(TrainerEventTrigger):
         
         .. note::
 
-            ``train_dataset_collate_fn`` 和 ``eval_dataset_collate_fn`` 的返回值必须是为长度为 **2** 的 `Tuple` 类型，，例如 `(a, b)`，其中:
+            ``train_dataset_collate_fn`` 和 ``eval_dataset_collate_fn`` 的返回值必须是由 `Dict` 组成的长度为 **2** 的 `Tuple` 类型，例如 `(a, b)`，其中:
             
-            * `a` 即 ``input_ids``，为 ``torch.Tensor`` 类型，表示模型的的输入
-            * `b` 可以为 ``torch.Tensor``，也可以是由 ``torch.Tensor`` 组成的任意长度的 ``Tuple``，此项会作为 ``loss_fn`` 的第二个参数传入
+            * `a` 为 ``Dict`` 类型，可能包含的字段包括:
+            
+                ** ``input_ids``, 为 ``torch.Tensor`` 类型，形状为 ``(B, S)``, 表示模型的的输入
+                ** ``attention_mask``, 为 ``torch.Tensor`` 类型，形状为 ``(B, S)``, 表示 padding mask
+                
+            * `b` 为 ``Dict`` 类型，可能包含的字段包括:
+
+                ** ``labels``, 为 ``torch.Tensor`` 类型，形状为 ``(B, S)``, 表示模型的的标签, 自回归地训练时应当与 ``input_ids`` 相同
+                
+            注意: 上述数据格式为训练所需的格式, 同时 **CoLLie** 提供了多种验证器, 所要求的格式各有不同, 详见 :class:`~collie.controller.evaluator.Evaluator`
                 
         例如:
 
@@ -89,11 +114,8 @@ class Trainer(TrainerEventTrigger):
                 # batch = ["样本1", "样本2", ...]
                 tokenizer = AutoTokenizer.from_pretrained("fnlp/moss-moon-003-sft", padding_side="left", trust_remote_code=True)
                 input_ids = tokenizer(batch, return_tensors="pt", padding=True)["input_ids"]
-                # 第二个 input_ids 会被用于 loss_fn 的 label
-                return input_ids, input_ids
+                return {"input_ids": input_ids}, {"labels": input_ids}
             
-    :param generation_config: 用于验证的配置
-        **CoLLie** 默认的 ``eval_fn`` 为进行一次生成过程，因此本项配置主要控制生成过程的参数。当自定义 ``eval_fn`` 时，本项配置将不会生效
     :param data_provider: 额外的数据提供器，可在 ``eval_dataset`` 之外额外注入验证数据，例如通过前端网页或 http 请求等， 详见 :class:`~collie.utils.data_provider.BaseProvider`
     :param monitors: 用于监控训练过程的监控器，详见 :class:`~collie.utils.monitor.BaseMonitor`
     :param metrics: 用于传给 ``Trainer`` 内部训练过程中的对 eval_dataset 进行验证。
@@ -121,7 +143,6 @@ class Trainer(TrainerEventTrigger):
                  callbacks: Optional[Union[Callback, List[Callback]]] = None,
                  train_dataset_collate_fn: Optional[Callable] = ColliePadder(),
                  eval_dataset_collate_fn: Optional[Callable] = ColliePadder(padding_left=True),
-                 generation_config: GenerationConfig = GenerationConfig(),
                  data_provider: Optional[BaseProvider] = None,
                  monitors: Sequence[BaseMonitor] = [],
                  metrics: Optional[Dict] = None,
@@ -158,7 +179,6 @@ class Trainer(TrainerEventTrigger):
             and isinstance(self.eval_dataset_collate_fn, ColliePadder) \
                 and "input_ids" not in self.eval_dataset_collate_fn.padding_token_id.keys():
             self.train_dataset_collate_fn.padding_token_id["input_ids"] = self.tokenizer.pad_token_id
-        self.generation_config = generation_config
         
         self.communicate_buffer_shape = None
         self.setup_parallel_model()
@@ -174,14 +194,14 @@ class Trainer(TrainerEventTrigger):
             )
         if evaluators is None:
             evaluators = []
-        if ((hasattr(evaluators, "__len__") and len(evaluators) == 0)) and self.eval_dataset is not None:
-            evaluator = Evaluator(model=model, dataset=eval_dataset, metrics=metrics, eval_fn=eval_fn,
-                config=config, collate_fn=eval_dataset_collate_fn, data_provider=None,
-                generation_config=generation_config)
-            evaluator.monitor = self.monitor
-            evaluators.append(evaluator)
         if not isinstance(evaluators, Sequence):
             evaluators = [evaluators]
+        if self.eval_dataset is not None:
+            assert eval_fn is not None, "eval_fn should not be None when eval_dataset is not None."
+            evaluator = Evaluator(model=model, dataset=eval_dataset, metrics=metrics, eval_fn=eval_fn,
+                config=config, collate_fn=eval_dataset_collate_fn, data_provider=None)
+            evaluator.monitor = self.monitor
+            evaluators.append(evaluator)
         for evaluator in evaluators:
             if self.tokenizer is not None:
                 evaluator.tokenizer = self.tokenizer

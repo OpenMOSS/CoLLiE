@@ -1,7 +1,7 @@
 import sys
 sys.path.append("..")
-from collie import Trainer, PerplexityEvaluator, LlamaForCausalLM, CollieConfig, PPLMetric, AccuracyMetric, DecodeMetric, CollieDatasetForTraining, CollieDatasetForClassification, \
-    LossMonitor, TGSMonitor, MemoryMonitor, EvalMonitor, GradioProvider, ClassficationEvaluator, LRMonitor
+from collie import Trainer, EvaluatorForPerplexity, LlamaForCausalLM, CollieConfig, PPLMetric, AccuracyMetric, DecodeMetric, CollieDatasetForTraining, CollieDatasetForClassification, \
+    LossMonitor, TGSMonitor, MemoryMonitor, EvalMonitor, GradioProvider, EvaluatorForClassfication, LRMonitor
 from transformers import LlamaTokenizer
 from datasets import load_dataset
 import torch
@@ -66,7 +66,7 @@ eval_dataset_ppl = CollieDatasetForTraining(eval_dataset_ppl,
 eval_dataset_cls = CollieDatasetForClassification(eval_dataset_cls, 
                                               tokenizer=LlamaTokenizer.from_pretrained("/mnt/petrelfs/zhangshuo/model/llama-7b-hf", add_eos_token=True))
 ### Prepare Evaluator
-evaluator_ppl = PerplexityEvaluator(
+evaluator_ppl = EvaluatorForPerplexity(
     model=model,
     config=config,
     dataset=eval_dataset_ppl,
@@ -77,7 +77,7 @@ evaluator_ppl = PerplexityEvaluator(
         "ppl": PPLMetric(gather_result=True)
     },
 )
-evaluator_cls = ClassficationEvaluator(
+evaluator_cls = EvaluatorForClassfication(
     model=model,
     config=config,
     dataset=eval_dataset_cls,

@@ -132,10 +132,10 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
             )
             setattr(pipeline_model, "config", config)
             setattr(pipeline_model, "collie_config", config)
-            setattr(pipeline_model, "save_parallel_state_dict", cls.save_parallel_state_dict)
-            setattr(pipeline_model, "load_parallel_state_dict", cls.load_parallel_state_dict)
-            # for method in cls.overwrite_pipeline_methods() + [cls.resize_token_embeddings]:
-            #     object.__setattr__(pipeline_model, method.__name__, types.MethodType(method, pipeline_model))
+            for method in cls.overwrite_pipeline_methods() + [cls.resize_token_embeddings, 
+                                                              cls.save_parallel_state_dict, 
+                                                              cls.load_parallel_state_dict]:
+                object.__setattr__(pipeline_model, method.__name__, types.MethodType(method, pipeline_model))
             return pipeline_model
             
     def __new__(cls, config: CollieConfig, **kwargs):
@@ -295,22 +295,28 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
             return
         new_num_tokens_embedding = new_num_tokens
         new_num_tokens_lm_head = new_num_tokens
-        if isinstance(embedding, tensor_parallel.VocabParallelEmbedding):
-            assert new_num_tokens % env.tp_size == 0, "The new number of tokens must be divisible by the tensor parallel size."
-        if isinstance(lm_head, tensor_parallel.ColumnParallelLinear):
-            assert new_num_tokens % env.tp_size == 0, "The new number of tokens must be divisible by the tensor parallel size."
         if embedding is not None:
             if is_zero3_enabled(self.collie_config):
                 with deepspeed.zero.GatheredParameters(embedding.weight, modifier_rank=None):
                     old_embedding_tokens, embedding_dim = embedding.weight.size()
+                    old_lm_head_tokens = old_embedding_tokens
             else:
                 old_embedding_tokens, embedding_dim = embedding.weight.size()
+                old_lm_head_tokens = old_embedding_tokens
         if lm_head is not None:
             if is_zero3_enabled(self.collie_config):
                 with deepspeed.zero.GatheredParameters(lm_head.weight, modifier_rank=None):
-                    old_embedding_tokens, embedding_dim = lm_head.weight.size()
+                    old_lm_head_tokens, lm_head_dim = lm_head.weight.size()
+                    old_embedding_tokens = old_lm_head_tokens
             else:
-                old_embedding_tokens, embedding_dim = lm_head.weight.size()
+                old_lm_head_tokens, lm_head_dim = lm_head.weight.size()
+                old_embedding_tokens = old_lm_head_tokens
+        if isinstance(embedding, tensor_parallel.VocabParallelEmbedding):
+            assert new_num_tokens % env.tp_size == 0, "The new number of tokens must be divisible by the tensor parallel size."
+            old_embedding_tokens = old_embedding_tokens * env.tp_size
+        if isinstance(lm_head, tensor_parallel.ColumnParallelLinear):
+            assert new_num_tokens % env.tp_size == 0, "The new number of tokens must be divisible by the tensor parallel size."
+            old_lm_head_tokens = old_lm_head_tokens * env.tp_size
         if new_num_tokens is None or new_num_tokens == old_embedding_tokens:
             return
         if embedding is not None:
@@ -383,7 +389,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                             input_keys=lm_head.dict_as_params_input_keys,
                             output_keys=lm_head.dict_as_params_output_keys,
                         )(lm_head.__class__,
-                          embedding_dim, 
+                          lm_head_dim, 
                           new_num_tokens_lm_head, 
                           bias=lm_head.bias is not None).to(lm_head.weight.device).to(lm_head.weight.dtype)
                 else:
@@ -391,7 +397,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                         embedding_dim, 
                         new_num_tokens_lm_head,
                         bias=lm_head.bias is not None).to(lm_head.weight.device).to(lm_head.weight.dtype)
-            tp_devide_rank = old_embedding_tokens // (new_num_tokens // env.tp_size)
+            tp_devide_rank = old_lm_head_tokens // (new_num_tokens // env.tp_size)
             if env.tp_rank < tp_devide_rank:
                 start_pos_old = (new_num_tokens // env.tp_size) * env.tp_rank
                 end_pos_old = (new_num_tokens // env.tp_size) * (env.tp_rank + 1)
@@ -399,9 +405,9 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                 end_pos_new = new_num_tokens // env.tp_size
             elif env.tp_rank == tp_devide_rank:
                 start_pos_old = (new_num_tokens // env.tp_size) * env.tp_rank
-                end_pos_old = old_embedding_tokens
+                end_pos_old = old_lm_head_tokens
                 start_pos_new = 0
-                end_pos_new = old_embedding_tokens - (new_num_tokens // env.tp_size) * tp_devide_rank
+                end_pos_new = old_lm_head_tokens - (new_num_tokens // env.tp_size) * tp_devide_rank
             elif env.tp_rank > tp_devide_rank:
                 start_pos_old = 0
                 end_pos_old = 0
