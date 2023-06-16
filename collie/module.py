@@ -33,7 +33,7 @@ from transformers.modeling_utils import PretrainedConfig
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from collie.log import logger
-from collie.utils import env
+from collie.utils import env, broadcast_tensor
 
 class ColumnParallelLinearWithoutBias(ColumnParallelLinear):
     """
@@ -273,8 +273,8 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
         self.engine = engine
         self.model_config = self.engine.module.config
         self.layers = None
-        self.communicate_buffer_shape = None
         self._find_layers()
+        self.is_contrastive_search = False
 
     def generate(self, *args, **kwargs):
         """开始迭代的生成过程
@@ -283,11 +283,26 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
         res = super().generate(*args, **kwargs)
         self._clean_past_key_values()
         self._clean_hidden_states()
+        # contrastive learning
+        if self.is_contrastive_search:
+            src = self.engine.grid.stage_to_global(self.engine.num_stages - 1)
+            res = broadcast_tensor(res, dtype=res.dtype, src=src,
+                                   ndim=len(res.shape), group=env.pp_group)
+            self.is_contrastive_search = False
         return res
+    
+    def contrastive_search(self, *args, **kwargs):
+        self.is_contrastive_search = True
+        return super().contrastive_search(*args, **kwargs)
         
-    def forward(self, input_ids: torch.Tensor, attention_mask: Optional[torch.Tensor] = None, **kwargs) -> torch.Tensor:
+    def forward(self, input_ids: torch.Tensor, attention_mask: Optional[torch.Tensor] = None, use_cache: bool = True, **kwargs) -> torch.Tensor:
         """ 进行一次流水线模型的前向传播
         """
+        if use_cache:
+            logger.rank_zero_warning(
+                "In Pipeline Parallelism, `use_cache=True` will result in "
+                "slowing down the generate process.", once=True
+            )
         past_key_values=self._get_past_key_values()
         inputs = {"input_ids": input_ids}
         if attention_mask is not None:
@@ -295,7 +310,7 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
         if past_key_values is not None:
             inputs["input_ids"] = inputs["input_ids"][:, -1:]
         batch = (inputs, {"labels": inputs["input_ids"]})
-        outputs = self.engine.generate_batch(batch)
+        outputs = self.engine.generate_batch(batch, use_cache)
         return CausalLMOutputWithPast(
             loss=None,
             logits=outputs["logits"],
@@ -312,16 +327,15 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
                                       **kwargs):
         """ 准备流水线模型的输入
         """
-        if use_cache:
-            # logger.warning("use_cache is not supported for pipeline generation. Setting use_cache to False")
-            self.generation_config.use_cache = False
-            use_cache = False
+        if "prepare_inputs_for_generation" in self.engine.module.__dict__.keys():
+            return self.engine.module.prepare_inputs_for_generation()
         self._set_use_cache(use_cache)
         if past_key_values is None:
             self._clean_past_key_values()
         else:
             self._set_past_key_values(past_key_values)
-        return {"input_ids": input_ids, "attention_mask": attention_mask}
+        return {"input_ids": input_ids, "attention_mask": attention_mask,
+                "use_cache": use_cache}
     
     def can_generate(self) -> bool:
         """ 判断当前流水线模型是否可以进行生成
@@ -386,7 +400,7 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
         """ 
         for layer in self.layers:
             if hasattr(layer, attr_name):
-                object.__setattr__(layer, attr_name, use_cache)    
+                object.__setattr__(layer, attr_name, use_cache)
 
 
 class MultiParallelGrid(PipelineParallelGrid):
