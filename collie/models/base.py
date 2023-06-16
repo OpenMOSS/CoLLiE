@@ -84,7 +84,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
     def _set_use_cache(self, layers: Sequence[nn.Module], use_cache: bool=True, attr_name: str="use_cache"):
         for layer in layers:
             if hasattr(layer, attr_name):
-                object.__setattr__(layer, attr_name, use_cache)    
+                object.__setattr__(layer, attr_name, use_cache)
     
     def can_generate(self) -> bool:
         return True
