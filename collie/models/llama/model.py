@@ -90,32 +90,28 @@ class LlamaLayer(nn.Module):
                     config.hidden_size,
                     bias=False,
                     gather_output=False,
-                    init_method=lambda x: x,
-                    use_cpu_initialization=config.use_cpu_initialization
+                    init_method=lambda x: x
                 ),
                 "k_proj": ColumnParallelLinearWithoutBias(
                     config.hidden_size,
                     config.hidden_size,
                     bias=False,
                     gather_output=False,
-                    init_method=lambda x: x,
-                    use_cpu_initialization=config.use_cpu_initialization
+                    init_method=lambda x: x
                 ),
                 "v_proj": ColumnParallelLinearWithoutBias(
                     config.hidden_size,
                     config.hidden_size,
                     bias=False,
                     gather_output=False,
-                    init_method=lambda x: x,
-                    use_cpu_initialization=config.use_cpu_initialization
+                    init_method=lambda x: x
                 ),
                 "o_proj": RowParallelLinearWithoutBias(
                     config.hidden_size,
                     config.hidden_size,
                     bias=False,
                     input_is_parallel=True,
-                    init_method=lambda x: x,
-                    use_cpu_initialization=config.use_cpu_initialization
+                    init_method=lambda x: x
                 ),
                 "rotary_emb": RotaryPositionEmbedding(
                     self.config.hidden_size // self.config.num_attention_heads)
@@ -131,24 +127,21 @@ class LlamaLayer(nn.Module):
                 config.intermediate_size,
                 bias=False,
                 gather_output=False,
-                init_method=lambda x: x,
-                use_cpu_initialization=config.use_cpu_initialization
+                init_method=lambda x: x
             ),
             "up_proj": ColumnParallelLinearWithoutBias(
                 config.hidden_size,
                 config.intermediate_size,
                 bias=False,
                 gather_output=False,
-                init_method=lambda x: x,
-                use_cpu_initialization=config.use_cpu_initialization
+                init_method=lambda x: x
             ),
             "down_proj": RowParallelLinearWithoutBias(
                 config.intermediate_size,
                 config.hidden_size,
                 bias=False,
                 input_is_parallel=True,
-                init_method=lambda x: x,
-                use_cpu_initialization=config.use_cpu_initialization
+                init_method=lambda x: x
             )
         })
         self.post_attention_layernorm = RMSNormalize(
@@ -160,15 +153,17 @@ class LlamaLayer(nn.Module):
         self.past_key_values = None
         self.hidden_states = None
 
-    def _forward(self, inputs: dict):
+    def _forward(self, 
+                 hidden_states: torch.Tensor,
+                 attention_mask: Optional[torch.Tensor] = None, **kwargs):
         if not self.training:
-            self.hidden_states = inputs["hidden_states"]
+            self.hidden_states = hidden_states
         else:
             self.hidden_states = None
-        assert inputs["hidden_states"].ndim == 3, f"hidden_states.shape must be (B, N, H), but got {inputs['hidden_states'].shape}"
-        batch_size, seq_len, _ = inputs["hidden_states"].shape
+        assert hidden_states.ndim == 3, f"hidden_states.shape must be (B, N, H), but got {hidden_states.shape}"
+        batch_size, seq_len, _ = hidden_states.shape
         head_dim = self.config.hidden_size // self.config.num_attention_heads
-        _hidden_states = self.input_layernorm(inputs["hidden_states"])
+        _hidden_states = self.input_layernorm(hidden_states)
         query, key, value = self.self_attn["q_proj"](_hidden_states), self.self_attn["k_proj"](
             _hidden_states), self.self_attn["v_proj"](_hidden_states)
         query, key, value = rearrange(query, "b n (h d) -> b n h d", d=head_dim), \
@@ -186,12 +181,12 @@ class LlamaLayer(nn.Module):
                 key = torch.cat([self.past_key_values[0], key], dim=1)
                 value = torch.cat([self.past_key_values[1], value], dim=1)
             self.past_key_values = [key, value]
-        inputs["attention_mask"] = inputs.get("attention_mask", torch.ones((query.shape[0], query.shape[1])).to(inputs["hidden_states"].device))
+        attention_mask = attention_mask if attention_mask is not None else torch.ones((query.shape[0], query.shape[1])).to(hidden_states.device)
         if self.config.use_flash:
             assert FlashAttention is not None, \
                 "Detected flash_attn is not installed. See https://github.com/HazyResearch/flash-attention"
             qkv = torch.stack([query, key, value], dim=2)
-            output, _ = FlashAttention()(qkv, key_padding_mask=inputs["attention_mask"], causal=True)
+            output, _ = FlashAttention()(qkv, key_padding_mask=attention_mask, causal=True)
             output = rearrange(output, "b n h d -> b n (h d)")
             output = F.dropout(output, p=self.config.dropout,
                                training=self.training)
@@ -205,37 +200,31 @@ class LlamaLayer(nn.Module):
                 mask = torch.triu(mask, diagonal=1).to(
                     attention_score.device)
                 attention_score = attention_score + mask
-            attention_mask = (1.0 - inputs["attention_mask"].unsqueeze(1).unsqueeze(2)) * torch.finfo(
+            key_padding_mask = (1.0 - attention_mask.unsqueeze(1).unsqueeze(2)) * torch.finfo(
                 attention_score.dtype).min
             attention_score = F.softmax(
-                attention_score + attention_mask, dim=-1).type_as(value)
+                attention_score + key_padding_mask, dim=-1).type_as(value)
             output = torch.matmul(attention_score, value)
             output = output.transpose(1, 2).contiguous().view(
                 batch_size, seq_len + start_pos, -1)
             output = F.dropout(output, p=self.config.dropout,
                                training=self.training)
         output = output[:, start_pos:, :]
-        inputs["hidden_states"] = inputs["hidden_states"] + self.self_attn["o_proj"](output)
-        _hidden_states = self.post_attention_layernorm(inputs["hidden_states"])
-        inputs["hidden_states"] = inputs["hidden_states"] + F.dropout(self.mlp["down_proj"](F.silu(self.mlp["gate_proj"](
+        hidden_states = hidden_states + self.self_attn["o_proj"](output)
+        _hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = hidden_states + F.dropout(self.mlp["down_proj"](F.silu(self.mlp["gate_proj"](
             _hidden_states)) * self.mlp["up_proj"](_hidden_states)), p=self.config.dropout, training=self.training)
-        return {
-            "hidden_states": inputs["hidden_states"]
-        }
+        return hidden_states
 
     def forward(self, inputs: dict):
         if self.config.checkpointing and self.training:
-            def create_custom_forward(module):
-                def custom_forward(*args):
-                    return module._forward(*args)
-                return custom_forward
-            inputs.update(torch.utils.checkpoint.checkpoint(
-                create_custom_forward(self),
-                inputs,
-                use_reentrant=False
-            ))
+            inputs["hidden_states"] = torch.utils.checkpoint.checkpoint(
+                self._forward,
+                inputs["hidden_states"],
+                inputs.get("attention_mask", None)
+            )
         else:
-            inputs.update(self._forward(inputs))
+            inputs["hidden_states"] = self._forward(**inputs)
         return inputs
 
 
@@ -244,8 +233,7 @@ class LlamaForCausalLM(CollieModelForCausalLM):
         super().__init__(config)
         self.embed_tokens = tensor_parallel.VocabParallelEmbedding(
             self.config.vocab_size,
-            self.config.hidden_size,
-            use_cpu_initialization=config.use_cpu_initialization
+            self.config.hidden_size
         )
         self.layers = nn.Sequential(
             *[LlamaLayer(self.config) for _ in range(self.config.num_hidden_layers)])
@@ -256,8 +244,7 @@ class LlamaForCausalLM(CollieModelForCausalLM):
         self.lm_head = ColumnParallelLMHead(
             self.config.hidden_size,
             self.config.vocab_size,
-            bias=False,
-            use_cpu_initialization=config.use_cpu_initialization
+            bias=False
         )
         # GenerationMixin 需要的额外参数
         self.config = PretrainedConfig(is_decoder=True)

@@ -522,6 +522,7 @@ class ColliePipelineEngine(PipelineEngine):
             part = None
             _grad_key = None
             for key, value in inputs.items():
+                print(f"key:{key}.has grad:{value.grad is not None}")
                 if value.grad is not None:
                     # TODO 在 collie 里我们暂时限定 dict 里只有一个 tensor 是有梯度的
                     assert part is None, "More than one tensors have grad."

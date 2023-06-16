@@ -44,7 +44,10 @@ class CollieConfig:
     :param use_flash: 是否使用 `FlashAttention <https://github.com/HazyResearch/flash-attention>`_ 。
         仅对部分模型有效。
     :param dropout: :class:`Dropout` 的概率。仅对部分模型有效。
-    :param use_cpu_initialization: 初始化张量并行的模型时是否在 cpu 上初始化。
+    :param initization_method: 初始化方法。可以是以下几种取值：
+        ``normal``, ``xavier_normal``, ``xavier_uniform``, ``kaiming_normal``,
+        ``kaiming_uniform``, ``orthogonal``, ``sparse``, ``eye``, ``dirac``。
+        默认为 ``normal``。
     :param ds_config: **DeepSpeed** 的配置文件。可以是一个路径或字典。
     :param model_config: 模型设置。一般情况下无需手动设置，而是通过
         :meth:`from_pretrained` 获取，
@@ -134,10 +137,18 @@ class CollieConfig:
             "help": "Dropout probability."
         }
     )
-    use_cpu_initialization: bool = field(
-        default=False,
+    initization_method: str = field(
+        default="normal",
         metadata={
-            "help": "Whether to initialize model on CPU. Set False to initialize model directly on GPU."
+            "help": "Initialization method. Possible values are 'normal', 'xavier_normal', "
+            "'xavier_uniform', 'kaiming_normal', 'kaiming_uniform', 'orthogonal', 'sparse', "
+            "'eye', 'dirac'. Default is 'normal'."
+        }
+    )
+    initization_method_params: dict = field(
+        default=None,
+        metadata={
+            "help": "Parameters for initialization method."
         }
     )
     ds_config: Union[str, dict] = field(

@@ -9,6 +9,8 @@ __all__ = [
 ]
 
 import os
+import copy
+import types
 import json
 import torch
 from typing import Optional, List, Sequence, Dict
@@ -254,6 +256,34 @@ class PipelineModel(PipelineModule):
         os.environ["COLLIE_PP_PARTS"] = json.dumps(self.parts)
         os.environ["COLLIE_PP_RANK"] = str(self.stage_id)
         os.environ["COLLIE_DP_RANK"] = str(self._grid.data_parallel_id)
+        
+    def get_input_embedding(self):
+        if env.pp_rank != 0:
+            return None, None
+        for name, layer in enumerate(self.forward_funcs):
+            if isinstance(layer, (nn.Embedding, VocabParallelEmbedding)):
+                return name, layer
+        return None, None
+    
+    def get_lm_head(self):
+        if env.pp_rank != env.pp_size - 1:
+            return None, None
+        for name, layer in enumerate(reversed(self.forward_funcs)):
+            if isinstance(layer, (ColumnParallelLinear, nn.Linear)):
+                return len(self.forward_funcs) - name - 1, layer
+        return None, None
+    
+    def set_input_embedding(self, name, embedding):
+        if self.get_input_embedding()[1] is not None and self.get_input_embedding()[1] in list(self.tied_modules.values()):
+            key = list(self.tied_modules.keys())[list(self.tied_modules.values()).index(self.get_input_embedding()[1])]
+            self.tied_modules[key] = embedding
+        self.forward_funcs[name] = embedding
+        
+    def set_lm_head(self, name, lm_head):
+        if self.get_lm_head()[1] is not None and self.get_lm_head()[1] in list(self.tied_modules.values()):
+            key = list(self.tied_modules.keys())[list(self.tied_modules.values()).index(self.get_lm_head()[1])]
+            self.tied_modules[key] = lm_head
+        self.forward_funcs[name] = lm_head
 
 
 class PipelineGenerationMixin(nn.Module, GenerationMixin):
