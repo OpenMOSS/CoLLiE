@@ -293,7 +293,7 @@ class ChatGLMForCausalLM(CollieModelForCausalLM):
             self.config.hidden_size,
             eps=self.config.layernorm_epsilon
         )
-        self.lm_head = ColumnParallelLMHead(
+        self.lm_head = ColumnParallelLinearWithoutBias(
             self.config.hidden_size,
             self.config.vocab_size,
             bias=False,
@@ -314,6 +314,7 @@ class ChatGLMForCausalLM(CollieModelForCausalLM):
             all_hidden_states += (inputs[0],)
             inputs = layer(inputs)
         hidden_states = self.final_layernorm(inputs)
+        all_hidden_states += (hidden_states, )
         logits = self.lm_head(hidden_states)
 
         return CausalLMOutputWithPast(

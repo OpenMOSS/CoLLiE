@@ -253,7 +253,7 @@ class LlamaForCausalLM(CollieModelForCausalLM):
             dim=self.config.hidden_size,
             eps=self.config.rms_norm_eps
         )
-        self.lm_head = ColumnParallelLMHead(
+        self.lm_head = ColumnParallelLinearWithoutBias(
             self.config.hidden_size,
             self.config.vocab_size,
             bias=False,
@@ -274,6 +274,7 @@ class LlamaForCausalLM(CollieModelForCausalLM):
             all_hidden_states += (inputs["hidden_states"],)
             inputs.update(layer(inputs))
         inputs["hidden_states"] = self.norm(inputs["hidden_states"])
+        all_hidden_states += (inputs["hidden_states"], )
         inputs["logits"] = self.lm_head(inputs["hidden_states"])
 
         return CausalLMOutputWithPast(
