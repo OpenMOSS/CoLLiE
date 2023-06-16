@@ -55,7 +55,7 @@ llama_tokenizer.sp_model.LoadFromSerializedProto(llama_spm.SerializeToString())
 # 准备模型并调整 embedding 层大小，设置只训练 embedding 和 lm_head 层，加速收敛
 model = LlamaForCausalLM.from_pretrained(
     "/mnt/petrelfs/zhangshuo/model/llama-7b-hf", config=config)
-# model.resize_token_embeddings(len(llama_tokenizer) + 7)  # 取个整
+model.resize_token_embeddings(len(llama_tokenizer) + 7)  # 取个整
 for p in model.parameters():
     p.requires_grad = False
 # 因为 embedding 和 lm_head 在 pipeline 的情况下被分割到了不同的进程，所以要判断一下自己是否有 embedding 层
@@ -94,11 +94,6 @@ evaluator = EvaluatorForPerplexity(
         "ppl": PPLMetric(gather_result=True)
     }
 )
-# if env.rank == 6:
-#     import pdb; pdb.set_trace()
-# else:
-#     while True:
-#         pass
 # 准备训练器
 trainer = Trainer(
     model=model,
