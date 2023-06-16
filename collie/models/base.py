@@ -1,4 +1,5 @@
 import os
+import types
 import torch
 import inspect
 import importlib
@@ -11,12 +12,13 @@ from torch import nn
 from torch import distributed as dist
 from deepspeed.runtime.pipe.topology import PipeModelDataParallelTopology
 from megatron.core import parallel_state
+from megatron.core import tensor_parallel
 from transformers.generation.utils import GenerationMixin
 from transformers.generation.utils import GenerationConfig
 from collie.module import PipelineModel, GPTLMLoss
 from collie.config import CollieConfig, load_config
 from collie.log import logger
-from collie.utils import setup_distribution, is_zero3_enabled, env
+from collie.utils import setup_distribution, is_zero3_enabled, env, initization_mapping, dict_as_params
 
 class CollieModelForCausalLM(nn.Module, GenerationMixin):
     """
@@ -42,6 +44,8 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         self.device = torch.device("cuda")
         self.generation_config = GenerationConfig()
         self.config = config
+        # transformers 的 GenerateMixin 要求 config 必须为 PretrainedConfig，备份一下 collie 的配置
+        self.collie_config = config
             
     def _get_past_key_values(self, layers: Sequence[nn.Module], attr_name: str="past_key_values"):
         past_key_values = []
@@ -127,8 +131,11 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                 ), loss_fn=GPTLMLoss()
             )
             setattr(pipeline_model, "config", config)
+            setattr(pipeline_model, "collie_config", config)
             setattr(pipeline_model, "save_parallel_state_dict", cls.save_parallel_state_dict)
             setattr(pipeline_model, "load_parallel_state_dict", cls.load_parallel_state_dict)
+            # for method in cls.overwrite_pipeline_methods() + [cls.resize_token_embeddings]:
+            #     object.__setattr__(pipeline_model, method.__name__, types.MethodType(method, pipeline_model))
             return pipeline_model
             
     def __new__(cls, config: CollieConfig, **kwargs):
@@ -212,6 +219,10 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
             "To use pipeline parallelism, you need to implement "
             "`pipeline_layers` for your model."
         )
+        
+    @staticmethod
+    def overwrite_pipeline_methods() -> Sequence[callable]:
+        return []
 
     @staticmethod
     @abstractmethod
@@ -276,3 +287,201 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                     f"not match the current model {cls.__name__}."
                 )
         return model_cls
+    
+    def resize_token_embeddings(self, new_num_tokens: Optional[int] = None) -> None:
+        embedding_name, embedding = self.get_input_embedding()
+        lm_head_name, lm_head = self.get_lm_head()
+        if embedding is None and lm_head is None:
+            return
+        new_num_tokens_embedding = new_num_tokens
+        new_num_tokens_lm_head = new_num_tokens
+        if isinstance(embedding, tensor_parallel.VocabParallelEmbedding):
+            assert new_num_tokens % env.tp_size == 0, "The new number of tokens must be divisible by the tensor parallel size."
+        if isinstance(lm_head, tensor_parallel.ColumnParallelLinear):
+            assert new_num_tokens % env.tp_size == 0, "The new number of tokens must be divisible by the tensor parallel size."
+        if embedding is not None:
+            if is_zero3_enabled(self.collie_config):
+                with deepspeed.zero.GatheredParameters(embedding.weight, modifier_rank=None):
+                    old_embedding_tokens, embedding_dim = embedding.weight.size()
+            else:
+                old_embedding_tokens, embedding_dim = embedding.weight.size()
+        if lm_head is not None:
+            if is_zero3_enabled(self.collie_config):
+                with deepspeed.zero.GatheredParameters(lm_head.weight, modifier_rank=None):
+                    old_embedding_tokens, embedding_dim = lm_head.weight.size()
+            else:
+                old_embedding_tokens, embedding_dim = lm_head.weight.size()
+        if new_num_tokens is None or new_num_tokens == old_embedding_tokens:
+            return
+        if embedding is not None:
+            with deepspeed.zero.Init(data_parallel_group=parallel_state.get_data_parallel_group(), enabled=is_zero3_enabled(self.collie_config)):
+                if hasattr(embedding, "dict_as_params_input_keys") and \
+                    hasattr(embedding, "dict_as_params_output_keys"):
+                        new_embedding = dict_as_params(
+                            input_keys=embedding.dict_as_params_input_keys,
+                            output_keys=embedding.dict_as_params_output_keys,
+                        )(embedding.__class__, new_num_tokens_embedding, embedding_dim).to(embedding.weight.device).to(embedding.weight.dtype)
+                else:
+                    new_embedding = embedding.__class__(
+                        new_num_tokens_embedding, 
+                        embedding_dim).to(embedding.weight.device).to(embedding.weight.dtype)
+            tp_devide_rank = old_embedding_tokens // (new_num_tokens // env.tp_size)
+            if env.tp_rank < tp_devide_rank:
+                start_pos_old = (new_num_tokens // env.tp_size) * env.tp_rank
+                end_pos_old = (new_num_tokens // env.tp_size) * (env.tp_rank + 1)
+                start_pos_new = 0
+                end_pos_new = new_num_tokens // env.tp_size
+            elif env.tp_rank == tp_devide_rank:
+                start_pos_old = (new_num_tokens // env.tp_size) * env.tp_rank
+                end_pos_old = old_embedding_tokens
+                start_pos_new = 0
+                end_pos_new = old_embedding_tokens - (new_num_tokens // env.tp_size) * tp_devide_rank
+            elif env.tp_rank > tp_devide_rank:
+                start_pos_old = 0
+                end_pos_old = 0
+                start_pos_new = 0
+                end_pos_new = 0
+            if is_zero3_enabled(self.collie_config):
+                with deepspeed.zero.GatheredParameters([new_embedding.weight, embedding.weight], modifier_rank=0):
+                    if env.tp_size > 1 and isinstance(new_embedding, tensor_parallel.VocabParallelEmbedding):
+                        weights_list = [embedding.weight.clone() for _ in range(env.tp_size)]
+                        dist.all_gather(weights_list, embedding.weight, group=parallel_state.get_tensor_model_parallel_group())
+                        embedding.weight = nn.Parameter(torch.concat(weights_list, dim=0))
+                    if env.dp_rank == 0:
+                        new_embedding.weight.data[start_pos_new:end_pos_new, :] \
+                            = embedding.weight.data[start_pos_old:end_pos_old, :]
+                        if end_pos_new < (new_num_tokens // env.tp_size):
+                            initization_method = initization_mapping.get(self.collie_config.initization_method, torch.nn.init.normal_)
+                            if self.collie_config.initization_method_params is not None:
+                                initization_method = initization_method(new_embedding.weight[end_pos_new:new_num_tokens // env.tp_size, :], 
+                                                                        **self.collie_config.initization_method_params)
+                            else:
+                                initization_method(new_embedding.weight[end_pos_new:new_num_tokens // env.tp_size, :])
+            else:
+                if env.tp_size > 1 and isinstance(new_embedding, tensor_parallel.VocabParallelEmbedding):
+                    weights_list = [embedding.weight.clone() for _ in range(env.tp_size)]
+                    dist.all_gather(weights_list, embedding.weight, group=parallel_state.get_tensor_model_parallel_group())
+                    embedding.weight = nn.Parameter(torch.concat(weights_list, dim=0))
+                new_embedding.weight.data[start_pos_new:end_pos_new, :] \
+                    = embedding.weight.data[start_pos_old:end_pos_old, :]
+                if end_pos_new < (new_num_tokens // env.tp_size):
+                    initization_method = initization_mapping.get(self.collie_config.initization_method, torch.nn.init.normal_)
+                    if self.collie_config.initization_method_params is not None:
+                        initization_method = initization_method(new_embedding.weight[end_pos_new:new_num_tokens // env.tp_size, :], 
+                                                                **self.collie_config.initization_method_params)
+                    else:
+                        initization_method(new_embedding.weight[end_pos_new:new_num_tokens // env.tp_size, :])
+            self.set_input_embedding(embedding_name, new_embedding)
+        if lm_head is not None:
+            if embedding is not None and id(lm_head.weight) == id(embedding.weight):
+                lm_head.weight = new_embedding.weight
+                return
+            with deepspeed.zero.Init(data_parallel_group=parallel_state.get_data_parallel_group(), enabled=is_zero3_enabled(self.collie_config)):
+                if hasattr(lm_head, "dict_as_params_input_keys") and \
+                    hasattr(lm_head, "dict_as_params_output_keys"):
+                        new_lm_head = dict_as_params(
+                            input_keys=lm_head.dict_as_params_input_keys,
+                            output_keys=lm_head.dict_as_params_output_keys,
+                        )(lm_head.__class__,
+                          embedding_dim, 
+                          new_num_tokens_lm_head, 
+                          bias=lm_head.bias is not None).to(lm_head.weight.device).to(lm_head.weight.dtype)
+                else:
+                    new_lm_head = lm_head.__class__(
+                        embedding_dim, 
+                        new_num_tokens_lm_head,
+                        bias=lm_head.bias is not None).to(lm_head.weight.device).to(lm_head.weight.dtype)
+            tp_devide_rank = old_embedding_tokens // (new_num_tokens // env.tp_size)
+            if env.tp_rank < tp_devide_rank:
+                start_pos_old = (new_num_tokens // env.tp_size) * env.tp_rank
+                end_pos_old = (new_num_tokens // env.tp_size) * (env.tp_rank + 1)
+                start_pos_new = 0
+                end_pos_new = new_num_tokens // env.tp_size
+            elif env.tp_rank == tp_devide_rank:
+                start_pos_old = (new_num_tokens // env.tp_size) * env.tp_rank
+                end_pos_old = old_embedding_tokens
+                start_pos_new = 0
+                end_pos_new = old_embedding_tokens - (new_num_tokens // env.tp_size) * tp_devide_rank
+            elif env.tp_rank > tp_devide_rank:
+                start_pos_old = 0
+                end_pos_old = 0
+                start_pos_new = 0
+                end_pos_new = 0
+            if is_zero3_enabled(self.collie_config):
+                with deepspeed.zero.GatheredParameters([new_lm_head.weight, lm_head.weight] + \
+                    [new_lm_head.bias, lm_head.bias] if lm_head.bias is not None else [], modifier_rank=0):
+                    if env.tp_size > 1 and isinstance(new_lm_head, tensor_parallel.ColumnParallelLinear):
+                        weights_list = [lm_head.weight.clone() for _ in range(env.tp_size)]
+                        dist.all_gather(weights_list, lm_head.weight, group=parallel_state.get_tensor_model_parallel_group())
+                        lm_head.weight = nn.Parameter(torch.concat(weights_list, dim=0))
+                        if lm_head.bias is not None:
+                            bias_list = [lm_head.bias.clone() for _ in range(env.tp_size)]
+                            dist.all_gather(bias_list, lm_head.bias, group=parallel_state.get_tensor_model_parallel_group())
+                            lm_head.bias = nn.Parameter(torch.concat(bias_list, dim=0))
+                    if env.dp_rank == 0:
+                        new_lm_head.weight.data[start_pos_new:end_pos_new, :] \
+                            = lm_head.weight.data[start_pos_old:end_pos_old, :]
+                        if lm_head.bias is not None:
+                            new_lm_head.bias.data[start_pos_new:end_pos_new] \
+                                = lm_head.bias.data[start_pos_old:end_pos_old]
+                        if end_pos_new < (new_num_tokens // env.tp_size):
+                            initization_method = initization_mapping.get(self.collie_config.initization_method, torch.nn.init.normal_)
+                            if self.collie_config.initization_method_params is not None:
+                                initization_method = initization_method(new_lm_head.weight[end_pos_new:new_num_tokens // env.tp_size, :], 
+                                                                        **self.collie_config.initization_method_params)
+                                if lm_head.bias is not None:
+                                    initization_method(new_lm_head.bias[end_pos_new:new_num_tokens // env.tp_size], 
+                                                        **self.collie_config.initization_method_params)
+                            else:
+                                initization_method(new_lm_head.weight[end_pos_new:new_num_tokens // env.tp_size, :])
+                                if lm_head.bias is not None:
+                                    initization_method(new_lm_head.bias[end_pos_new:new_num_tokens // env.tp_size])
+            else:
+                if env.tp_size > 1 and isinstance(new_lm_head, tensor_parallel.ColumnParallelLinear):
+                    weights_list = [lm_head.weight.clone() for _ in range(env.tp_size)]
+                    dist.all_gather(weights_list, lm_head.weight, group=parallel_state.get_tensor_model_parallel_group())
+                    lm_head.weight = nn.Parameter(torch.concat(weights_list, dim=0))
+                    if lm_head.bias is not None:
+                        bias_list = [lm_head.bias.clone() for _ in range(env.tp_size)]
+                        dist.all_gather(bias_list, lm_head.bias, group=parallel_state.get_tensor_model_parallel_group())
+                        lm_head.bias = nn.Parameter(torch.concat(bias_list, dim=0))
+                new_lm_head.weight.data[start_pos_new:end_pos_new, :] \
+                    = lm_head.weight.data[start_pos_old:end_pos_old, :]
+                if lm_head.bias is not None:
+                    new_lm_head.bias.data[start_pos_new:end_pos_new] \
+                        = lm_head.bias.data[start_pos_old:end_pos_old]
+                if end_pos_new < (new_num_tokens // env.tp_size):
+                    initization_method = initization_mapping.get(self.collie_config.initization_method, torch.nn.init.normal_)
+                    if self.collie_config.initization_method_params is not None:
+                        initization_method = initization_method(new_lm_head.weight[end_pos_new:new_num_tokens // env.tp_size, :], 
+                                                                **self.collie_config.initization_method_params)
+                        if lm_head.bias is not None:
+                            initization_method(new_lm_head.bias[end_pos_new:new_num_tokens // env.tp_size], 
+                                                **self.collie_config.initization_method_params)
+                    else:
+                        initization_method(new_lm_head.weight[end_pos_new:new_num_tokens // env.tp_size, :])
+                        if lm_head.bias is not None:
+                            initization_method(new_lm_head.bias[end_pos_new:new_num_tokens // env.tp_size])
+            self.set_lm_head(lm_head_name, new_lm_head)
+            
+                        
+    def get_input_embedding(self):
+        for name, module in self.named_children():
+            if isinstance(module, (nn.Embedding, tensor_parallel.VocabParallelEmbedding)):
+                return name, module
+        return None, None
+    
+    def get_lm_head(self):
+        lm_head = None
+        lm_head_name = None
+        for name, module in self.named_children():
+            if isinstance(module, (tensor_parallel.ColumnParallelLinear, nn.Linear)):
+                lm_head = module
+                lm_head_name = name
+        return lm_head_name, lm_head
+    
+    def set_input_embedding(self, name, embedding):
+        self.add_module(name, embedding)
+        
+    def set_lm_head(self, name, lm_head):
+        self.add_module(name, lm_head)

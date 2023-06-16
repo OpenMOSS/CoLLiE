@@ -15,7 +15,7 @@ from collie.log.logger import logger
 from .rich_progress import f_rich_progress
 
 __all__ = ["find_tensors", "progress", "dictToObj", "apply_to_collection", 
-           "dict_as_params"]
+           "dict_as_params", "initization_mapping"]
 
 def find_tensors():
     """
@@ -422,6 +422,8 @@ def dict_as_params(input_keys: Union[str, Sequence[str]], output_keys: Union[str
     """
     def _inner(cls: type, *args, **kwargs):
         obj = cls(*args, **kwargs)
+        object.__setattr__(obj, "dict_as_params_input_keys", input_keys)
+        object.__setattr__(obj, "dict_as_params_output_keys", output_keys)
         raw_foward = obj.forward
         def _forward(self, dict_inputs: dict):
             if isinstance(input_keys, str):
@@ -450,3 +452,19 @@ def dict_as_params(input_keys: Union[str, Sequence[str]], output_keys: Union[str
         obj.forward = MethodType(_forward, obj)
         return obj
     return _inner
+
+initization_mapping = {
+    "normal": torch.nn.init.normal_,
+    "uniform": torch.nn.init.uniform_,
+    "xavier_normal": torch.nn.init.xavier_normal_,
+    "xavier_uniform": torch.nn.init.xavier_uniform_,
+    "kaiming_normal": torch.nn.init.kaiming_normal_,
+    "kaiming_uniform": torch.nn.init.kaiming_uniform_,
+    "orthogonal": torch.nn.init.orthogonal_,
+    "sparse": torch.nn.init.sparse_,
+    "eye": torch.nn.init.eye_,
+    "dirac": torch.nn.init.dirac_,
+    "constant": torch.nn.init.constant_,
+    "ones": torch.nn.init.ones_,
+    "zeros": torch.nn.init.zeros_
+}

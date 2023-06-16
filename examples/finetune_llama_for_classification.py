@@ -7,10 +7,10 @@ from datasets import load_dataset
 import torch
 
 config = CollieConfig.from_pretrained("decapoda-research/llama-7b-hf")
-config.pp_size = 4
-config.train_micro_batch_size = 1
+config.dp_size = 4
+config.train_micro_batch_size = 16
 config.eval_batch_size = 2
-config.gradient_accumulation_steps = 4
+config.gradient_accumulation_steps = 1
 config.eval_per_n_steps = 300
 # config.checkpointing = False
 config.ds_config = {
@@ -26,9 +26,9 @@ config.ds_config = {
     #         "group": "test_evaluator"
     #     }
     # },
-    # "zero_optimization": {
-    #     "stage": 3,
-    # }
+    "zero_optimization": {
+        "stage": 3,
+    }
 }
 config.seed = 1024
 model = LlamaForCausalLM.from_pretrained("/mnt/petrelfs/zhangshuo/model/llama-7b-hf", config=config)

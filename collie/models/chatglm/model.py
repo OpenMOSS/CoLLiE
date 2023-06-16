@@ -142,15 +142,13 @@ class ChatGLMLayer(nn.Module):
                     config.hidden_size,
                     config.hidden_size * 3,
                     gather_output=False,
-                    init_method=lambda x: x,
-                    use_cpu_initialization=config.use_cpu_initialization
+                    init_method=lambda x: x
                 ),
                 "dense": RowParallelLinearWithoutBias(
                     config.hidden_size,
                     config.hidden_size,
                     input_is_parallel=True,
-                    init_method=lambda x: x,
-                    use_cpu_initialization=config.use_cpu_initialization
+                    init_method=lambda x: x
                 ),
                 "rotary_emb": RotaryEmbedding(
                     self.config.hidden_size // (self.config.num_attention_heads * 2))
@@ -165,15 +163,13 @@ class ChatGLMLayer(nn.Module):
                 config.hidden_size,
                 config.inner_hidden_size,
                 gather_output=False,
-                init_method=lambda x: x,
-                use_cpu_initialization=config.use_cpu_initialization
+                init_method=lambda x: x
             ),
             "dense_4h_to_h": RowParallelLinearWithoutBias(
                 config.inner_hidden_size,
                 config.hidden_size,
                 input_is_parallel=True,
-                init_method=lambda x: x,
-                use_cpu_initialization=config.use_cpu_initialization
+                init_method=lambda x: x
             )
         })
         self.post_attention_layernorm = nn.LayerNorm(
@@ -284,8 +280,7 @@ class ChatGLMForCausalLM(CollieModelForCausalLM):
         super().__init__(config)
         self.word_embeddings = self._get_word_embedding_with_position_ids_cls(config)(
             self.config.vocab_size,
-            self.config.hidden_size,
-            use_cpu_initialization=config.use_cpu_initialization
+            self.config.hidden_size
         )
         self.layers = nn.Sequential(
             *[ChatGLMLayer(self.config, i) for i in range(self.config.num_layers)])
@@ -296,8 +291,7 @@ class ChatGLMForCausalLM(CollieModelForCausalLM):
         self.lm_head = ColumnParallelLinearWithoutBias(
             self.config.hidden_size,
             self.config.vocab_size,
-            bias=False,
-            use_cpu_initialization=config.use_cpu_initialization
+            bias=False
         )
         # GenerationMixin 需要的额外参数
         self.config = PretrainedConfig(is_decoder=True)
