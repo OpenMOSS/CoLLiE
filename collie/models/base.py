@@ -134,8 +134,8 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
             setattr(pipeline_model, "collie_config", config)
             setattr(pipeline_model, "save_parallel_state_dict", cls.save_parallel_state_dict)
             setattr(pipeline_model, "load_parallel_state_dict", cls.load_parallel_state_dict)
-            for method in cls.overwrite_pipeline_methods() + [cls.resize_token_embeddings]:
-                object.__setattr__(pipeline_model, method.__name__, types.MethodType(method, pipeline_model))
+            # for method in cls.overwrite_pipeline_methods() + [cls.resize_token_embeddings]:
+            #     object.__setattr__(pipeline_model, method.__name__, types.MethodType(method, pipeline_model))
             return pipeline_model
             
     def __new__(cls, config: CollieConfig, **kwargs):
