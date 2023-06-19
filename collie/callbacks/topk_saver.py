@@ -199,7 +199,7 @@ class TopkSaver(ResultsMonitor, Saver):
         if topk is None:
             topk = 0
         ResultsMonitor.__init__(self, monitor, larger_better)
-        Saver.__init__(self, folder, model_only, process_exclusion)
+        Saver.__init__(self, folder, model_only, process_exclusion, **kwargs)
 
         if monitor is not None and topk == 0:
             raise RuntimeError('`monitor` is set, but `topk` is 0.')
