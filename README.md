@@ -39,7 +39,7 @@ CoLLiE 基于 *DeepSpeed* 和 *PyTorch*，为大型语言模型提供协作式�
 - 模型架构
   - [Flash Attention](https://arxiv.org/pdf/2205.14135.pdf)
 - 内存高效的微调方法
-  - Lomo
+  - [LOMO](https://arxiv.org/pdf/2306.09782.pdf)
   - [LoRA](https://arxiv.org/pdf/2106.09685.pdf)
 - 用户友好的使用方式
 
