@@ -325,7 +325,11 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
         self.is_contrastive_search = True
         return super().contrastive_search(*args, **kwargs)
         
-    def forward(self, input_ids: torch.Tensor, attention_mask: Optional[torch.Tensor] = None, use_cache: bool = True, **kwargs) -> torch.Tensor:
+    def forward(self,
+                input_ids: torch.Tensor,
+                attention_mask: Optional[torch.Tensor] = None,
+                position_ids: Optional[torch.Tensor] = None,
+                use_cache: bool = True, **kwargs) -> torch.Tensor:
         """ 进行一次流水线模型的前向传播
         """
         if use_cache:
@@ -333,19 +337,33 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
                 "In Pipeline Parallelism, `use_cache=True` will result in "
                 "slowing down the generate process.", once=True
             )
-        past_key_values=self._get_past_key_values()
         inputs = {"input_ids": input_ids}
         if attention_mask is not None:
             inputs["attention_mask"] = attention_mask
-        if past_key_values is not None:
-            inputs["input_ids"] = inputs["input_ids"][:, -1:]
+        if position_ids is not None:
+            inputs["position_ids"] = position_ids
         batch = (inputs, {"labels": inputs["input_ids"]})
         outputs = self.engine.generate_batch(batch, use_cache)
+        if self.is_contrastive_search:
+            # contrastive search 时每个 stage 拿到的 last_hidden_states
+            # 不一样，所以广播出去
+            src = self.engine.grid.stage_to_global(self.engine.num_stages - 1)
+            hidden_states = self._get_hidden_states()
+            if hidden_states is not None:
+                last_hidden_states = hidden_states[-1]
+            else:
+                # 防止流水线段数过多时某些 stage 没有分到 block
+                hidden_states = []
+                last_hidden_states = None
+            last_hidden_states = broadcast_tensor(
+                last_hidden_states, src=src, group=env.pp_group
+            )
+            hidden_states.append(last_hidden_states)
         return CausalLMOutputWithPast(
             loss=None,
             logits=outputs["logits"],
             past_key_values=self._get_past_key_values(),
-            hidden_states=self._get_hidden_states(),
+            hidden_states=hidden_states,
             attentions=None
         )
     
@@ -355,17 +373,15 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
                                       attention_mask: Optional[torch.Tensor] = None,
                                       use_cache: bool = False,
                                       **kwargs):
-        """ 准备流水线模型的输入
-        """
-        if "prepare_inputs_for_generation" in self.engine.module.__dict__.keys():
-            return self.engine.module.prepare_inputs_for_generation()
         self._set_use_cache(use_cache)
         if past_key_values is None:
             self._clean_past_key_values()
         else:
             self._set_past_key_values(past_key_values)
-        return {"input_ids": input_ids, "attention_mask": attention_mask,
-                "use_cache": use_cache}
+        return self.engine.module.prepare_inputs(
+            input_ids=input_ids, past_key_values=past_key_values,
+            attention_mask=attention_mask, use_cache=use_cache, **kwargs
+        )
     
     def can_generate(self) -> bool:
         """ 判断当前流水线模型是否可以进行生成

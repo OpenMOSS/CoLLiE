@@ -135,7 +135,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
             setattr(pipeline_model, "collie_config", config)
             setattr(pipeline_model, "save_parallel_state_dict", cls.save_parallel_state_dict)
             setattr(pipeline_model, "load_parallel_state_dict", cls.load_parallel_state_dict)
-            for method in cls.overwrite_pipeline_methods() + [cls.resize_token_embeddings]:
+            for method in cls.overwrite_pipeline_methods() + [cls.resize_token_embeddings, cls.prepare_inputs]:
                 object.__setattr__(pipeline_model, method.__name__, types.MethodType(method, pipeline_model))
             return pipeline_model
             
@@ -143,12 +143,28 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         return cls.from_config(config, **kwargs)
     
     @abstractmethod
-    def clean(self):
+    def clean_cache(self):
         """
-        清理 ``past_key_value`` 和 ``hidden_states`` 状态的函数。
+        清理 ``past_key_values`` 和 ``hidden_states`` 状态的函数。
         """
         raise NotImplementedError(
-            "`clean` should be implemented to clear caches for generation."
+            "`clean_cache` should be implemented to clear caches for generation."
+        )
+    
+    @abstractmethod
+    def set_cache(self, use_cache, past_key_values):
+        """
+        设置 ``use_cache`` 和 ``past_key_values`` 的函数。
+
+        :param use_cache: 是否在生成时使用缓存的 ``past_key_values``。如果为
+            ``True`` 则会保存前向传播过程中 Attention 的 key 和 value 用于下一次
+            生成。可以参考 :meth:`_set_use_cache` 的代码来设置。
+        :param past_key_values: 本次生时传入的 key 和 value。如果为 ``None`` 则
+            可以参考 :meth:`_clean_past_key_values` 清除所有的缓存，否则可以参考
+            :meth:`_set_past_key_values` 来设置 ``past_key_values``。
+        """
+        raise NotImplementedError(
+            "`set_cache` should be implemented to set caches for generation."
         )
 
     @classmethod
@@ -161,7 +177,6 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         :param config: 可以是字符串或者 :class:`~CollieConfig`。如果为字符串，则会
             使用该字符串代表的模型设置；如果为 ``None``，从 ``model_path_or_name``
             中加载模型设置。
-
         :param kwargs:
             * process_exclusion - 是否每个 rank 各自独立、互斥地加载模型权重。在模
               型规模较大时，该参数可以帮助节省内存。
@@ -196,17 +211,6 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         else:
             model.load_state_dict(state_dict)
         return model
-    
-    # def save_pretrained(self, **kwargs):
-    #     path = kwargs.get("path", kwargs.get("save_directory", None))
-    #     assert path is not None, "Please specify `path` or `save_directory`."
-    #     self.save_parallel_state_dict(
-    #         self.state_dict(),
-    #         path=path,
-    #         config=self.config,
-    #         protocol=kwargs.get("protocol", "file"),
-    #         process_exclusion=kwargs.get("process_exclusion", False)
-    #     )
 
     @classmethod
     def pipeline_layers(cls, config: Union[CollieConfig, str]):
@@ -219,6 +223,39 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         raise NotImplementedError(
             "To use pipeline parallelism, you need to implement "
             "`pipeline_layers` for your model."
+        )
+    
+    @abstractmethod
+    def prepare_inputs(self, 
+                       input_ids: torch.Tensor,
+                       attention_mask: Optional[torch.Tensor] = None,
+                       use_cache: bool = None,
+                       past_key_values: Optional[list] = None,
+                       **kwargs):
+        """
+        在生成过程中更新 ``input_ids``、``attention_mask`` 等输入参数的函数。
+        """
+        if past_key_values is not None:
+            input_ids = input_ids[:, -1:]
+        return {
+            "input_ids": input_ids, "attention_mask": attention_mask,
+            "use_cache": use_cache
+        }
+    
+    def prepare_inputs_for_generation(self, 
+                                      input_ids: torch.Tensor,
+                                      attention_mask: Optional[torch.Tensor] = None,
+                                      use_cache: bool = None,
+                                      past_key_values: Optional[list] = None,
+                                      **kwargs):
+        """
+        生成过程中更新输入和 cache 状态的函数，包含设置 use_cache 和 past_key_values
+        以及更新输入两个过程。
+        """
+        self.set_cache(use_cache, past_key_values)
+        return self.prepare_inputs(
+            input_ids=input_ids, attention_mask=attention_mask,
+            use_cache=use_cache, past_key_values=past_key_values
         )
         
     @staticmethod
