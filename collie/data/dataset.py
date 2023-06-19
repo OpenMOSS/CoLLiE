@@ -120,6 +120,8 @@ class CollieDatasetForTraining(Dataset):
         return bos_length, eos_length
 
     def __getitem__(self, index) -> Tuple:
+        if isinstance(index, slice):
+            return self._get_slice(index)
         if index > len(self):
             raise IndexError("Index out of range.")
         labels_mask = None
@@ -160,6 +162,12 @@ class CollieDatasetForTraining(Dataset):
                 "labels": input_ids,
                 "labels_mask": labels_mask
             }
+            
+    def _get_slice(self, s: slice):
+        result = []
+        for idx in self.indices[s]:
+            result.append(self[idx])
+        return result
 
     @classmethod
     def from_json(cls,
@@ -240,7 +248,7 @@ class CollieDatasetForGeneration(CollieDatasetForTraining):
 
 
 class CollieDatasetForClassification(CollieDatasetForTraining):
-    """ **CoLLie** 中的分类任务数据集，须搭配 :class:`~collie.controller.evaluator.ClassficationEvaluator` 
+    """ **CoLLie** 中的分类任务数据集，须搭配 :class:`~collie.controller.evaluator.EvaluatorForClassfication` 
         使用。需提供的数据格式形似:
 
         .. code-block::
