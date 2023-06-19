@@ -15,7 +15,7 @@ from collie.log.logger import logger
 from .rich_progress import f_rich_progress
 
 __all__ = ["find_tensors", "progress", "dictToObj", "apply_to_collection", 
-           "dict_as_params", "initization_mapping"]
+           "dict_as_params", "initization_mapping", "is_static_method"]
 
 def find_tensors():
     """
@@ -452,6 +452,18 @@ def dict_as_params(input_keys: Union[str, Sequence[str]], output_keys: Union[str
         obj.forward = MethodType(_forward, obj)
         return obj
     return _inner
+
+def is_static_method(func):
+    """ 判断一个函数是否是静态方法。
+    """
+    if inspect.isfunction(func):
+        if inspect.ismethod(func):
+            # 对于绑定方法，检查其是否由staticmethod装饰器修饰
+            return isinstance(func.__func__, staticmethod)
+        else:
+            # 对于普通函数，检查其是否由staticmethod装饰器修饰
+            return isinstance(func, staticmethod)
+    return False
 
 initization_mapping = {
     "normal": torch.nn.init.normal_,

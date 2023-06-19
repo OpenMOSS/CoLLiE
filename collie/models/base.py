@@ -18,7 +18,8 @@ from transformers.generation.utils import GenerationConfig
 from collie.module import PipelineModel, GPTLMLoss
 from collie.config import CollieConfig, load_config
 from collie.log import logger
-from collie.utils import setup_distribution, is_zero3_enabled, env, initization_mapping, dict_as_params
+from collie.utils import setup_distribution, is_zero3_enabled, env, \
+    initization_mapping, dict_as_params, is_static_method
 
 class CollieModelForCausalLM(nn.Module, GenerationMixin):
     """
@@ -132,9 +133,9 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
             )
             setattr(pipeline_model, "config", config)
             setattr(pipeline_model, "collie_config", config)
-            for method in cls.overwrite_pipeline_methods() + [cls.resize_token_embeddings, 
-                                                              cls.save_parallel_state_dict, 
-                                                              cls.load_parallel_state_dict]:
+            setattr(pipeline_model, "save_parallel_state_dict", cls.save_parallel_state_dict)
+            setattr(pipeline_model, "load_parallel_state_dict", cls.load_parallel_state_dict)
+            for method in cls.overwrite_pipeline_methods() + [cls.resize_token_embeddings]:
                 object.__setattr__(pipeline_model, method.__name__, types.MethodType(method, pipeline_model))
             return pipeline_model
             

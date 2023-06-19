@@ -1,7 +1,7 @@
 import sys
 sys.path.append("../..")
 from collie import Trainer, EvaluatorForPerplexity, LlamaForCausalLM, CollieConfig, PPLMetric, CollieDatasetForTraining, \
-    LossMonitor, TGSMonitor, MemoryMonitor, EvalMonitor, GradioProvider, LRMonitor, BleuMetric, DashProvider, env
+    LossMonitor, TGSMonitor, MemoryMonitor, EvalMonitor, GradioProvider, LRMonitor, CheckpointCallback
 from sentencepiece import sentencepiece_model_pb2 as sp_pb2_model
 import sentencepiece as spm
 from transformers import LlamaTokenizer, GenerationConfig
@@ -16,20 +16,20 @@ config.train_micro_batch_size = 8
 config.eval_batch_size = 8
 config.gradient_accumulation_steps = 16
 config.eval_per_n_epochs = 1
-config.train_epochs = 500
+config.train_epochs = 5000
 config.ds_config = {
     "fp16": {
         "enabled": True
     },
-    "monitor_config": {
-        "enabled": True,
-        "wandb": {
-            "enabled": True,
-            "team": "00index",
-            "project": "collie",
-            "group": "further_pretrain_llama"
-        }
-    },
+    # "monitor_config": {
+    #     "enabled": True,
+    #     "wandb": {
+    #         "enabled": True,
+    #         "team": "00index",
+    #         "project": "collie",
+    #         "group": "further_pretrain_llama"
+    #     }
+    # },
     # "zero_optimization": {
     #     "stage": 1,
     # }
@@ -85,7 +85,7 @@ if model.get_lm_head()[1] is not None:
 optimizer = torch.optim.AdamW(
     filter(lambda p: p.requires_grad, model.parameters()), lr=2e-4)
 lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-    optimizer, T_max=config.train_epochs * len(train_dataset), eta_min=2e-6)
+    optimizer, T_max=config.train_epochs * len(train_dataset), eta_min=0)
 # 准备验证器，指标为PPL
 evaluator = EvaluatorForPerplexity(
     model=model,
@@ -106,10 +106,11 @@ trainer = Trainer(
     monitors=[LossMonitor(config), TGSMonitor(config), MemoryMonitor(
         config), EvalMonitor(config), LRMonitor(config)],
     # 打开一个交互界面，方便随时 human eval
-    data_provider=DashProvider(generation_config=GenerationConfig(
+    data_provider=GradioProvider(generation_config=GenerationConfig(
         eos_token_id=llama_tokenizer.eos_token_id, max_length=128),
-        tokenizer=llama_tokenizer),
-    evaluators=[evaluator]
+        tokenizer=llama_tokenizer, port=12311),
+    evaluators=[evaluator],
+    callbacks=CheckpointCallback(folder="hdd:s3://opennlplab_hdd/share/zhangshuo/models/collie/further_pretrain_llama", last=True, protocol="petrel"),
 )
 
 trainer.train()

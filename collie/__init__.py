@@ -13,7 +13,7 @@ from .utils import progress, setup_distribution, set_seed, env, \
     broadcast_tensor, find_tensors, BaseProvider, GradioProvider, \
     _GenerationStreamer, BaseMonitor, StepTimeMonitor, TGSMonitor, \
     MemoryMonitor, LossMonitor, EvalMonitor, LRMonitor, dict_as_params, \
-        DashProvider, initization_mapping
+        DashProvider, initization_mapping, is_static_method
 from .module import PipelineGenerationMixin, ColumnParallelLinear, \
     RowParallelLinearWithoutBias, LinearWithHiddenStates, \
     ColumnParallelLMHead, GPTLMLoss
@@ -81,6 +81,7 @@ __all__ = [
     'dict_as_params',
     "DashProvider",
     "initization_mapping",
+    "is_static_method",
     
     # metrics
     'BaseMetric',
