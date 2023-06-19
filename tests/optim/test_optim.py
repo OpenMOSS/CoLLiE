@@ -19,7 +19,7 @@ from collie.metrics.decode import DecodeMetric
 from collie.utils import env, setup_distribution
 
 from collie.optim.adan import Adan
-from collie.optim.inplace_sgd import InplaceSGD
+from collie.optim.lomo import Lomo
 from collie.optim.lion import Lion
 from collie.optim.sophiag import SophiaG
 
@@ -28,10 +28,10 @@ from collie.utils.monitor import StepTimeMonitor, TGSMonitor, MemoryMonitor, Los
 class LLaMaWithOptim:
     """
     LLaMAWithOptim是一个测试各种Optimizer效果的类。
-    Optimizer的选择有Adan, InplaceSGD, Lion和SophiaG（具体可见collie.optim)
+    Optimizer的选择有Adan, Lomo, Lion和SophiaG（具体可见collie.optim)
     本类提供四种测试选择：
         * test_adan：测试Adan优化器
-        * test_inplaceSGD：测试InplaceSGD优化器
+        * test_inplaceSGD：测试Lomo优化器
         * test_lion：测试Lion优化器
         * test_sophiag：测试SophiaG优化器
     :param name: 指定的monitor的文件夹名称，用于区分不同的Optimizer的效果
@@ -123,5 +123,5 @@ class LLaMaWithOptim:
     
 
 # CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --rdzv_backend=c10d --rdzv_endpoint=localhost:28002 --nnodes=1 --nproc_per_node=8 test_optim.py
-optim_test = LLaMaWithOptim('inplace_sgd')
+optim_test = LLaMaWithOptim('lomo')
 optim_test.test_inplaceSGD()

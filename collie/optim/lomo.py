@@ -4,11 +4,11 @@ from torch.optim import Optimizer
 import torch.distributed as dist
 
 
-class InplaceSGD(Optimizer):
+class Lomo(Optimizer):
     """
-    一个自定义的优化器类InplaceSGD，用于在分布式训练中的梯度更新。
+    一个自定义的优化器类Lomo，用于在分布式训练中的梯度更新。
 
-    该类实现两个梯度更新函数 :meth:`inplace_sgd` 和 :meth:`inplace_sgd_zero3`，分别用于非ZeRO和ZeRO模式下的梯度更新。
+    该类实现两个梯度更新函数 :meth:`lomo` 和 :meth:`lomo_zero3`，分别用于非ZeRO和ZeRO模式下的梯度更新。
     
     :param model: 待优化的模型
     :param lr: 学习率，默认值为1e-3
@@ -38,14 +38,14 @@ class InplaceSGD(Optimizer):
         self.clip_coef = None
 
         # register hook
-        self.grad_func = self.inplace_sgd() if not self.zero_enabled else self.inplace_sgd_zero3()
+        self.grad_func = self.lomo() if not self.zero_enabled else self.lomo_zero3()
         for n, p in self.model.named_parameters():
             if p.requires_grad:
                 p.register_hook(self.grad_func)
         defaults = dict(lr=lr, zero_enabled=zero_enabled, clip_grad_norm=clip_grad_norm, clip_grad_value=clip_grad_value)
-        super(InplaceSGD, self).__init__(self.model.parameters(), defaults)
+        super(Lomo, self).__init__(self.model.parameters(), defaults)
 
-    def inplace_sgd(self):
+    def lomo(self):
         """
         在非ZeRO模式下更新模型参数的梯度。
 
@@ -74,7 +74,7 @@ class InplaceSGD(Optimizer):
 
         return func
 
-    def inplace_sgd_zero3(self):
+    def lomo_zero3(self):
         """
         在ZeRO模式下更新模型参数的梯度。
         

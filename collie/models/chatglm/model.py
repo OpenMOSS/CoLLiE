@@ -28,7 +28,7 @@ from collie.config import CollieConfig
 from collie.models.base import CollieModelForCausalLM
 from collie.driver.io import IODriver
 from collie.module import ColumnParallelLinearWithoutBias, RowParallelLinearWithoutBias, ColumnParallelLMHead
-from collie.utils import progress, env
+from collie.utils import progress, env, dict_as_params
 
 from typing import Any, Union, Optional
 from collections import OrderedDict
@@ -194,7 +194,9 @@ class ChatGLMLayer(nn.Module):
         return attention_mask
         
 
-    def _forward(self, hidden_states: torch.Tensor, input_ids: torch.Tensor, position_ids: torch.Tensor):
+    def _forward(self, hidden_states: torch.Tensor, input_ids: torch.Tensor, position_ids: torch.Tensor, attention_mask: Optional[torch.Tensor], **kwargs):
+        if attention_mask is None:
+            attention_mask = torch.ones_like(input_ids)
         if not self.training:
             self.hidden_states = hidden_states
         else:
@@ -248,8 +250,10 @@ class ChatGLMLayer(nn.Module):
                 mask = self.get_masks(input_ids, hidden_states.device)
                 attention_score = attention_score + mask
             attention_score = attention_score * float(self.layer_id + 1)
+            key_padding_mask = (1.0 - attention_mask.unsqueeze(1).unsqueeze(2)) * torch.finfo(
+                attention_score.dtype).min
             attention_score = F.softmax(
-                attention_score, dim=-1).type_as(value)
+                attention_score + key_padding_mask, dim=-1).type_as(value)
             output = torch.matmul(attention_score, value)
             output = output.transpose(1, 2).contiguous().view(
                 batch_size, seq_len + start_pos, -1)
@@ -259,20 +263,17 @@ class ChatGLMLayer(nn.Module):
         hidden_states = hidden_states.permute(1, 0, 2) * self.alpha + self.attention["dense"](output)
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = hidden_states * self.alpha + F.dropout(self.mlp["dense_4h_to_h"](F.gelu(self.mlp["dense_h_to_4h"](hidden_states))), p=self.config.dropout, training=self.training)
-        return hidden_states, input_ids, position_ids
+        return hidden_states
 
-    def forward(self, inputs: tuple):
+    def forward(self, inputs: dict):
         if self.config.checkpointing and self.training:
-            def create_custom_forward(module):
-                def custom_forward(*inputs):
-                    return module._forward(*inputs)
-                return custom_forward
-            return torch.utils.checkpoint.checkpoint(
-                create_custom_forward(self),
-                *inputs
+            inputs["hidden_states"] = torch.utils.checkpoint.checkpoint(
+                self._forward,
+                **inputs
             )
         else:
-            return self._forward(*inputs)
+            inputs["hidden_states"] = self._forward(**inputs)
+        return inputs
 
 
 class ChatGLMForCausalLM(CollieModelForCausalLM):
@@ -284,7 +285,7 @@ class ChatGLMForCausalLM(CollieModelForCausalLM):
         )
         self.layers = nn.Sequential(
             *[ChatGLMLayer(self.config, i) for i in range(self.config.num_layers)])
-        self.final_layernorm = self._get_final_norm_cls_without_position_ids_cls()(
+        self.final_layernorm = nn.LayerNorm(
             self.config.hidden_size,
             eps=self.config.layernorm_epsilon
         )
@@ -298,17 +299,20 @@ class ChatGLMForCausalLM(CollieModelForCausalLM):
         self.main_input_name = "input_ids"
 
     def forward(self, input_ids: torch.Tensor, **kwargs):
+        attention_mask = kwargs.get("attention_mask", None)
         past_key_values=self._get_past_key_values(self.layers)
         if past_key_values is not None and not self.training:
             input_ids = input_ids[:, -1:]
         assert input_ids.ndim == 2, f"input_ids.shape must be (B, N), but got {input_ids.shape}"
-        inputs = self.word_embeddings(input_ids)
+        inputs = dict(zip(["hidden_states", "input_ids", "position_ids"], self.word_embeddings(input_ids)))
+        if attention_mask is not None:
+            inputs["attention_mask"] = attention_mask
         all_hidden_states = ()
         for layer in self.layers:
-            all_hidden_states += (inputs[0],)
+            all_hidden_states += (inputs["hidden_states"],)
             inputs = layer(inputs)
-        hidden_states = self.final_layernorm(inputs)
-        logits = self.lm_head(hidden_states)
+        inputs["hidden_states"] = self.final_layernorm(inputs["hidden_states"])
+        logits = self.lm_head(inputs["hidden_states"])
 
         return CausalLMOutputWithPast(
             loss=None,
@@ -365,7 +369,7 @@ class ChatGLMForCausalLM(CollieModelForCausalLM):
         else:
             input_ids = input_ids[:, -1].unsqueeze(-1)
             self._set_past_key_values(self.layers, past_key_values)
-        return {"input_ids": input_ids}
+        return {"input_ids": input_ids, "attention_mask": attention_mask}
 
     def clean(self):
         self._clean_hidden_states([*self.layers, self.lm_head])
@@ -390,14 +394,6 @@ class ChatGLMForCausalLM(CollieModelForCausalLM):
         return WordEmbeddingWithPositionIdsAndInputIds
     
     @classmethod
-    def _get_final_norm_cls_without_position_ids_cls(cls):
-        class FinalNormWithoutPositionIds(nn.LayerNorm):
-            def forward(self, inputs: tuple) -> Tensor:
-                hidden_states, input_ids, position_ids = inputs
-                return super().forward(hidden_states)
-        return FinalNormWithoutPositionIds
-    
-    @classmethod
     def pipeline_layers(cls, config: CollieConfig):
         """
         Get layers of pipeline.
@@ -409,16 +405,19 @@ class ChatGLMForCausalLM(CollieModelForCausalLM):
         return [
             TiedLayerSpec(
             "word_embeddings",
+            dict_as_params(input_keys="input_ids", output_keys=["hidden_states", "input_ids", "position_ids"]),
             cls._get_word_embedding_with_position_ids_cls(config),
             config.vocab_size,
             config.hidden_size),
             *[LayerSpec(ChatGLMLayer, config, i)
               for i in range(config.num_layers)],
-            LayerSpec(cls._get_final_norm_cls_without_position_ids_cls(),
+            LayerSpec(dict_as_params(input_keys="hidden_states", output_keys="hidden_states"),
+                nn.LayerNorm,
                 config.hidden_size,
                 eps=config.layernorm_epsilon),
             TiedLayerSpec(
             "word_embeddings",
+            dict_as_params(input_keys="hidden_states", output_keys="hidden_states"),
             ColumnParallelLMHead,
             config.hidden_size,
             config.vocab_size,
