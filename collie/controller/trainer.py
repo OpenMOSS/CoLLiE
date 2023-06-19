@@ -477,7 +477,7 @@ class Trainer(TrainerEventTrigger):
             if is_zero3_enabled(self.config):
                 self.engine.optimizer.checkpoint_event_prologue()
                 with deepspeed.zero.GatheredParameters(list(self.engine.module.parameters(recurse=True))):
-                    getattr(self.engine.module, "save_parallel_state_dict")(
+                    self.engine.module.save_parallel_state_dict(
                         state_dict=self.engine.module.state_dict(),
                         path=path,
                         config=self.config,
@@ -486,7 +486,7 @@ class Trainer(TrainerEventTrigger):
                     )
                 self.engine.optimizer.checkpoint_event_epilogue()
             else:
-                getattr(self.engine.module, "save_parallel_state_dict")(
+                self.engine.module.save_parallel_state_dict(
                     state_dict=self.engine.module.state_dict(),
                     path=path,
                     config=self.config,

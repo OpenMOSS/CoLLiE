@@ -4,7 +4,7 @@ import torch
 from datasets import load_dataset
 from transformers import LlamaTokenizer, GenerationConfig
 from collie import Trainer, EvaluatorForPerplexity, LlamaForCausalLM, CollieConfig, PPLMetric, AccuracyMetric, DecodeMetric, CollieDatasetForTraining, CollieDatasetForGeneration, \
-    LossMonitor, TGSMonitor, MemoryMonitor, EvalMonitor, GradioProvider, Evaluator, LRMonitor, BleuMetric, DashProvider
+    LossMonitor, TGSMonitor, MemoryMonitor, EvalMonitor, GradioProvider, EvaluatorForGeneration, LRMonitor, BleuMetric, DashProvider
 config = CollieConfig.from_pretrained("decapoda-research/llama-7b-hf")
 config.pp_size = 8
 config.train_micro_batch_size = 1
@@ -75,7 +75,7 @@ evaluator_ppl = EvaluatorForPerplexity(
         "ppl": PPLMetric(gather_result=True)
     },
 )
-evaluator_bleu = Evaluator(
+evaluator_bleu = EvaluatorForGeneration(
     model=model,
     config=config,
     dataset=eval_dataset_bleu,
