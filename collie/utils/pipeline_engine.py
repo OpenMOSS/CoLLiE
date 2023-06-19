@@ -185,7 +185,10 @@ class ColliePipelineEngine(PipelineEngine):
             # skip mask
             #inputs[1].requires_grad = True
             part_input = None
-            self.pipe_buffers['inputs'][buffer_id] = inputs
+            if isinstance(inputs, dict):
+                self.pipe_buffers['inputs'][buffer_id] = {k:v for k, v in inputs.items()}
+            else:
+                self.pipe_buffers['inputs'][buffer_id] = inputs
 
         # Zero out the gradients each time we use the tensor because only the data in
         # tensor changes across batches
@@ -215,7 +218,10 @@ class ColliePipelineEngine(PipelineEngine):
                     _grad_key = key
             assert _grad_key is not None, "None of the outputs has grad!"
             self.outputs_extra["_grad_key"] = _grad_key
-        self.pipe_buffers['outputs'][buffer_id] = outputs
+        if isinstance(outputs, dict):
+            self.pipe_buffers['outputs'][buffer_id] = {k:v for k, v in outputs.items()}
+        else:
+            self.pipe_buffers['outputs'][buffer_id] = outputs
 
         # Optionally compute loss on the last device
         if self.is_last_stage():
@@ -516,7 +522,6 @@ class ColliePipelineEngine(PipelineEngine):
     def _exec_send_grads(self, buffer_id):
         if self.wall_clock_breakdown():
             self.timers('pipe_send_grad').start()
-
         inputs = self.pipe_buffers['inputs'][buffer_id]
 
         # Partition the gradient
@@ -614,8 +619,10 @@ class ColliePipelineEngine(PipelineEngine):
             for key, buffer in recvd.items():
                     buffer.requires_grad = self.module.training and \
                         (key == self.inputs_extra["_grad_key"])
-
-        self.pipe_buffers['inputs'][buffer_id] = recvd
+        if isinstance(recvd, dict):
+            self.pipe_buffers['inputs'][buffer_id] = {k:v for k, v in recvd.items()}
+        else:
+            self.pipe_buffers['inputs'][buffer_id] = recvd
 
         if self.wall_clock_breakdown():
             self.timers('pipe_recv_input').stop()
@@ -635,7 +642,10 @@ class ColliePipelineEngine(PipelineEngine):
             outputs[0].data = part_output.full()
             outputs = (outputs[0], *outputs[2:])
             # save for backward
-            self.pipe_buffers['outputs'][buffer_id] = outputs
+            if isinstance(outputs, dict):
+                self.pipe_buffers['outputs'][buffer_id] = {k:v for k, v in outputs.items()}
+            else:
+                self.pipe_buffers['outputs'][buffer_id] = outputs
 
         # Allocate gradient if necessary
         if self.grad_layer is None:

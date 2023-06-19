@@ -20,6 +20,6 @@ Controller
    :template: classtemplate.rst
 
    Trainer
-   Evaluator
-   PerplexityEvaluator
-   ClassficationEvaluator
+   EvaluatorForGeneration
+   EvaluatorForPerplexity
+   EvaluatorForClassfication

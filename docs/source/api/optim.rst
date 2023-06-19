@@ -19,7 +19,7 @@ Optimizers
    :nosignatures:
    :template: classtemplate.rst
 
-   InplaceSGD
+   Lomo
    Adan
    Lion
    SophiaG

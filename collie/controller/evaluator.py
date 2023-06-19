@@ -59,21 +59,18 @@ class Evaluator:
                 # 第二个 input_ids 会被用于 loss_fn 的 label
                 return input_ids, input_ids
     :param data_provider: 额外的数据提供器，可在 ``dataset`` 之外额外注入验证数据，例如通过前端网页或 http 请求等， 详见 :class:`~collie.utils.data_provider.BaseProvider`
-    :param generation_config: 用于验证的配置
-        **CoLLie** 默认的 ``eval_fn`` 为进行一次生成过程，因此本项配置主要控制生成过程的参数。当自定义 ``eval_fn`` 时，本项配置将不会生效
     :param monitors: 用于监控训练过程的监控器，详见 :class:`~collie.utils.monitor.BaseMonitor`
     """
 
     def __init__(self, model, dataset: torch.utils.data.Dataset, tokenizer: Optional[PreTrainedTokenizerBase] = None, metrics: Optional[Dict] = None, eval_fn: Optional[Callable]=None,
                  config: Optional[CollieConfig] = None, collate_fn: Optional[Callable] = ColliePadder(padding_left=True), data_provider: Optional[BaseProvider] = None,
-                 generation_config: GenerationConfig = GenerationConfig(), monitors: Sequence[BaseMonitor] = [], skip_special_tokens: bool = True):
+                 monitors: Sequence[BaseMonitor] = []):
         self.engine = None
         self.model = model
         self.tokenizer = tokenizer
         self.metrics = metrics
         self.metric_wrapper = _MetricsWrapper(self.metrics, self)
         self.config = config
-        self.generation_config = generation_config
         self.eval_fn = self.eval_fn if eval_fn is None else eval_fn
         self.dataset = dataset
         self.collate_fn = collate_fn
@@ -81,7 +78,6 @@ class Evaluator:
         self.data_provider = data_provider
         self.monitor = _MultiMonitors(monitors)
         self.global_batch_idx = 0
-        self.skip_special_tokens = skip_special_tokens
 
     def init_engine(self):
         """
@@ -160,21 +156,7 @@ class Evaluator:
     
         :return: 一次验证的结果，为 `Dict` 类型，该结果会被传入 `metric` 的 `update` 方法中
         """
-        assert evaluator.tokenizer is not None, "You must provide a tokenizer to decode the generated results."
-        inputs, labels = batch
-        if isinstance(evaluator.engine, PipelineEngine):
-            generation_model = PipelineGenerationMixin(
-                engine=evaluator.engine
-            )
-        else:
-            generation_model = evaluator.engine.module
-        generated_ids = generation_model.generate(input_ids=inputs["input_ids"], attention_mask=inputs["attention_mask"], 
-                                              generation_config=evaluator.generation_config)
-        prompt_length = inputs["input_ids"].shape[1]
-        result = {"pred": [evaluator.tokenizer.decode(sample[prompt_length:], skip_special_tokens=evaluator.skip_special_tokens) for sample in generated_ids]}
-        if "target" in labels.keys():
-            result["target"] = [evaluator.tokenizer.decode(sample, skip_special_tokens=evaluator.skip_special_tokens) for sample in labels["target"]]
-        return result
+        raise NotImplementedError
 
     def data_provider_handler(self):
         """当初始化 :class:`collie.Evaluator` 的过程中提供了 ``data_provider`` 时会使用此方法。
@@ -211,8 +193,48 @@ class Evaluator:
         )
         if not use_stream:
             self.data_provider.put_feedback(generated_ids[0].cpu())
+            
+class EvaluatorForGeneration(Evaluator):
+    def __init__(self, 
+                 generation_config: GenerationConfig = GenerationConfig(),
+                 skip_special_tokens: bool = True,
+                 *args,
+                 **kwargs):
+        self.generation_config = generation_config
+        self.skip_special_tokens = skip_special_tokens
+        super().__init__(*args, **kwargs)
         
-class PerplexityEvaluator(Evaluator):
+    @staticmethod
+    @torch.no_grad()
+    def eval_fn(evaluator, batch: Tuple) -> Any:
+        """一次验证的基本单元
+
+        :param evaluator: 训练器
+        :param batch: 一个 batch 的数据，类型为长度为 2 的 ``Tuple``，其中第一个元素为 ``input_ids``，第二个元素为 ``labels``
+
+            .. note::
+
+                根据提供的 ``dataset`` 和 ``collate_fn`` 的不同，``labels`` 的类型也会有所不同。
+    
+        :return: 一次验证的结果，为 `Dict` 类型，该结果会被传入 `metric` 的 `update` 方法中
+        """
+        assert evaluator.tokenizer is not None, "You must provide a tokenizer to decode the generated results."
+        inputs, labels = batch
+        if isinstance(evaluator.engine, PipelineEngine):
+            generation_model = PipelineGenerationMixin(
+                engine=evaluator.engine
+            )
+        else:
+            generation_model = evaluator.engine.module
+        generated_ids = generation_model.generate(input_ids=inputs["input_ids"], attention_mask=inputs["attention_mask"], 
+                                              generation_config=evaluator.generation_config)
+        prompt_length = inputs["input_ids"].shape[1]
+        result = {"pred": [evaluator.tokenizer.decode(sample[prompt_length:], skip_special_tokens=evaluator.skip_special_tokens) for sample in generated_ids]}
+        if "target" in labels.keys():
+            result["target"] = [evaluator.tokenizer.decode(sample, skip_special_tokens=evaluator.skip_special_tokens) for sample in labels["target"]]
+        return result
+        
+class EvaluatorForPerplexity(Evaluator):
     def __init__(self, 
                  loss_fn: Callable = GPTLMLoss(),
                  collate_fn: Optional[Callable] = ColliePadder(),
@@ -252,7 +274,7 @@ class PerplexityEvaluator(Evaluator):
             # **{key: value.cuda() for key, value in batch[1].items() if isinstance(value, torch.Tensor)}
         }
         
-class ClassficationEvaluator(PerplexityEvaluator):
+class EvaluatorForClassfication(EvaluatorForPerplexity):
     @staticmethod
     @torch.no_grad()
     def eval_fn(evaluator, batch: Tuple) -> Any:
