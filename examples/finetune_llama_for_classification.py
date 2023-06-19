@@ -1,16 +1,16 @@
 import sys
 sys.path.append("..")
-from collie import Trainer, PerplexityEvaluator, LlamaForCausalLM, CollieConfig, PPLMetric, AccuracyMetric, DecodeMetric, CollieDatasetForTraining, CollieDatasetForClassification, \
-    LossMonitor, TGSMonitor, MemoryMonitor, EvalMonitor, GradioProvider, ClassficationEvaluator, LRMonitor
+from collie import Trainer, EvaluatorForPerplexity, LlamaForCausalLM, CollieConfig, PPLMetric, AccuracyMetric, DecodeMetric, CollieDatasetForTraining, CollieDatasetForClassification, \
+    LossMonitor, TGSMonitor, MemoryMonitor, EvalMonitor, GradioProvider, EvaluatorForClassfication, LRMonitor
 from transformers import LlamaTokenizer
 from datasets import load_dataset
 import torch
 
 config = CollieConfig.from_pretrained("decapoda-research/llama-7b-hf")
-config.pp_size = 4
-config.train_micro_batch_size = 1
+config.dp_size = 4
+config.train_micro_batch_size = 16
 config.eval_batch_size = 2
-config.gradient_accumulation_steps = 4
+config.gradient_accumulation_steps = 1
 config.eval_per_n_steps = 300
 # config.checkpointing = False
 config.ds_config = {
@@ -26,9 +26,9 @@ config.ds_config = {
     #         "group": "test_evaluator"
     #     }
     # },
-    # "zero_optimization": {
-    #     "stage": 3,
-    # }
+    "zero_optimization": {
+        "stage": 3,
+    }
 }
 config.seed = 1024
 model = LlamaForCausalLM.from_pretrained("/mnt/petrelfs/zhangshuo/model/llama-7b-hf", config=config)
@@ -66,7 +66,7 @@ eval_dataset_ppl = CollieDatasetForTraining(eval_dataset_ppl,
 eval_dataset_cls = CollieDatasetForClassification(eval_dataset_cls, 
                                               tokenizer=LlamaTokenizer.from_pretrained("/mnt/petrelfs/zhangshuo/model/llama-7b-hf", add_eos_token=True))
 ### Prepare Evaluator
-evaluator_ppl = PerplexityEvaluator(
+evaluator_ppl = EvaluatorForPerplexity(
     model=model,
     config=config,
     dataset=eval_dataset_ppl,
@@ -77,7 +77,7 @@ evaluator_ppl = PerplexityEvaluator(
         "ppl": PPLMetric(gather_result=True)
     },
 )
-evaluator_cls = ClassficationEvaluator(
+evaluator_cls = EvaluatorForClassfication(
     model=model,
     config=config,
     dataset=eval_dataset_cls,

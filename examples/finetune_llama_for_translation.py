@@ -3,15 +3,15 @@ sys.path.append("..")
 import torch
 from datasets import load_dataset
 from transformers import LlamaTokenizer, GenerationConfig
-from collie import Trainer, PerplexityEvaluator, LlamaForCausalLM, CollieConfig, PPLMetric, AccuracyMetric, DecodeMetric, CollieDatasetForTraining, CollieDatasetForGeneration, \
-    LossMonitor, TGSMonitor, MemoryMonitor, EvalMonitor, GradioProvider, Evaluator, LRMonitor, BleuMetric, DashProvider
+from collie import Trainer, EvaluatorForPerplexity, LlamaForCausalLM, CollieConfig, PPLMetric, AccuracyMetric, DecodeMetric, CollieDatasetForTraining, CollieDatasetForGeneration, \
+    LossMonitor, TGSMonitor, MemoryMonitor, EvalMonitor, GradioProvider, EvaluatorForGeneration, LRMonitor, BleuMetric, DashProvider
 config = CollieConfig.from_pretrained("decapoda-research/llama-7b-hf")
 config.pp_size = 8
 config.train_micro_batch_size = 1
 config.eval_batch_size = 1
 config.gradient_accumulation_steps = 128
 config.eval_per_n_epochs = 1
-config.train_epochs = 1000
+config.train_epochs = 10
 config.ds_config = {
     "fp16": {
         "enabled": True
@@ -27,11 +27,6 @@ config.ds_config = {
     }
 }
 config.seed = 1024
-model = LlamaForCausalLM.from_pretrained(
-    "/mnt/petrelfs/zhangshuo/model/llama-7b-hf", config=config)
-optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5)
-tokenizer = LlamaTokenizer.from_pretrained(
-    "/mnt/petrelfs/zhangshuo/model/llama-7b-hf", add_eos_token=False)
 # Prepare training dataset
 train_dataset = [
     {
@@ -48,8 +43,19 @@ eval_dataset_bleu = [
     {
         "text": f"Translate from French to English. French: {sample['translation']['fr']} English: ",
         "target": " ".join(f"{sample['translation']['en']}</s>".split())
-    } for sample in load_dataset("iwslt2017", name="iwslt2017-fr-en", split="test[:50]")
+    } for sample in load_dataset("iwslt2017", name="iwslt2017-fr-en", split="train[100:150]")
 ]
+# Prepare model
+model = LlamaForCausalLM.from_pretrained(
+    "/mnt/petrelfs/zhangshuo/model/llama-7b-hf", config=config)
+optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5)
+# lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+#     optimizer=optimizer, T_max=config.train_epochs * len(train_dataset) / (config.train_micro_batch_size * config.gradient_accumulation_steps))
+lr_scheduler = torch.optim.lr_scheduler.StepLR(
+    optimizer=optimizer, step_size=1, gamma=0.9
+)
+tokenizer = LlamaTokenizer.from_pretrained(
+    "/mnt/petrelfs/zhangshuo/model/llama-7b-hf", add_eos_token=False)
 # Convert to CoLLie Dataset
 traine_dataset = CollieDatasetForTraining(train_dataset,
                                           tokenizer=tokenizer)
@@ -58,7 +64,7 @@ eval_dataset_ppl = CollieDatasetForTraining(eval_dataset_ppl,
 eval_dataset_bleu = CollieDatasetForGeneration(eval_dataset_bleu,
                                                tokenizer=tokenizer)
 # Prepare Evaluator
-evaluator_ppl = PerplexityEvaluator(
+evaluator_ppl = EvaluatorForPerplexity(
     model=model,
     config=config,
     dataset=eval_dataset_ppl,
@@ -69,7 +75,7 @@ evaluator_ppl = PerplexityEvaluator(
         "ppl": PPLMetric(gather_result=True)
     },
 )
-evaluator_bleu = Evaluator(
+evaluator_bleu = EvaluatorForGeneration(
     model=model,
     config=config,
     dataset=eval_dataset_bleu,
@@ -77,7 +83,7 @@ evaluator_bleu = Evaluator(
         EvalMonitor(config)
     ],
     metrics={
-        "bleu": BleuMetric(gather_result=True, ngram=2),
+        "bleu": BleuMetric(gather_result=True, ngram=1),
         "decode": DecodeMetric()
     },
     generation_config=GenerationConfig(
@@ -90,6 +96,7 @@ evaluator_bleu = Evaluator(
 trainer = Trainer(
     model=model,
     tokenizer=tokenizer,
+    lr_scheduler=lr_scheduler,
     config=config,
     optimizer=optimizer,
     train_dataset=traine_dataset,

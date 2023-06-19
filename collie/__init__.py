@@ -13,12 +13,12 @@ from .utils import progress, setup_distribution, set_seed, env, \
     broadcast_tensor, find_tensors, BaseProvider, GradioProvider, \
     _GenerationStreamer, BaseMonitor, StepTimeMonitor, TGSMonitor, \
     MemoryMonitor, LossMonitor, EvalMonitor, LRMonitor, dict_as_params, \
-        DashProvider
+        DashProvider, initization_mapping, is_static_method
 from .module import PipelineGenerationMixin, ColumnParallelLinear, \
     RowParallelLinearWithoutBias, LinearWithHiddenStates, \
     ColumnParallelLMHead, GPTLMLoss
-from .controller import Trainer, Evaluator, PerplexityEvaluator, \
-    ClassficationEvaluator
+from .controller import Trainer, Evaluator, EvaluatorForPerplexity, \
+    EvaluatorForClassfication, EvaluatorForGeneration
 from .config import CollieConfig
 from .metrics import BaseMetric, DecodeMetric, AccuracyMetric, PPLMetric, BleuMetric
 from .data import CollieDatasetForClassification, CollieBatchSampler, \
@@ -28,8 +28,9 @@ __all__ = [
     # controller
     'Trainer',
     'Evaluator',
-    'PerplexityEvaluator',
-    'ClassficationEvaluator',
+    'EvaluatorForPerplexity',
+    'EvaluatorForClassfication',
+    'EvaluatorForGeneration',
 
     # config
     'CollieConfig',
@@ -78,6 +79,9 @@ __all__ = [
     'LRMonitor',
     '_GenerationStreamer',
     'dict_as_params',
+    "DashProvider",
+    "initization_mapping",
+    "is_static_method",
     
     # metrics
     'BaseMetric',

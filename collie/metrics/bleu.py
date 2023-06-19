@@ -194,7 +194,7 @@ class BleuMetric(BaseMetric):
 
     def __init__(
         self,
-        split_fn: callable = lambda x: x.split(" "),
+        split_fn: callable = lambda x: x.split(),
         ngram: int = 4,
         smooth: str = "no_smooth",
         average: str = "macro",
