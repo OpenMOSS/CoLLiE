@@ -340,17 +340,19 @@ class MossForCausalLM(CollieModelForCausalLM):
             MossBlock(config, i) for i in range(config.n_layer)
         ])
         self.ln_f = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_epsilon)
-        self.lm_head = ColumnParallelLMHead(config.n_embd, config.vocab_size)
+        self.lm_head = ColumnParallelLinearWithoutBias(config.n_embd,
+                                                       config.vocab_size)
 
     def forward(self, input_ids, attention_mask=None, **kwargs):
         batch_size = input_ids.shape[0]
         if attention_mask is not None:
             if batch_size <= 0:
                 raise ValueError("batch_size has to be defined and > 0")
+            dtype = self.wte.weight.dtype
             attention_mask = attention_mask.view(batch_size, -1)
             attention_mask = attention_mask[:, None, None, :]
-            attention_mask = attention_mask.to(dtype=self.dtype)
-            attention_mask = (1.0 - attention_mask) * torch.finfo(self.dtype).min
+            attention_mask = attention_mask.to(dtype)
+            attention_mask = (1.0 - attention_mask) * torch.finfo(dtype).min
         inputs_embed = self.wte(input_ids)
         hidden_states = self.drop(inputs_embed)
 
@@ -360,9 +362,10 @@ class MossForCausalLM(CollieModelForCausalLM):
             hidden_states = l(
                 {"hidden_states": hidden_states,
                  "attention_mask": attention_mask}
-            )
+            )["hidden_states"]
 
         hidden_states = self.ln_f(hidden_states)
+        all_hidden_states += (hidden_states, )
         logits = self.lm_head(hidden_states)
         return CausalLMOutputWithPast(
             loss=None,

@@ -294,7 +294,7 @@ class ChatGLMForCausalLM(CollieModelForCausalLM):
             self.config.hidden_size,
             eps=self.config.layernorm_epsilon
         )
-        self.lm_head = ColumnParallelLMHead(
+        self.lm_head = ColumnParallelLinearWithoutBias(
             self.config.hidden_size,
             self.config.vocab_size,
             bias=False

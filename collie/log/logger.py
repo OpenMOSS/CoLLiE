@@ -140,7 +140,7 @@ class CollieLogger(logging.Logger, metaclass=LoggerSingleton):
         :param kwargs:
         :return:
         """
-        if os.environ.get('LOCAL_RANK', 0) == 0:
+        if os.environ.get('LOCAL_RANK', '0') == '0':
             if once:
                 if msg in self._warning_msgs:
                     return
