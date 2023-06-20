@@ -229,6 +229,7 @@ class LlamaLayer(nn.Module):
 
 
 class LlamaForCausalLM(CollieModelForCausalLM):
+    
     def __init__(self, config: CollieConfig) -> None:
         super().__init__(config)
         self.embed_tokens = tensor_parallel.VocabParallelEmbedding(
