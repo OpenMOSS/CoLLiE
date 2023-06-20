@@ -194,7 +194,7 @@ class ChatGLMLayer(nn.Module):
         return attention_mask
         
 
-    def _forward(self, hidden_states: torch.Tensor, input_ids: torch.Tensor, position_ids: torch.Tensor, attention_mask: Optional[torch.Tensor], **kwargs):
+    def _forward(self, hidden_states: torch.Tensor, input_ids: torch.Tensor, position_ids: torch.Tensor, attention_mask: Optional[torch.Tensor]=None):
         if attention_mask is None:
             attention_mask = torch.ones_like(input_ids)
         if not self.training:
@@ -209,12 +209,15 @@ class ChatGLMLayer(nn.Module):
         query_key_value = self.attention["query_key_value"](hidden_states)
         query_key_value = rearrange(query_key_value, "b n (h d) -> b n h d", d=head_dim * 3)
         query, key, value = torch.chunk(query_key_value, 3, dim=-1)
-        if not self.training and self.past_key_values is not None:
+        if not self.training and self.past_key_values is not None and self.use_cache:
             start_pos = self.past_key_values[0].shape[1]
+            query = torch.cat([self.past_key_values[0], query], dim=1)
+            key = torch.cat([self.past_key_values[0], key], dim=1)
+            value = torch.cat([self.past_key_values[1], value], dim=1)
+            self.past_key_values = [key, value]
         else:
             self.past_key_values = None
             start_pos = 0
-        
         query1, query2 = query.chunk(2, dim=-1)
         key1, key2 = key.chunk(2, dim=-1)
         cos, sin = self.attention["rotary_emb"](query1, seq_len=position_ids.max() + 1)
@@ -224,12 +227,7 @@ class ChatGLMLayer(nn.Module):
         query2, key2 = apply_rotary_pos_emb_index(query2, key2, cos, sin, _block_position_ids)
         query = torch.concat([query1, query2], dim=(query1.ndim - 1))
         key = torch.concat([key1, key2], dim=(key1.ndim - 1))
-        if not self.training and self.use_cache:
-            if self.past_key_values is not None:
-                query = torch.cat([self.past_key_values[0], query], dim=1)
-                key = torch.cat([self.past_key_values[0], key], dim=1)
-                value = torch.cat([self.past_key_values[1], value], dim=1)
-            self.past_key_values = [key, value]
+        
         # if self.config.use_flash:
         if False: # TODO: flash attention not work for chatglm
             assert FlashAttention is not None, \
@@ -269,10 +267,17 @@ class ChatGLMLayer(nn.Module):
         if self.config.checkpointing and self.training:
             inputs["hidden_states"] = torch.utils.checkpoint.checkpoint(
                 self._forward,
-                **inputs
+                inputs["hidden_states"],
+                inputs["input_ids"],
+                inputs["position_ids"],
+                inputs.get("attention_mask")
             )
         else:
-            inputs["hidden_states"] = self._forward(**inputs)
+            inputs["hidden_states"] = self._forward(
+                hidden_states=inputs["hidden_states"],
+                input_ids=inputs["input_ids"],
+                position_ids=inputs["position_ids"],
+                attention_mask=inputs.get("attention_mask"))
         return inputs
 
 
@@ -389,7 +394,8 @@ class ChatGLMForCausalLM(CollieModelForCausalLM):
             def forward(self, input_):
                 position_ids = cls._get_position_ids(config, input_, None if self.past_key_values is None else self.past_key_values[0])
                 if not self.training and self.use_cache:
-                    self.past_key_values = (self.past_key_values, self.past_key_values)
+                    # self.past_key_values = (self.past_key_values, self.past_key_values)
+                    self.past_key_values = (position_ids, position_ids)
                 return super().forward(input_), input_, position_ids
         return WordEmbeddingWithPositionIdsAndInputIds
     
@@ -417,7 +423,7 @@ class ChatGLMForCausalLM(CollieModelForCausalLM):
                 eps=config.layernorm_epsilon),
             TiedLayerSpec(
             "word_embeddings",
-            dict_as_params(input_keys="hidden_states", output_keys="hidden_states"),
+            dict_as_params(input_keys="hidden_states", output_keys="logits"),
             ColumnParallelLMHead,
             config.hidden_size,
             config.vocab_size,
