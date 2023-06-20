@@ -11,7 +11,7 @@ from collie.utils import setup_distribution
 from collie.config import CollieConfig
 from collie.controller.trainer import Trainer
 from collie.metrics.decode import DecodeMetric
-from collie.optim import InplaceSGD
+from collie.optim import Lomo
 
 ###############################
 #         init config         #
@@ -52,7 +52,7 @@ print("Model loaded")
 ###############################
 #        init optim           #
 ###############################
-optimizer = InplaceSGD(
+optimizer = Lomo(
     model,
     lr=0.001,
     zero_enabled=True,

@@ -31,7 +31,7 @@ It primarily includes the following four features:
 - Models
   - [Flash Attention](https://github.com/HazyResearch/flash-attention)
 - Memory-efficient Fine-tuning Methods
-  - Inplace SGD
+  - Lomo
   - [LoRA](https://arxiv.org/pdf/2106.09685.pdf)
 - Friendly Usage
 

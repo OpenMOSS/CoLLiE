@@ -21,15 +21,15 @@ config.ds_config = {
     "fp16": {
         "enabled": True
     },
-    # "monitor_config": {
-    #     "enabled": True,
-    #     "wandb": {
-    #         "enabled": True,
-    #         "team": "00index",
-    #         "project": "collie",
-    #         "group": "further_pretrain_llama"
-    #     }
-    # },
+    "monitor_config": {
+        "enabled": True,
+        "wandb": {
+            "enabled": True,
+            "team": "00index",
+            "project": "collie",
+            "group": "further_pretrain_llama"
+        }
+    },
     # "zero_optimization": {
     #     "stage": 1,
     # }
@@ -109,8 +109,7 @@ trainer = Trainer(
     data_provider=GradioProvider(generation_config=GenerationConfig(
         eos_token_id=llama_tokenizer.eos_token_id, max_length=128),
         tokenizer=llama_tokenizer, port=12311),
-    evaluators=[evaluator],
-    callbacks=CheckpointCallback(folder="hdd:s3://opennlplab_hdd/share/zhangshuo/models/collie/further_pretrain_llama", last=True, protocol="petrel"),
+    evaluators=[evaluator]
 )
 
 trainer.train()
