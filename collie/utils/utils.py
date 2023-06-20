@@ -466,6 +466,8 @@ def is_static_method(func):
     return False
 
 initization_mapping = {
+    """ 模型参数常用初始化方法
+    """
     "normal": torch.nn.init.normal_,
     "uniform": torch.nn.init.uniform_,
     "xavier_normal": torch.nn.init.xavier_normal_,
