@@ -7,14 +7,17 @@ import copy
 import json
 import pandas as pd
 import torch
+from torch import distributed as dst
 from transformers import LlamaTokenizer, GenerationConfig
 from fastNLP import cache_results
+from rich.progress import track
 
 from collie.metrics import RougeMetric
 from collie.controller import Trainer
+from collie.utils import env
 from collie import CollieConfig, LlamaForCausalLM, DashProvider, LossMonitor, TGSMonitor, MemoryMonitor, LRMonitor, CollieDatasetForTraining, CollieDatasetForGeneration, EvaluatorForGeneration
 
-@cache_results("data.pkl")
+# @cache_results("data.pkl")
 def load_data(path_dict):
     data_bundle = {}
     for name, path in path_dict.items():
@@ -22,11 +25,11 @@ def load_data(path_dict):
             data_df = pd.DataFrame([json.loads(l) for l in f.readlines()], columns=['text', 'summary'])
         dataset = []
         if 'train' in name:
-            for _, row in data_df.iterrows():
-                dataset.append({ "input": f"Text: {' '.join(row['text'].split()[:500])} \nSummary: {row['summary']}","output": {row['summary']}})
+            for _, row in track(data_df.iterrows(), description=name, total=len(data_df), disable=env.rank != 0):
+                dataset.append({ "input": f"Text: {' '.join(row['text'].split()[:500])} \nSummary: {row['summary']}","output": f"{row['summary']}"})
         else:
-            for _, row in data_df.iterrows():
-                dataset.append({ "text": f"Text: {' '.join(row['text'].split()[:500])} \nSummary: ","target": {row['summary']}})
+            for _, row in track(data_df.iterrows(), description=name, total=len(data_df), disable=env.rank != 0):
+                dataset.append({ "text": f"Text: {' '.join(row['text'].split()[:500])} \nSummary: ","target": f"{row['summary']}"})
         data_bundle[name] = dataset
     return data_bundle
 
@@ -69,7 +72,7 @@ tokenizer = LlamaTokenizer.from_pretrained(args.model_path, add_eos_token=False)
 
 data_bundle = load_data(path_dict)
 
-traine_dataset = CollieDatasetForTraining(data_bundle['train'],
+traine_dataset = CollieDatasetForTraining(data_bundle['train'][:10],
                                           tokenizer=tokenizer)
 eval_dataset = CollieDatasetForGeneration(data_bundle['dev'],
                                                tokenizer=tokenizer)
