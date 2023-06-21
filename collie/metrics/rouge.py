@@ -48,7 +48,7 @@ def _get_ngrams(n, text):
 
 def _split_into_words(sentences, split_fn: Callable):
     """Splits multiple sentences into words and flattens the result"""
-    return list(itertools.chain(*[split_fn(_) for _ in sentences]))
+    return list(itertools.chain(*[split_fn(_) for _ in sentences if len(_) > 0]))
 
 def _get_word_ngrams(n, sentences, split_fn: Callable):
     """Calculates word n-grams for multiple sentences.
@@ -74,7 +74,7 @@ def ngrams(sequence, n):
     """
     return Counter([tuple(sequence[i : i + n]) for i in range(len(sequence) - n + 1)])
 
-def rouge_n(evaluated_sentences: List, reference_sentences: List, split_fn: Callable=None, n: int=2, raw_results: bool=False):
+def rouge_n(evaluated_sentences: List, reference_sentences: List, split_fn: Callable=None, n: int=2):
     """
     Computes ROUGE-N of two text collections of sentences.
     Sourece: http://research.microsoft.com/en-us/um/people/cyl/download/
@@ -105,15 +105,7 @@ def rouge_n(evaluated_sentences: List, reference_sentences: List, split_fn: Call
     # Gets the overlapping ngrams between evaluated and reference
     overlapping_ngrams = evaluated_ngrams.intersection(reference_ngrams)
     overlapping_count = len(overlapping_ngrams)
-    if raw_results:
-        o = {
-            "hyp": evaluated_count,
-            "ref": reference_count,
-            "overlap": overlapping_count
-        }
-        return o
-    else:
-        return f_r_p_rouge_n(
+    return f_r_p_rouge_n(
             evaluated_count, reference_count, overlapping_count)
 
 def f_r_p_rouge_n(evaluated_count, reference_count, overlapping_count):
@@ -230,7 +222,7 @@ def _union_lcs(evaluated_sentences, reference_sentence, prev_union=None, split_f
     return new_lcs_count, lcs_union
 
 def rouge_l_summary_level(
-        evaluated_sentences: List, reference_sentences: List, split_fn: Callable=None, raw_results=False, **_):
+        evaluated_sentences: List, reference_sentences: List, split_fn: Callable=None, **_):
     """
     Computes ROUGE-L (summary level) of two text collections of sentences.
     http://research.microsoft.com/en-us/um/people/cyl/download/papers/rouge-working-note-v1.3.1.pdf
@@ -277,7 +269,7 @@ def rouge_l_summary_level(
     for ref_s in reference_sentences:
         lcs_count, union = _union_lcs(evaluated_sentences,
                                       ref_s,
-                                      prev_union=union)
+                                      prev_union=union, split_fn=split_fn)
         union_lcs_sum_across_all_references += lcs_count
 
     llcs = union_lcs_sum_across_all_references
@@ -286,33 +278,25 @@ def rouge_l_summary_level(
 
     f_lcs = 2.0 * ((p_lcs * r_lcs) / (p_lcs + r_lcs + 1e-8))
 
-    if raw_results:
-        o = {
-            "hyp": n,
-            "ref": m,
-            "overlap": llcs
-        }
-        return o
-    else:
-        return {"f": f_lcs, "p": p_lcs, "r": r_lcs}
+    return {"f": f_lcs, "p": p_lcs, "r": r_lcs}
 
 
 class RougeMetric(BaseMetric):
     
     DEFAULT_METRICS = ["rouge-1", "rouge-2", "rouge-l"]
     AVAILABLE_METRICS = {
-        "rouge-1": lambda hyp, ref, **k: rouge_n(hyp, ref, 1, **k),
-        "rouge-2": lambda hyp, ref, **k: rouge_n(hyp, ref, 2, **k),
-        "rouge-3": lambda hyp, ref, **k: rouge_n(hyp, ref, 3, **k),
-        "rouge-4": lambda hyp, ref, **k: rouge_n(hyp, ref, 4, **k),
-        "rouge-5": lambda hyp, ref, **k: rouge_n(hyp, ref, 5, **k),
+        "rouge-1": lambda hyp, ref, **k: rouge_n(evaluated_sentences=hyp, reference_sentences=ref, n=1, **k),
+        "rouge-2": lambda hyp, ref, **k: rouge_n(evaluated_sentences=hyp, reference_sentences=ref, n=2, **k),
+        "rouge-3": lambda hyp, ref, **k: rouge_n(evaluated_sentences=hyp, reference_sentences=ref, n=3, **k),
+        "rouge-4": lambda hyp, ref, **k: rouge_n(evaluated_sentences=hyp, reference_sentences=ref, n=4, **k),
+        "rouge-5": lambda hyp, ref, **k: rouge_n(evaluated_sentences=hyp, reference_sentences=ref, n=5, **k),
         "rouge-l": lambda hyp, ref, **k:
-            rouge_l_summary_level(hyp, ref, **k),
+            rouge_l_summary_level(evaluated_sentences=hyp, reference_sentences=ref, **k),
     }
     DEFAULT_STATS = ["r", "p", "f"]
     AVAILABLE_STATS = ["r", "p", "f"]
     
-    def __init__(self, metrics: List=None, stats=None, split_fn: Callable = lambda x: x.split(" "), gather_result: bool = False) -> None:
+    def __init__(self, metrics: List=None, stats=None, split_fn: Callable = lambda x: x.split(), gather_result: bool = True) -> None:
         super().__init__(gather_result)
         # 检查用户传进来的 metrics 参数是否正确
         if metrics is not None:
@@ -340,20 +324,19 @@ class RougeMetric(BaseMetric):
     
     def update(self, result: Dict):
         assert "pred" in result.keys() and "target" in result.keys(), "result must contain pred and target"
-        pred = [self.split_fn(x) for x in result["pred"]]
-        target = [self.split_fn(y) for y in result["target"]]
-        for hyp, ref in zip(pred, target):
+        for hyp, ref in zip(result["pred"], result["target"]):
             # 按照 . 将句子划分， 用于摘要
             hyp = [" ".join(_.split()) for _ in hyp.split(".") if len(_) > 0]
             ref = [" ".join(_.split()) for _ in ref.split(".") if len(_) > 0]
             for m in self.metrics:
                 fn = RougeMetric.AVAILABLE_METRICS[m]
-                sc = fn(hyp=hyp, ref=ref)
+                sc = fn(hyp=hyp, ref=ref, split_fn=self.split_fn)
                 self.scores[m] = {s: self.scores[m][s] + sc[s] for s in self.stats}
         self.total += 1
     
     def reset(self):
         self.scores = {m: {s: 0 for s in self.stats} for m in self.metrics}
+        self.total = 0
     
     def get_metric(self) -> Optional[Dict]:
         avg_scores = {

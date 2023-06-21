@@ -3,8 +3,9 @@ sys.path.append("../..")
 import torch
 from datasets import load_dataset
 from transformers import LlamaTokenizer, GenerationConfig
-from collie import Trainer, PerplexityEvaluator, LlamaForCausalLM, CollieConfig, PPLMetric, AccuracyMetric, DecodeMetric, CollieDatasetForTraining, CollieDatasetForGeneration, \
-    LossMonitor, TGSMonitor, MemoryMonitor, EvalMonitor, GradioProvider, Evaluator, LRMonitor, BleuMetric, DashProvider
+from collie import Trainer, EvaluatorForPerplexity, LlamaForCausalLM, CollieConfig, PPLMetric, AccuracyMetric, DecodeMetric, CollieDatasetForTraining, CollieDatasetForGeneration, \
+    LossMonitor, TGSMonitor, MemoryMonitor, EvalMonitor, GradioProvider, EvaluatorForGeneration, LRMonitor, BleuMetric, DashProvider
+from collie.metrics.rouge import RougeMetric
 config = CollieConfig.from_pretrained("decapoda-research/llama-7b-hf")
 config.pp_size = 8
 config.train_micro_batch_size = 1
@@ -58,7 +59,7 @@ eval_dataset_ppl = CollieDatasetForTraining(eval_dataset_ppl,
 eval_dataset_bleu = CollieDatasetForGeneration(eval_dataset_bleu,
                                                tokenizer=tokenizer)
 # Prepare Evaluator
-evaluator_ppl = PerplexityEvaluator(
+evaluator_ppl = EvaluatorForPerplexity(
     model=model,
     config=config,
     dataset=eval_dataset_ppl,
@@ -69,7 +70,7 @@ evaluator_ppl = PerplexityEvaluator(
         "ppl": PPLMetric(gather_result=True)
     },
 )
-evaluator_bleu = Evaluator(
+evaluator_bleu = EvaluatorForGeneration(
     model=model,
     config=config,
     dataset=eval_dataset_bleu,
@@ -77,14 +78,16 @@ evaluator_bleu = Evaluator(
         EvalMonitor(config)
     ],
     metrics={
-        "bleu": BleuMetric(gather_result=True, ngram=2),
-        "decode": DecodeMetric()
+        # "bleu": BleuMetric(gather_result=True, ngram=1),
+        "decode": DecodeMetric(),
+        "rouge": RougeMetric()
     },
     generation_config=GenerationConfig(
         eos_token_id=tokenizer.eos_token_id,
         pad_token_id=tokenizer.pad_token_id,
         max_new_tokens=100,
-    )
+    ),
+    skip_special_tokens=True
 )
 # Prepare Trainer
 trainer = Trainer(
