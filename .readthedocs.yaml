@@ -16,9 +16,9 @@ build:
     # golang: "1.19"
   apt_packages:
     - pandoc
-  commands:
-    - pip install -r requirements.txt
-    - sphinx-build -M html "source" "$READTHEDOCS_OUTPUT"
+  jobs:
+    pre_build:
+      - pwd
 
 # Build documentation in the "docs/" directory with Sphinx
 sphinx:
