@@ -14,12 +14,8 @@
 import os
 import sys
 
-# sys.path.insert(0, os.path.abspath('../../'))
-
-sys.path[0] = os.path.abspath('../../')
-
-print(sys.path)
-print(os.path.abspath('.'))
+sys.path.insert(0, os.path.abspath('../../'))
+sys.path.insert(0, os.path.abspath('..'))
 
 import pytorch_sphinx_theme
 
