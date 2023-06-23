@@ -1,17 +1,3 @@
-# Copyright 2022 Garena Online Private Limited
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 import math
 from typing import List
 
@@ -19,6 +5,9 @@ import torch
 from torch import Tensor
 from torch.optim.optimizer import Optimizer
 
+__all__ = [
+    "Adan"
+]
 
 class MultiTensorApply(object):
     available = False
@@ -37,31 +26,6 @@ class MultiTensorApply(object):
 
 
 class Adan(Optimizer):
-    """
-    Implements a pytorch variant of Adan
-    Adan was proposed in
-    Adan: Adaptive Nesterov Momentum Algorithm for
-        Faster Optimizing Deep Models[J].arXiv preprint arXiv:2208.06677, 2022.
-    https://arxiv.org/abs/2208.06677
-    Arguments:
-        params (iterable): iterable of parameters to optimize or
-            dicts defining parameter groups.
-        lr (float, optional): learning rate. (default: 1e-3)
-        betas (Tuple[float, float, flot], optional): coefficients used for
-            first- and second-order moments. (default: (0.98, 0.92, 0.99))
-        eps (float, optional): term added to the denominator to improve
-            numerical stability. (default: 1e-8)
-        weight_decay (float, optional): decoupled weight decay
-            (L2 penalty) (default: 0)
-        max_grad_norm (float, optional): value used to clip
-            global grad norm (default: 0.0 no clip)
-        no_prox (bool): how to perform the decoupled weight decay
-            (default: False)
-        foreach (bool): if True would use torch._foreach implementation.
-            It's faster but uses slightly more memory. (default: True)
-        fused (bool, optional): whether fused implementation is used.
-            (default: False)
-    """
     def __init__(self,
                  params,
                  lr=1e-3,

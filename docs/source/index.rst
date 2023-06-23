@@ -20,6 +20,7 @@ CoLLiE: Collaborative Tuning of Large Language Models in an Efficient Way
    collie.controller <api/controller>
    collie.callbacks <api/callbacks>
    collie.optim <api/optim>
+   collie.driver <api/driver>
    collie.metrics <api/metrics>
    collie.data <api/data>
    collie.utils <api/utils>

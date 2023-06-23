@@ -162,6 +162,7 @@ class BleuMetric(BaseMetric):
     ``result`` 中需要包含 ``pred`` 和 ``target`` 字段，例如:
 
     .. code-block:: python
+    
         result = {
             "pred": ["the the the the the the the", "cat cat cat cat cat cat cat"],
             "target": [["the cat is on the mat", "there is a cat on the mat"], 
