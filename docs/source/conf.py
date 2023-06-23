@@ -16,7 +16,7 @@ import sys
 
 sys.path.insert(0, os.path.abspath('../../'))
 from sphinx.ext.autosummary import import_by_name
-print(import_by_name("collie.controller"))
+print(os.system("python -c "))
 
 import pytorch_sphinx_theme
 
