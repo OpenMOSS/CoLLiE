@@ -125,11 +125,11 @@ def setup_distribution(config) -> None:
     可以支持多机情况下的分布式训练：
 
     1. launch from torchrun
-       eg: torchrun --standalone --nproc_per_node=8 train.py
+       eg: ``torchrun --standalone --nproc_per_node=8 train.py``
     2. launch from slurm
-       eg. srun --partition=xxx --gres=gpu:8 --ntasks=8 --ntasks-per-node=8 --job-name=xxx --kill-on-bad-exit=1 train.py
+       eg. ``srun --partition=xxx --gres=gpu:8 --ntasks=8 --ntasks-per-node=8 --job-name=xxx --kill-on-bad-exit=1 train.py``
 
-    :param config: :class:`.CollieConfig`
+    :param config: :class:`.CollieConfig` 有关分布式并行的策略配置
     """
     if torch.distributed.is_initialized():
         return
