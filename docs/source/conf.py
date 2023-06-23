@@ -15,7 +15,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.abspath('../../'))
-print(sys.path)
+from sphinx.ext.autosummary import import_by_name
+import_by_name("collie.callbacks")
 
 import pytorch_sphinx_theme
 
