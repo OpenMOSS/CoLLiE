@@ -64,7 +64,7 @@ class _ShardContainer(list):
 
 class CollieDatasetForTraining(Dataset):
     """ **CoLLie** 中的基本数据格式，可用于预训练、微调任务。
-    需提供的数据格式形似：
+        需提供的数据格式形似：
 
         .. code-block::
 

@@ -61,6 +61,7 @@ Data Provider
 
    BaseProvider
    GradioProvider
+   DashProvider
 
 Monitor
 ----------------

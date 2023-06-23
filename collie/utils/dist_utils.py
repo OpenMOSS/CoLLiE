@@ -41,14 +41,14 @@ DTYPE_ENUM = [
 ]
 
 def zero3_load_state_dict(model: torch.nn.Module, state_dict: dict):
-    """ 用于加载 ZeRO stage 3 的模型参数。
+    """用于加载 ZeRO stage 3 的模型参数。
     """
     for name, param in model.named_parameters():
         with deepspeed.zero.GatheredParameters(param, modifier_rank=0):
             param.data = state_dict[name].data.to(param.device).to(param.dtype)
 
 def is_zero3_enabled(config: CollieConfig):
-    """ 判断是否启用了 ZeRO stage 3。
+    """判断是否启用了 ZeRO stage 3。
     """
     if isinstance(config.ds_config, str) and os.path.exists(config.ds_config):
         config.ds_config = load_config(config.ds_config)
@@ -66,7 +66,7 @@ def setup_ds_engine(
         optimizer: Optional[Union[torch.optim.Optimizer, DeepSpeedOptimizerCallable]] = None,
         lr_scheduler: Optional[Union[torch.optim.lr_scheduler._LRScheduler, DeepSpeedSchedulerCallable]] = None
 ):
-    """ 启动 DeepSpeed 引擎。
+    """启动 DeepSpeed 引擎。
 
     :param config: **CoLLie** 的配置
     :param model: 模型
@@ -94,7 +94,7 @@ def setup_ds_engine(
     return engine, optimizer, _, lr_scheduler
 
 def _decompose_slurm_nodes(s):
-    # 使用正则表达式找到所有符合模式的子串
+    #使用正则表达式找到所有符合模式的子串
     sub_strings = re.findall(r'[\w-]+\-\[[^\]]*\]|[\w-]+\-\d+', s)
 
     results = []
@@ -119,8 +119,7 @@ def _decompose_slurm_nodes(s):
 
 
 def setup_distribution(config) -> None:
-    """
-    设置分布式环境。
+    """设置分布式环境。
 
     可以支持多机情况下的分布式训练：
 
@@ -200,8 +199,7 @@ def setup_distribution(config) -> None:
 
 
 def set_seed(config):
-    """
-    设置随机数种子。
+    """设置随机数种子。
     """
     tensor_parallel.model_parallel_cuda_manual_seed(config.seed)
     set_random_seed(config.seed)
@@ -269,8 +267,7 @@ def patch_megatron():
 
 def broadcast_tensor(tensor, dtype=None, src=0, shape=None,
                      ndim=None, group=None):
-    """
-    从 ``src`` 广播 ``tensor``。
+    """从 ``src`` 广播 ``tensor``。
 
     该函数支持广播 ``tensor`` 的维度和类型。如果 ``ndim`` 和 ``shape`` 为 ``None``
     则会首先广播 ``tensor`` 的维度。
@@ -321,8 +318,7 @@ def broadcast_tensor(tensor, dtype=None, src=0, shape=None,
     return tensor
 
 class Env:
-    """
-    **CoLLiE** 的环境变量，可以从中获取各种并行的 world_size 和 rank。
+    """**CoLLiE** 的环境变量，可以从中获取各种并行的 world_size 和 rank。
 
     调用时直接导入已经实例化好的对象 ``env`` 即可。
 
