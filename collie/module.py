@@ -344,11 +344,11 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
             inputs["position_ids"] = position_ids
         batch = (inputs, {"labels": inputs["input_ids"]})
         outputs = self.engine.generate_batch(batch, use_cache)
+        hidden_states = self._get_hidden_states()
         if self.is_contrastive_search:
             # contrastive search 时每个 stage 拿到的 last_hidden_states
             # 不一样，所以广播出去
             src = self.engine.grid.stage_to_global(self.engine.num_stages - 1)
-            hidden_states = self._get_hidden_states()
             if hidden_states is not None:
                 last_hidden_states = hidden_states[-1]
             else:
