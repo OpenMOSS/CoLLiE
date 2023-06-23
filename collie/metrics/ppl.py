@@ -3,7 +3,7 @@ from .base import BaseMetric
 
 class PPLMetric(BaseMetric):
     """
-    计算困惑度 Perplexity 的 Metric。
+    计算困惑度 `Perplexity <https://en.wikipedia.org/wiki/Perplexity>`_ 的 Metric。
     """
     def __init__(self, gather_result: bool = False) -> None:
         super().__init__(gather_result)

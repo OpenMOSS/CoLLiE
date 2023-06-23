@@ -194,7 +194,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         if config is None:
             config = model_path_or_name
         if isinstance(config, str):
-            # prevent duplicate `from_pretrained`` in load_parallel
+            # prevent duplicate ``from_pretrained`` in load_parallel
             config = CollieConfig.from_pretrained(config, **kwargs)
         model = cls.from_config(config)
         state_dict = {}

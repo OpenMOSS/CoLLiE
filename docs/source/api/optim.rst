@@ -1,7 +1,7 @@
 .. role:: hidden
    :class: hidden-section
 
-CoLLiE.optim
+CoLLiE.metrics
 ===================================
 
 .. contents:: CoLLiE.optim
@@ -11,7 +11,7 @@ CoLLiE.optim
 
 .. currentmodule:: collie.optim
 
-Optimizers
+Optimizer
 ----------------
 
 .. autosummary::

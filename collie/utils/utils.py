@@ -34,8 +34,7 @@ def find_tensors():
 
         
 class progress:
-    """
-    包装了 ``rich`` 进度条的类。
+    """包装了 ``rich`` 进度条的类。
 
     .. code-block::
 
@@ -392,7 +391,8 @@ def _check_valid_parameters_number(fn,
         raise e
 
 def dict_as_params(input_keys: Union[str, Sequence[str]], output_keys: Union[str, Sequence[str]]):
-    """
+    """ 使用字典作为参数输入的辅助函数
+    
     从输入的字典中顺次取出 ``input_keys`` 作为模型的输入，并且将模型的输出以
     ``output_keys`` 为 key 放入字典中作为输出。在这一过程中多余的 key 并不会被丢
     弃。

@@ -105,7 +105,7 @@ html_theme_path = [pytorch_sphinx_theme.get_html_theme_path()]
 # documentation.
 #
 html_theme_options = {
-    'logo_url': '#',
+    'logo_url': '../assets/images/collie_icon.svg',
     'menu': [
         # A link
         {

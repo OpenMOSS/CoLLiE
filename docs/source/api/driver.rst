@@ -1,17 +1,17 @@
 .. role:: hidden
    :class: hidden-section
 
-CoLLiE.metrics
+CoLLiE.driver
 ===================================
 
-.. contents:: CoLLiE.metrics
+.. contents:: CoLLiE.driver
    :depth: 2
    :local:
    :backlinks: top
 
-.. currentmodule:: collie.metrics
+.. currentmodule:: collie.driver
 
-Metrics
+Driver
 ----------------
 
 .. autosummary::
@@ -19,9 +19,6 @@ Metrics
    :nosignatures:
    :template: classtemplate.rst
 
-   BaseMetric
-   AccuracyMetric
-   DecodeMetric
-   PPLMetric
-   BleuMetric
-   ClassifyFPreRecMetric
+   IODriver
+   FileIODriver
+   PetrelIODriver

@@ -56,7 +56,7 @@ class Trainer(TrainerEventTrigger):
     :param train_fn: 用于训练的函数，默认使用 :meth:`~collie.controller.Trainer.train_fn`
     :param eval_fn: 用于验证的函数
 
-        ..note::
+        .. note::
 
             **CoLLie** 未提供默认的验证策略，若未传入 ``eval_fn``，但传入了 ``eval_dataset``，则会抛出异常。若不需要自定义验证循环，
             可以考虑使用 **CoLLie** 定义的多种验证器，例如 :class:`~collie.controller.evaluator.EvaluatorForPerplexity`、

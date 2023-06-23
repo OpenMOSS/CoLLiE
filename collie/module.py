@@ -38,9 +38,9 @@ from collie.log import logger
 from collie.utils import env, broadcast_tensor
 
 class ColumnParallelLinearWithoutBias(ColumnParallelLinear):
-    """
-    重写 ``megatron`` 提供的列并行全连接层以去掉结果中的 ``bias``。在 ``tp_size``
-    为 1 时可以返回普通的全连接层（支持 `peft` 中的 `lora` 方法替换全连接层）
+    """重写 ``megatron`` 提供的列并行全连接层以去掉结果中的 ``bias``。
+    
+    在 ``tp_size`` 为 1 时可以返回普通的全连接层（支持 `peft` 中的 `lora` 方法替换全连接层）
     """
     def forward(self, input_):
         return super().forward(input_)[0]
@@ -58,8 +58,7 @@ class ColumnParallelLinearWithoutBias(ColumnParallelLinear):
         return super().__new__(cls)
     
 class LinearWithHiddenStates(nn.Linear):
-    """
-    重写 ``torch.nn.Linear`` 以支持在 ``eval`` 时保存隐藏状态（用于流水线并行中）
+    """重写 ``torch.nn.Linear`` 以支持在 ``eval`` 时保存隐藏状态（用于流水线并行中）
     """
     def __init__(self, in_features: int, out_features: int, bias: bool = True, device=None, dtype=None) -> None:
         super().__init__(in_features, out_features, bias, device, dtype)
@@ -122,8 +121,7 @@ class RowParallelLinearWithoutBias(RowParallelLinear):
         return super().__new__(cls)
 
 class GPTLMLoss(torch.nn.Module):
-    """
-    最基本的 GPT 语言模型的损失函数。
+    """最基本的 GPT 语言模型的损失函数。
 
     :param ignore_index: 忽略的标签的 ``index``，默认为 **-100**
     """

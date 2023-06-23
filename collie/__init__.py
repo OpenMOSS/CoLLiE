@@ -23,6 +23,7 @@ from .config import CollieConfig
 from .metrics import BaseMetric, DecodeMetric, AccuracyMetric, PPLMetric, BleuMetric
 from .data import CollieDatasetForClassification, CollieBatchSampler, \
     CollieDataLoader, CollieDatasetForTraining, CollieDatasetForGeneration
+from .optim import Lomo, Lion, SophiaG, Adan
 
 __all__ = [
     # controller
@@ -95,5 +96,11 @@ __all__ = [
     'CollieBatchSampler', 
     'CollieDataLoader', 
     'CollieDatasetForTraining',
-    'CollieDatasetForGeneration'
+    'CollieDatasetForGeneration',
+    
+    # optim
+    "Lomo",
+    "Lion",
+    "SophiaG",
+    "Adan"
 ]
