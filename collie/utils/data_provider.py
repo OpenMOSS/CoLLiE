@@ -116,8 +116,9 @@ class DashProvider(BaseProvider):
         import diskcache
         # 文件上传
         import dash_uploader as du
-        
+        import logging
 
+        logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
         CACHE_PATH = "./.cache"
         if os.path.exists(CACHE_PATH):

@@ -138,6 +138,7 @@ class ColliePipelineEngine(PipelineEngine):
                 # torch.cat 会导致显存大幅度增长，为了防止 OOM 迁移到 cpu 上
                 _logits[key] = [l[key].cpu() for l in logits]
             logits.clear()
+            torch.cuda.empty_cache()
             # 广播数目
             count_tensor = torch.LongTensor(data=[len(_logits)]).to(self.device)
             broadcast_tensor(count_tensor, dtype=torch.long, src=src_rank,
@@ -155,7 +156,7 @@ class ColliePipelineEngine(PipelineEngine):
                 broadcast_tensor(logits[key], src=src_rank, group=env.pp_group)
             _logits.clear()
             # 考虑到速度暂时不清空
-            # torch.cuda.empty_cache()
+            torch.cuda.empty_cache()
         else:
             logits = {}
             count_tensor = broadcast_tensor(None, dtype=torch.long,
