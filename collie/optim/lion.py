@@ -6,7 +6,16 @@ __all__ = [
 ]
 
 class Lion(Optimizer):
-  r"""Implements Lion algorithm."""
+  """
+  一个优化器类Lion的官方实现。
+  论文地址：https://arxiv.org/abs/2302.06675
+  仓库地址：https://github.com/google/automl/blob/master/lion/lion_pytorch.py
+  
+  :param params: 待优化的参数
+  :param lr: 学习率，默认值为1e-4，通常低于Adam使用的学习率
+  :param betas: 用于计算运行时梯度均值和其平方的系数
+  :param weight_decay：权重衰减系数，默认值为0.0
+  """
 
   def __init__(self, params, lr=1e-4, betas=(0.9, 0.99), weight_decay=0.0):
 
