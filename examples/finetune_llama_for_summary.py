@@ -42,7 +42,8 @@ parser.add_argument("--model_path", default="decapoda-research/llama-7b-hf")
 args = parser.parse_args()
 
 config = CollieConfig.from_pretrained("decapoda-research/llama-7b-hf")
-config.pp_size = 8
+# config.pp_size = 8
+config.tp_size = 8
 config.train_micro_batch_size = 1
 config.eval_batch_size = 1
 config.gradient_accumulation_steps = 128
