@@ -64,7 +64,7 @@ class Evaluator:
 
     def __init__(self, model, dataset: torch.utils.data.Dataset, tokenizer: Optional[PreTrainedTokenizerBase] = None, metrics: Optional[Dict] = None, eval_fn: Optional[Callable]=None,
                  config: Optional[CollieConfig] = None, collate_fn: Optional[Callable] = ColliePadder(padding_left=True), data_provider: Optional[BaseProvider] = None,
-                 monitors: Sequence[BaseMonitor] = [], skip_special_tokens: bool = True):
+                 monitors: Sequence[BaseMonitor] = []):
         self.engine = None
         self.model = model
         self.tokenizer = tokenizer
@@ -78,7 +78,6 @@ class Evaluator:
         self.data_provider = data_provider
         self.monitor = _MultiMonitors(monitors)
         self.global_batch_idx = 0
-        self.skip_special_tokens = skip_special_tokens
 
     def init_engine(self):
         """
@@ -198,9 +197,11 @@ class Evaluator:
 class EvaluatorForGeneration(Evaluator):
     def __init__(self, 
                  generation_config: GenerationConfig = GenerationConfig(),
+                 skip_special_tokens: bool = True,
                  *args,
                  **kwargs):
         self.generation_config = generation_config
+        self.skip_special_tokens = skip_special_tokens
         super().__init__(*args, **kwargs)
         
     @staticmethod

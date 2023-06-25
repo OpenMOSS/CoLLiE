@@ -6,6 +6,7 @@ from .accuracy import AccuracyMetric
 from .ppl import PPLMetric
 from .bleu import BleuMetric
 from .rouge import RougeMetric
+from.classify_f1_pre_rec_metric import ClassifyFPreRecMetric
 
 __all__ = [
     'BaseMetric',
@@ -14,4 +15,5 @@ __all__ = [
     'PPLMetric',
     'BleuMetric',
     'RougeMetric'
+    'ClassifyFPreRecMetric'
 ]

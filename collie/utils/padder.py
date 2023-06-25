@@ -10,9 +10,9 @@ __all__ = [
 ]
 
 class ColliePadder:
-    """ **CoLLie** 中的通用 ``collate_fn`` 构造器
+    """**CoLLie** 中的通用 ``collate_fn`` 构造器
 
-    :param padding_token: 用于填充模型输入数据 (input_ids) 的 token
+    :param padding_token: 用于填充模型输入数据 (input_ids) 的 token，为一个 ``Dict`` 决定不同的字段使用不同 id
     :param labels_padding_token: 用于填充模型标签数据 (labels) 的 token
     :param padding_left: 是否在左侧填充
     """

@@ -35,12 +35,12 @@ from transformers.modeling_utils import PretrainedConfig
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from collie.log import logger
-from collie.utils import env
+from collie.utils import env, broadcast_tensor
 
 class ColumnParallelLinearWithoutBias(ColumnParallelLinear):
-    """
-    重写 ``megatron`` 提供的列并行全连接层以去掉结果中的 ``bias``。在 ``tp_size``
-    为 1 时可以返回普通的全连接层（支持 `peft` 中的 `lora` 方法替换全连接层）
+    """重写 ``megatron`` 提供的列并行全连接层以去掉结果中的 ``bias``。
+    
+    在 ``tp_size`` 为 1 时可以返回普通的全连接层（支持 `peft` 中的 `lora` 方法替换全连接层）
     """
     def forward(self, input_):
         return super().forward(input_)[0]
@@ -58,8 +58,7 @@ class ColumnParallelLinearWithoutBias(ColumnParallelLinear):
         return super().__new__(cls)
     
 class LinearWithHiddenStates(nn.Linear):
-    """
-    重写 ``torch.nn.Linear`` 以支持在 ``eval`` 时保存隐藏状态（用于流水线并行中）
+    """重写 ``torch.nn.Linear`` 以支持在 ``eval`` 时保存隐藏状态（用于流水线并行中）
     """
     def __init__(self, in_features: int, out_features: int, bias: bool = True, device=None, dtype=None) -> None:
         super().__init__(in_features, out_features, bias, device, dtype)
@@ -122,8 +121,7 @@ class RowParallelLinearWithoutBias(RowParallelLinear):
         return super().__new__(cls)
 
 class GPTLMLoss(torch.nn.Module):
-    """
-    最基本的 GPT 语言模型的损失函数。
+    """最基本的 GPT 语言模型的损失函数。
 
     :param ignore_index: 忽略的标签的 ``index``，默认为 **-100**
     """
@@ -303,8 +301,8 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
         self.engine = engine
         self.model_config = self.engine.module.config
         self.layers = None
-        self.communicate_buffer_shape = None
         self._find_layers()
+        self.is_contrastive_search = False
 
     def generate(self, *args, **kwargs):
         """开始迭代的生成过程
@@ -313,24 +311,57 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
         res = super().generate(*args, **kwargs)
         self._clean_past_key_values()
         self._clean_hidden_states()
+        # contrastive learning
+        if self.is_contrastive_search:
+            src = self.engine.grid.stage_to_global(self.engine.num_stages - 1)
+            res = broadcast_tensor(res, dtype=res.dtype, src=src,
+                                   ndim=len(res.shape), group=env.pp_group)
+            self.is_contrastive_search = False
         return res
+    
+    def contrastive_search(self, *args, **kwargs):
+        self.is_contrastive_search = True
+        return super().contrastive_search(*args, **kwargs)
         
-    def forward(self, input_ids: torch.Tensor, attention_mask: Optional[torch.Tensor] = None, **kwargs) -> torch.Tensor:
+    def forward(self,
+                input_ids: torch.Tensor,
+                attention_mask: Optional[torch.Tensor] = None,
+                position_ids: Optional[torch.Tensor] = None,
+                use_cache: bool = True, **kwargs) -> torch.Tensor:
         """ 进行一次流水线模型的前向传播
         """
-        past_key_values=self._get_past_key_values()
+        if use_cache:
+            logger.rank_zero_warning(
+                "In Pipeline Parallelism, `use_cache=True` will result in "
+                "slowing down the generate process.", once=True
+            )
         inputs = {"input_ids": input_ids}
         if attention_mask is not None:
             inputs["attention_mask"] = attention_mask
-        if past_key_values is not None:
-            inputs["input_ids"] = inputs["input_ids"][:, -1:]
+        if position_ids is not None:
+            inputs["position_ids"] = position_ids
         batch = (inputs, {"labels": inputs["input_ids"]})
-        outputs = self.engine.generate_batch(batch)
+        outputs = self.engine.generate_batch(batch, use_cache)
+        hidden_states = self._get_hidden_states()
+        if self.is_contrastive_search:
+            # contrastive search 时每个 stage 拿到的 last_hidden_states
+            # 不一样，所以广播出去
+            src = self.engine.grid.stage_to_global(self.engine.num_stages - 1)
+            if hidden_states is not None:
+                last_hidden_states = hidden_states[-1]
+            else:
+                # 防止流水线段数过多时某些 stage 没有分到 block
+                hidden_states = []
+                last_hidden_states = None
+            last_hidden_states = broadcast_tensor(
+                last_hidden_states, src=src, group=env.pp_group
+            )
+            hidden_states.append(last_hidden_states)
         return CausalLMOutputWithPast(
             loss=None,
             logits=outputs["logits"],
             past_key_values=self._get_past_key_values(),
-            hidden_states=self._get_hidden_states(),
+            hidden_states=hidden_states,
             attentions=None
         )
     
@@ -340,18 +371,15 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
                                       attention_mask: Optional[torch.Tensor] = None,
                                       use_cache: bool = False,
                                       **kwargs):
-        """ 准备流水线模型的输入
-        """
-        if use_cache:
-            # logger.warning("use_cache is not supported for pipeline generation. Setting use_cache to False")
-            self.generation_config.use_cache = False
-            use_cache = False
         self._set_use_cache(use_cache)
         if past_key_values is None:
             self._clean_past_key_values()
         else:
             self._set_past_key_values(past_key_values)
-        return {"input_ids": input_ids, "attention_mask": attention_mask}
+        return self.engine.module.prepare_inputs(
+            input_ids=input_ids, past_key_values=past_key_values,
+            attention_mask=attention_mask, use_cache=use_cache, **kwargs
+        )
     
     def can_generate(self) -> bool:
         """ 判断当前流水线模型是否可以进行生成
@@ -416,7 +444,7 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
         """ 
         for layer in self.layers:
             if hasattr(layer, attr_name):
-                object.__setattr__(layer, attr_name, use_cache)    
+                object.__setattr__(layer, attr_name, use_cache)
 
 
 class MultiParallelGrid(PipelineParallelGrid):

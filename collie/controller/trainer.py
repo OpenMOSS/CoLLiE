@@ -30,7 +30,7 @@ from collie.module import PipelineGenerationMixin, GPTLMLoss, PipelineModel
 from collie.driver.io import IODriver
 from collie.log import logger
 from collie.utils import progress, env, setup_ds_engine, BaseProvider, _GenerationStreamer, is_zero3_enabled, BaseMonitor, _MultiMonitors, broadcast_tensor, ColliePadder
-from collie.optim import InplaceSGD
+from collie.optim import Lomo
 from collie.models.base import CollieModelForCausalLM
 from .evaluator import Evaluator
 from collie.data import CollieDataLoader
@@ -56,7 +56,7 @@ class Trainer(TrainerEventTrigger):
     :param train_fn: 用于训练的函数，默认使用 :meth:`~collie.controller.Trainer.train_fn`
     :param eval_fn: 用于验证的函数
 
-        ..note::
+        .. note::
 
             **CoLLie** 未提供默认的验证策略，若未传入 ``eval_fn``，但传入了 ``eval_dataset``，则会抛出异常。若不需要自定义验证循环，
             可以考虑使用 **CoLLie** 定义的多种验证器，例如 :class:`~collie.controller.evaluator.EvaluatorForPerplexity`、
@@ -148,12 +148,12 @@ class Trainer(TrainerEventTrigger):
                  metrics: Optional[Dict] = None,
                  evaluators: Optional[List] = None) -> None:
         self.config = config
-        if isinstance(optimizer, InplaceSGD):
+        if isinstance(optimizer, Lomo):
             if config.pp_size > 1:
-                raise ValueError("InplaceSGD is incompatible with pipeline parallelism.")
+                raise ValueError("Lomo is incompatible with pipeline parallelism.")
             if self.config.gradient_accumulation_steps > 1:
                 logger.rank_zero_warning(
-                    f"InplaceSGD is incompatible with gradient accumulation, "
+                    f"Lomo is incompatible with gradient accumulation, "
                     f"set gradient_accumulation_steps from {self.config.gradient_accumulation_steps} to 1."
                 )
                 self.config.ds_config["gradient_accumulation_steps"] = 1
@@ -300,7 +300,7 @@ class Trainer(TrainerEventTrigger):
             if not isinstance(self.loss_fn, torch.nn.Module):
                 del self.model.loss_fn
             self.model.loss_fn = self.loss_fn
-        if isinstance(self.optimizer, InplaceSGD):
+        if isinstance(self.optimizer, Lomo):
             self.engine, _, _, _ = setup_ds_engine(
                 model=self.model,
                 config=self.config,
@@ -431,11 +431,11 @@ class Trainer(TrainerEventTrigger):
 
             outputs = trainer.engine(**inputs)
             loss = trainer.loss_fn(outputs, labels)
-            if not isinstance(trainer.optimizer, InplaceSGD):
+            if not isinstance(trainer.optimizer, Lomo):
                 trainer.engine.backward(loss)
                 trainer.engine.step()
             else:
-                # for inplace_sgd only
+                # for lomo only
                 if trainer.optimizer.clip_grad_norm is not None:
                     trainer.optimizer.grad_norm(loss)
                     if trainer.optimizer.zero_enabled:

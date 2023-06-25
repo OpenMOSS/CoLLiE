@@ -23,3 +23,5 @@ Metrics
    AccuracyMetric
    DecodeMetric
    PPLMetric
+   BleuMetric
+   ClassifyFPreRecMetric

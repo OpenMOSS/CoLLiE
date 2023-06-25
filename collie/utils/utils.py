@@ -34,8 +34,7 @@ def find_tensors():
 
         
 class progress:
-    """
-    包装了 ``rich`` 进度条的类。
+    """包装了 ``rich`` 进度条的类。
 
     .. code-block::
 
@@ -168,6 +167,17 @@ class progress:
             self.bar.update(self.task_id, total=total, completed=completed,
                         advance=advance, description=desc, visible=visible,
                         refresh=refresh, post_desc=post_desc)
+            
+def _split_dict(inputs, micro_batch_size, micro_batch_num):
+    inputs_split = {}
+    for key in list(inputs.keys()):
+        if isinstance(inputs[key], torch.Tensor):
+            inputs_split[key] = torch.split(inputs[key], micro_batch_size)
+        elif isinstance(inputs[key], Sequence):
+            inputs_split[key] = [torch.split(input_, micro_batch_size) for input_ in inputs[key]]
+            inputs_split[key] = list(zip(*inputs_split[key]))
+    inputs_split = [{key: value[i] for key, value in inputs_split.items()} for i in range(micro_batch_num)]
+    return inputs_split
 
 def _split_batch(batch, micro_batch_size, micro_batch_num):
     """
@@ -185,35 +195,22 @@ def _split_batch(batch, micro_batch_size, micro_batch_num):
     inputs = batch[0]
     labels = batch[1]
     # micro_batch_num = inputs.shape[0] // micro_batch_size
-    if isinstance(labels, Sequence):
-        labels_split = [torch.split(label, micro_batch_size) for label in labels]
-        labels_split = list(zip(*labels_split))
-    elif isinstance(labels, torch.Tensor):
+    if isinstance(labels, torch.Tensor):
         labels_split = torch.split(labels, micro_batch_size)
     elif isinstance(labels, dict):
-        labels_split = {}
-        for key in list(labels.keys()):
-            if isinstance(labels[key], torch.Tensor):
-                labels_split[key] = torch.split(labels[key], micro_batch_size)
-            elif isinstance(labels[key], Sequence):
-                labels_split[key] = [torch.split(label, micro_batch_size) for label in labels[key]]
-                labels_split[key] = list(zip(*labels_split[key]))
-        labels_split = [{key: value[i] for key, value in labels_split.items()} for i in range(micro_batch_num)]
+        labels_split = _split_dict(labels, micro_batch_size, micro_batch_num)
+    else:
+        raise NotImplementedError(f"Invalid type of labels: {type(labels)}"
+                                  "Must be Tensor or dict.")
+    assert len(labels_split) == micro_batch_num, len(labels_split)
     if isinstance(inputs, torch.Tensor):
         inputs_split = torch.split(inputs, micro_batch_size)
-        assert len(inputs_split) == micro_batch_num, len(inputs_split)
     elif isinstance(inputs, dict):
-        inputs_split = {}
-        for key in list(inputs.keys()):
-            if isinstance(inputs[key], torch.Tensor):
-                inputs_split[key] = torch.split(inputs[key], micro_batch_size)
-            elif isinstance(inputs[key], Sequence):
-                inputs_split[key] = [torch.split(input_, micro_batch_size) for input_ in inputs[key]]
-                inputs_split[key] = list(zip(*inputs_split[key]))
-        inputs_split = [{key: value[i] for key, value in inputs_split.items()} for i in range(micro_batch_num)]
+        inputs_split = _split_dict(inputs, micro_batch_size, micro_batch_num)
     else:
-        inputs_split = (torch.split(input_, micro_batch_size) for input_ in inputs)
-        inputs_split = list(zip(*inputs_split))
+        raise NotImplementedError(f"Invalid type of inputs: {type(inputs)}. "
+                                  "Must be Tensor or dict.")
+    assert len(inputs_split) == micro_batch_num, len(inputs_split)
     
     batch_split = ()
     for input_split, label_split in zip(inputs_split, labels_split):
@@ -394,7 +391,8 @@ def _check_valid_parameters_number(fn,
         raise e
 
 def dict_as_params(input_keys: Union[str, Sequence[str]], output_keys: Union[str, Sequence[str]]):
-    """
+    """ 使用字典作为参数输入的辅助函数
+    
     从输入的字典中顺次取出 ``input_keys`` 作为模型的输入，并且将模型的输出以
     ``output_keys`` 为 key 放入字典中作为输出。在这一过程中多余的 key 并不会被丢
     弃。
@@ -468,6 +466,8 @@ def is_static_method(func):
     return False
 
 initization_mapping = {
+    """ 模型参数常用初始化方法
+    """
     "normal": torch.nn.init.normal_,
     "uniform": torch.nn.init.uniform_,
     "xavier_normal": torch.nn.init.xavier_normal_,

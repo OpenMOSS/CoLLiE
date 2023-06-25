@@ -3,6 +3,7 @@
 __all__ = [
     'BaseProvider',
     'GradioProvider',
+    'DashProvider',
     '_GenerationStreamer'
 ]
 import os

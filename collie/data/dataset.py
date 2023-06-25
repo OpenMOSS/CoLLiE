@@ -63,7 +63,8 @@ class _ShardContainer(list):
 
 
 class CollieDatasetForTraining(Dataset):
-    """ **CoLLie** 中的基本数据格式，可用于预训练、微调任务。需提供的数据格式形似：
+    """ **CoLLie** 中的基本数据格式，可用于预训练、微调任务。
+        需提供的数据格式形似：
 
         .. code-block::
 
@@ -138,12 +139,12 @@ class CollieDatasetForTraining(Dataset):
                 inputs = self.tokenizer(
                     self.dataset[index]["text"], add_special_tokens=self.add_special_tokens)
                 input_ids = inputs["input_ids"]
-                attention_mask = inputs["attention_mask"]
+                attention_mask = inputs.get("attention_mask", torch.ones_like(torch.tensor(input_ids)).cpu().tolist())
             elif "input" in self.dataset[0].keys() and "output" in self.dataset[0].keys():
                 inputs = self.tokenizer(
                     self.dataset[index]["input"] + self.dataset[index]["output"], add_special_tokens=self.add_special_tokens)
                 input_ids = inputs["input_ids"]
-                attention_mask = inputs["attention_mask"]
+                attention_mask = inputs.get("attention_mask", torch.ones_like(torch.tensor(input_ids)).cpu().tolist())
                 labels_mask = torch.ones_like(torch.tensor(input_ids))
                 context_length = len(self.tokenizer(
                     self.dataset[index]["input"], add_special_tokens=self.add_special_tokens).input_ids)
@@ -233,7 +234,7 @@ class CollieDatasetForGeneration(CollieDatasetForTraining):
             inputs = self.tokenizer(
                 self.dataset[index]["text"], add_special_tokens=self.add_special_tokens)
             input_ids = inputs["input_ids"]
-            attention_mask = inputs["attention_mask"]
+            attention_mask = inputs.get("attention_mask", torch.ones_like(torch.tensor(input_ids)).cpu().tolist())
             if "target" in self.dataset[index].keys():
                 if isinstance(self.dataset[index]["target"], str):
                     target = [self.tokenizer(self.dataset[index]["target"]).input_ids]
@@ -248,8 +249,8 @@ class CollieDatasetForGeneration(CollieDatasetForTraining):
 
 
 class CollieDatasetForClassification(CollieDatasetForTraining):
-    """ **CoLLie** 中的分类任务数据集，须搭配 :class:`~collie.controller.evaluator.EvaluatorForClassfication` 
-        使用。需提供的数据格式形似:
+    """ **CoLLie** 中的分类任务数据集
+    须搭配 :class:`~collie.controller.evaluator.EvaluatorForClassfication` 使用。需提供的数据格式形似:
 
         .. code-block::
 
@@ -272,10 +273,14 @@ class CollieDatasetForClassification(CollieDatasetForTraining):
             target = self.dataset[index]["target"]
         else:
             if "input" in self.dataset[0].keys() and "output" in self.dataset[0].keys() and "target" in self.dataset[0].keys():
-                input_ids = tuple([self.tokenizer(self.dataset[index]["input"] + output,
-                                  add_special_tokens=self.add_special_tokens).input_ids for output in self.dataset[index]["output"]])
-                attention_mask = tuple([self.tokenizer(self.dataset[index]["input"] + output,
-                                       add_special_tokens=self.add_special_tokens).attention_mask for output in self.dataset[index]["output"]])
+                input_ids = []
+                attention_mask = []
+                for output in self.dataset[index]["output"]:
+                    inputs = self.tokenizer(self.dataset[index]["input"] + output, add_special_tokens=self.add_special_tokens)
+                    input_ids.append(inputs.get("input_ids"))
+                    attention_mask.append(inputs.get("attention_mask", torch.ones_like(torch.tensor((inputs.get("input_ids"))).cpu().tolist())))
+                input_ids = tuple(input_ids)
+                attention_mask = tuple(attention_mask)
                 target = self.dataset[index]["target"]
             else:
                 raise ValueError(

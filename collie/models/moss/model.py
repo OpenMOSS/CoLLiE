@@ -282,10 +282,11 @@ class MossBlock(nn.Module):
             past_length = 0
         else:
             past_length = self.past_key_values[0].size(1)
-
-        position_ids = torch.arange(
-            past_length, end_pos + past_length, dtype=torch.long).cuda()
-        position_ids = position_ids.unsqueeze(0).view(-1, end_pos)
+        position_ids = inputs.get("position_ids", None)
+        if position_ids is None:
+            position_ids = torch.arange(
+                past_length, end_pos + past_length, dtype=torch.long).cuda()
+            position_ids = position_ids.unsqueeze(0).view(-1, end_pos)
 
         if self.config.gradient_checkpointing and self.training:
 
@@ -317,11 +318,13 @@ class MossBlock(nn.Module):
             self.past_key_values = outputs[1]
 
         # hidden_states
+        output = {"hidden_states": outputs[0]}
         if attention_mask is not None:
-            return {"hidden_states": outputs[0],
-                    "attention_mask": attention_mask}
-        else:
-            return {"hidden_states": outputs[0]}
+            output["attention_mask"] = attention_mask
+        if position_ids is not None:
+            output["positions_ids"] = position_ids
+        
+        return output
 
 
 class MossForCausalLM(CollieModelForCausalLM):
@@ -340,17 +343,19 @@ class MossForCausalLM(CollieModelForCausalLM):
             MossBlock(config, i) for i in range(config.n_layer)
         ])
         self.ln_f = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_epsilon)
-        self.lm_head = ColumnParallelLMHead(config.n_embd, config.vocab_size)
+        self.lm_head = ColumnParallelLinearWithoutBias(config.n_embd,
+                                                       config.vocab_size)
 
     def forward(self, input_ids, attention_mask=None, **kwargs):
         batch_size = input_ids.shape[0]
         if attention_mask is not None:
             if batch_size <= 0:
                 raise ValueError("batch_size has to be defined and > 0")
+            dtype = self.wte.weight.dtype
             attention_mask = attention_mask.view(batch_size, -1)
             attention_mask = attention_mask[:, None, None, :]
-            attention_mask = attention_mask.to(dtype=self.dtype)
-            attention_mask = (1.0 - attention_mask) * torch.finfo(self.dtype).min
+            attention_mask = attention_mask.to(dtype)
+            attention_mask = (1.0 - attention_mask) * torch.finfo(dtype).min
         inputs_embed = self.wte(input_ids)
         hidden_states = self.drop(inputs_embed)
 
@@ -360,9 +365,10 @@ class MossForCausalLM(CollieModelForCausalLM):
             hidden_states = l(
                 {"hidden_states": hidden_states,
                  "attention_mask": attention_mask}
-            )
+            )["hidden_states"]
 
         hidden_states = self.ln_f(hidden_states)
+        all_hidden_states += (hidden_states, )
         logits = self.lm_head(hidden_states)
         return CausalLMOutputWithPast(
             loss=None,
@@ -376,20 +382,45 @@ class MossForCausalLM(CollieModelForCausalLM):
                                       input_ids: torch.Tensor,
                                       past_key_values: Optional[list] = None,
                                       attention_mask: Optional[torch.Tensor] = None,
+                                      use_cache: bool = False,
                                       **kwargs):
-        self._set_use_cache(self.h, kwargs.get("use_cache", self.generation_config.use_cache))
+        self.set_cache(use_cache, past_key_values)
+        return self.prepare_inputs(input_ids, attention_mask, use_cache, 
+                                   past_key_values, **kwargs)
+
+    def set_cache(self, use_cache: bool = False,
+                  past_key_values: Optional[list] = None,):
+        self._set_use_cache(self.h, use_cache)
         if past_key_values is None:
             self._clean_past_key_values(self.h)
         else:
-            input_ids = input_ids[:, -1].unsqueeze(-1)
             self._set_past_key_values(self.h, past_key_values)
-        return {"input_ids": input_ids, "attention_mask": attention_mask}
+
+    def prepare_inputs(self, 
+                       input_ids: torch.Tensor,
+                       attention_mask: Optional[torch.Tensor] = None,
+                       use_cache: bool = None,
+                       past_key_values: Optional[list] = None,
+                       **kwargs):
+        if past_key_values is not None:
+            input_ids = input_ids[:, -1:]
+
+        position_ids = kwargs.get("position_ids", None)
+
+        if attention_mask is not None and position_ids is None:
+            # create position_ids on the fly for batch generation
+            position_ids = attention_mask.long().cumsum(-1) - 1
+            position_ids.masked_fill_(attention_mask == 0, 1)
+            if past_key_values:
+                position_ids = position_ids[:, -1].unsqueeze(-1)
+        return {"input_ids": input_ids, "attention_mask": attention_mask,
+                "use_cache": use_cache, "position_ids": position_ids}
     
     def clean(self):
         self._clean_hidden_states([*self.h, self.lm_head])
         self._clean_past_key_values(self.h)
         self._set_use_cache(self.h, False)
-    
+
     @classmethod
     def pipeline_layers(cls, config):
         if isinstance(config, str):
@@ -414,7 +445,6 @@ class MossForCausalLM(CollieModelForCausalLM):
                 attention_mask = attention_mask.to(dtype=dtype)
                 attention_mask = (1.0 - attention_mask) * torch.finfo(dtype).min
                 input_dict["attention_mask"] = attention_mask
-
             return input_dict
 
         layers = [

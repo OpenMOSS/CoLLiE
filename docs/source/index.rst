@@ -8,7 +8,7 @@ CoLLiE: Collaborative Tuning of Large Language Models in an Efficient Way
    :maxdepth: 2
    :caption: 快速上手
 
-   tutorials/collie_tutorial_0
+   tutorials/collie-tutorial-1-intro.ipynb
 
 .. toctree::
    :maxdepth: 2
@@ -20,6 +20,7 @@ CoLLiE: Collaborative Tuning of Large Language Models in an Efficient Way
    collie.controller <api/controller>
    collie.callbacks <api/callbacks>
    collie.optim <api/optim>
+   collie.driver <api/driver>
    collie.metrics <api/metrics>
    collie.data <api/data>
    collie.utils <api/utils>

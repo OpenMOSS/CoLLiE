@@ -229,21 +229,22 @@ class LlamaLayer(nn.Module):
 
 
 class LlamaForCausalLM(CollieModelForCausalLM):
+    
     def __init__(self, config: CollieConfig) -> None:
         super().__init__(config)
         self.embed_tokens = tensor_parallel.VocabParallelEmbedding(
-            self.config.vocab_size,
-            self.config.hidden_size
+            self.collie_config.vocab_size,
+            self.collie_config.hidden_size
         )
         self.layers = nn.Sequential(
-            *[LlamaLayer(self.config) for _ in range(self.config.num_hidden_layers)])
+            *[LlamaLayer(self.collie_config) for _ in range(self.collie_config.num_hidden_layers)])
         self.norm = RMSNormalize(
-            dim=self.config.hidden_size,
-            eps=self.config.rms_norm_eps
+            dim=self.collie_config.hidden_size,
+            eps=self.collie_config.rms_norm_eps
         )
-        self.lm_head = ColumnParallelLMHead(
-            self.config.hidden_size,
-            self.config.vocab_size,
+        self.lm_head = ColumnParallelLinearWithoutBias(
+            self.collie_config.hidden_size,
+            self.collie_config.vocab_size,
             bias=False
         )
         # GenerationMixin 需要的额外参数
@@ -261,6 +262,7 @@ class LlamaForCausalLM(CollieModelForCausalLM):
             all_hidden_states += (inputs["hidden_states"],)
             inputs.update(layer(inputs))
         inputs["hidden_states"] = self.norm(inputs["hidden_states"])
+        all_hidden_states += (inputs["hidden_states"], )
         inputs["logits"] = self.lm_head(inputs["hidden_states"])
 
         return CausalLMOutputWithPast(

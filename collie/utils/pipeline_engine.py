@@ -63,7 +63,7 @@ class ColliePipelineEngine(PipelineEngine):
         self.total_loss = total_loss
         return logits
     
-    def generate_batch(self, batch):
+    def generate_batch(self, batch, use_cache=True):
         self.reset_buffer_shape(batch)
 
         if self.total_loss is not None:
@@ -73,7 +73,10 @@ class ColliePipelineEngine(PipelineEngine):
         self.total_loss = None
         # special case for generation
         gradient_accumulation_steps = batch[0]["input_ids"].shape[0]
-        batch = _split_batch(batch, 1, gradient_accumulation_steps)
+        if use_cache:
+            batch = [batch]
+        else:
+            batch = _split_batch(batch, 1, gradient_accumulation_steps)
         data_iter = iter(batch)
         
         self._compute_loss = False
@@ -94,7 +97,12 @@ class ColliePipelineEngine(PipelineEngine):
         self.set_dataiterator(data_iter)
 
         # Do the work
-        sched = schedule.InferenceSchedule(micro_batches=gradient_accumulation_steps,
+        if use_cache:
+            sched = schedule.InferenceSchedule(micro_batches=1,
+                                           stages=self.num_stages,
+                                           stage_id=self.stage_id)
+        else:
+            sched = schedule.InferenceSchedule(micro_batches=gradient_accumulation_steps,
                                            stages=self.num_stages,
                                            stage_id=self.stage_id)
 
