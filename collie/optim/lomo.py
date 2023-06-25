@@ -12,6 +12,7 @@ class Lomo(Optimizer):
 
     :param model: 待优化的模型
     :param lr: 学习率，默认值为1e-3
+    :param zero3_enabled: 是否启用ZeRO-3模式，默认值为False
     :param clip_grad_norm: 梯度裁剪的范数阈值
 
         .. note::
@@ -19,13 +20,14 @@ class Lomo(Optimizer):
             clip_grad_norm须为正数
 
     :param clip_grad_value: 梯度裁剪的值域阈值
+    :param loss_scale_args: 用于初始化 :class:`DynamicLossScaler` 的参数
     """
 
-    def __init__(self, model, lr=1e-3, clip_grad_norm=None, clip_grad_value=None):
+    def __init__(self, model, lr=1e-3, zero3_enabled=False, clip_grad_norm=None, clip_grad_value=None, loss_scale_args={}):
         self.model = model
         self.lr = lr
         self.local_rank = int(os.environ["LOCAL_RANK"])
-        self.world_size = dist.get_world_size()
+        self.world_size = int(os.environ["WORLD_SIZE"])
         self.clip_grad_norm = clip_grad_norm
         self.clip_grad_value = clip_grad_value
 
@@ -37,16 +39,15 @@ class Lomo(Optimizer):
         self.clip_coef = None
 
         # check if zero3 is enabled
-        p0 = list(self.model.parameters())[0]
-        if hasattr(p0, 'ds_tensor'):  # zero3 is enabled
+        self.zero3_enabled = zero3_enabled
+        if zero3_enabled:  # zero3 is enabled
             self.grad_func = self.fuse_update_zero3()
         else:
             self.grad_func = self.fuse_update()
         # check if fp16 is enabled
+        p0 = list(self.model.parameters())[0]
         if p0.dtype == torch.float16:
-            self.loss_scaler = DynamicLossScaler(
-                init_scale=2 ** 16,
-            )  # TODO: add args
+            self.loss_scaler = DynamicLossScaler(**loss_scale_args)
             if self.clip_grad_norm is None:
                 raise ValueError(
                     "Loss scale is recommended to be used with grad norm to get better performance."
@@ -59,7 +60,7 @@ class Lomo(Optimizer):
             if p.requires_grad:
                 p.register_hook(self.grad_func)
         defaults = dict(lr=lr, clip_grad_norm=clip_grad_norm, clip_grad_value=clip_grad_value)
-        super(LOMO, self).__init__(self.model.parameters(), defaults)
+        super(Lomo, self).__init__(self.model.parameters(), defaults)
 
     def fuse_update(self):
         """
@@ -75,7 +76,7 @@ class Lomo(Optimizer):
             with torch.no_grad():
                 for n, p in self.model.named_parameters():
                     if p.requires_grad and p.grad is not None:
-                        if self.loss_scaler and self.loss_scaler.has_overflow_serial or self.loss_scaler._has_inf_or_nan(p.grad):
+                        if self.loss_scaler and (self.loss_scaler.has_overflow_serial or self.loss_scaler._has_inf_or_nan(p.grad)):
                             # if the overflow is detected, drop the gradient
                             p.grad = None
                             self.loss_scaler.has_overflow_serial = True
@@ -113,7 +114,7 @@ class Lomo(Optimizer):
                 for n, p in self.model.named_parameters():
                     if p.grad is not None:
                         torch.distributed.all_reduce(p.grad, op=torch.distributed.ReduceOp.AVG, async_op=False)
-                        if self.loss_scaler and self.loss_scaler.has_overflow_serial or self.loss_scaler._has_inf_or_nan(p.grad):
+                        if self.loss_scaler and (self.loss_scaler.has_overflow_serial or self.loss_scaler._has_inf_or_nan(p.grad)):
                             # if the overflow is detected, drop the gradient
                             p.grad = None
                             self.loss_scaler.has_overflow_serial = True
@@ -206,6 +207,18 @@ class Lomo(Optimizer):
 
 
 class DynamicLossScaler:
+    """
+    动态loss缩放器，用于在训练过程中动态调整loss的缩放比例。
+
+    :param init_scale: 初始缩放比例
+    :param scale_factor: 缩放因子
+    :param scale_window:
+    :param min_scale: 最小缩放比例，默认为1
+    :param delayed_shift: 延迟移位，默认为1
+    :param consecutive_hysteresis: 是否启用连续的滞后效应，默认为False。如果是True，在处理梯度溢出时会滞后 :attr:`delayed_shift` 个迭代周期。
+    :param raise_error_at_min_scale: 最小缩放比例时是否抛出异常，默认为True
+    :param dtype: 数据类型，默认为torch.half
+    """
     def __init__(self,
                  init_scale=2 ** 32,
                  scale_factor=2.,
@@ -264,14 +277,14 @@ class DynamicLossScaler:
                 else:
                     next_scale = max(self.cur_scale / self.scale_factor, self.min_scale)
                     if torch.distributed.get_rank() == 0:
-                        overflow_msg = f"[deepspeed] OVERFLOW! Rank {torch.distributed.get_rank()} Skipping step."
+                        overflow_msg = f"[LOMO] OVERFLOW! Rank {torch.distributed.get_rank()} Skipping step."
                         if self.dtype == torch.half:
                             overflow_msg += f" Attempted loss scale: {int(self.cur_scale)}, reducing to {int(next_scale)}"
                         print(overflow_msg)
                     self.cur_scale = next_scale
             else:
                 if torch.distributed.get_rank() == 0:
-                    overflow_msg = f"[deepspeed] OVERFLOW! Rank {torch.distributed.get_rank()} Skipping step."
+                    overflow_msg = f"[LOMO] OVERFLOW! Rank {torch.distributed.get_rank()} Skipping step."
                     if self.dtype == torch.half:
                         overflow_msg += f" Attempted loss scale: {int(self.cur_scale)}, but hysteresis is {self.cur_hysteresis}. Reducing hysteresis to {self.cur_hysteresis - 1}"
                     print(overflow_msg)
