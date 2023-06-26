@@ -9,7 +9,6 @@ import pandas as pd
 import torch
 from torch import distributed as dst
 from transformers import LlamaTokenizer, GenerationConfig
-from fastNLP import cache_results
 from rich.progress import track
 
 from collie.metrics import RougeMetric
@@ -17,7 +16,6 @@ from collie.controller import Trainer
 from collie.utils import env
 from collie import CollieConfig, LlamaForCausalLM, DashProvider, LossMonitor, TGSMonitor, MemoryMonitor, LRMonitor, CollieDatasetForTraining, CollieDatasetForGeneration, EvaluatorForGeneration
 
-# @cache_results("data.pkl")
 def load_data(path_dict):
     data_bundle = {}
     for name, path in path_dict.items():
