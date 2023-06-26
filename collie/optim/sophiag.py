@@ -6,6 +6,19 @@ from typing import List, Optional
 
 
 class SophiaG(Optimizer):
+    """
+    一个优化器类SophiaG的官方实现。
+    论文地址：https://arxiv.org/abs/2305.14342
+    仓库地址：https://github.com/Liuhong99/Sophia
+    
+    :param params: 待优化的参数
+    :param lr: 学习率，默认值为1e-4，
+    :param betas: 用于计算一阶和二阶动量的系数元组，默认值为（0.965，0.99）
+    :param rho: SophiaG梯度平方移动均值的衰减率，默认值为0.04
+    :param weight_decay: 权重衰减系数，默认值为1e-1
+    :param maximize: 是否最大化损失函数，默认值为False
+    :param capturable: 是否开启优化器状态的捕获，默认值为False
+    """
     def __init__(self, params, lr=1e-4, betas=(0.965, 0.99), rho = 0.04,
          weight_decay=1e-1, *, maximize: bool = False,
          capturable: bool = False):

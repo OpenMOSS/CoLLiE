@@ -438,7 +438,12 @@ class Trainer(TrainerEventTrigger):
                 # for lomo only
                 if trainer.optimizer.clip_grad_norm is not None:
                     trainer.optimizer.grad_norm(loss)
-                    if trainer.optimizer.zero_enabled:
+                    if trainer.optimizer.loss_scaler and trainer.optimizer.loss_scaler.has_overflow_serial:
+                        print(f"Gradient overflow, skipping step {global_step}")
+                        if trainer.optimizer.zero3_enabled:
+                            trainer.engine.optimizer.get_param_coordinator(training=True).reset_step()
+                        return loss.detach().cpu().item()
+                    if trainer.optimizer.zero3_enabled:
                         trainer.engine.optimizer.get_param_coordinator(training=True).reset_step()
                         # zero-3 doesn't support backward twice, so need an additional forward here
                         outputs = trainer.engine(**batch)
@@ -447,8 +452,8 @@ class Trainer(TrainerEventTrigger):
                     lr = trainer.lr_scheduler.step(global_step)
                 else:
                     lr = trainer.optimizer.lr
-                trainer.optimizer.backward_step(loss, lr)
-                if trainer.optimizer.zero_enabled:  # TODO: should tp do this too?
+                trainer.optimizer.fused_backward(loss, lr)
+                if trainer.optimizer.zero3_enabled:  # TODO: should tp do this too?
                     trainer.engine.optimizer.get_param_coordinator(training=True).reset_step()
         return loss.detach().cpu().item()
     
