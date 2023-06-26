@@ -114,7 +114,7 @@ class TGSMonitor(BaseMonitor):
     
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self.item["mode"] == "train" and "batch" in self.item.keys():
-            self.monitor.write_events([(f"TGS", reduce(lambda x, y: x * y, self.item["batch"][0]["input_ids"].shape) / (env.pp_size * env.tp_size * (time.time() - self.start)), self.item['global_batch_idx'])])
+            self.monitor.write_events([(f"TGS", reduce(lambda x, y: x * y, self.item["batch"]["input_ids"].shape) / (env.pp_size * env.tp_size * (time.time() - self.start)), self.item['global_batch_idx'])])
         
 class MemoryMonitor(BaseMonitor):
     """ 用来记录每个step的内存占用

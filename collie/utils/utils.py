@@ -1,10 +1,11 @@
 import os
 import functools
 import inspect
+from inspect import Parameter
 import dataclasses
 from types import MethodType
 from typing import (Callable, Any, Dict, Union, Mapping, Sequence, Tuple,
-                    Optional, List)
+                    Optional, List, AnyStr)
 from collections import defaultdict, OrderedDict
 from operator import length_hint
 from copy import deepcopy
@@ -15,7 +16,8 @@ from collie.log.logger import logger
 from .rich_progress import f_rich_progress
 
 __all__ = ["find_tensors", "progress", "dictToObj", "apply_to_collection", 
-           "dict_as_params", "initization_mapping", "is_static_method"]
+           "dict_as_params", "initization_mapping", "is_static_method", 
+           "auto_param_call"]
 
 def find_tensors():
     """
@@ -191,30 +193,30 @@ def _split_batch(batch, micro_batch_size, micro_batch_num):
     :return: tuple
     """
     # Assume batch first.
-    assert len(batch) == 2, len(batch)
-    inputs = batch[0]
-    labels = batch[1]
+    # assert len(batch) == 2, len(batch)
+    # inputs = batch[0]
+    # labels = batch[1]
     # micro_batch_num = inputs.shape[0] // micro_batch_size
-    if isinstance(labels, torch.Tensor):
-        labels_split = torch.split(labels, micro_batch_size)
-    elif isinstance(labels, dict):
-        labels_split = _split_dict(labels, micro_batch_size, micro_batch_num)
+    if isinstance(batch, torch.Tensor):
+        batch_split = torch.split(batch, micro_batch_size)
+    elif isinstance(batch, dict):
+        batch_split = _split_dict(batch, micro_batch_size, micro_batch_num)
     else:
-        raise NotImplementedError(f"Invalid type of labels: {type(labels)}"
+        raise NotImplementedError(f"Invalid type of batch: {type(batch)}"
                                   "Must be Tensor or dict.")
-    assert len(labels_split) == micro_batch_num, len(labels_split)
-    if isinstance(inputs, torch.Tensor):
-        inputs_split = torch.split(inputs, micro_batch_size)
-    elif isinstance(inputs, dict):
-        inputs_split = _split_dict(inputs, micro_batch_size, micro_batch_num)
-    else:
-        raise NotImplementedError(f"Invalid type of inputs: {type(inputs)}. "
-                                  "Must be Tensor or dict.")
-    assert len(inputs_split) == micro_batch_num, len(inputs_split)
+    assert len(batch_split) == micro_batch_num, len(batch_split)
+    # if isinstance(inputs, torch.Tensor):
+    #     inputs_split = torch.split(inputs, micro_batch_size)
+    # elif isinstance(inputs, dict):
+    #     inputs_split = _split_dict(inputs, micro_batch_size, micro_batch_num)
+    # else:
+    #     raise NotImplementedError(f"Invalid type of inputs: {type(inputs)}. "
+    #                               "Must be Tensor or dict.")
+    # assert len(inputs_split) == micro_batch_num, len(inputs_split)
     
-    batch_split = ()
-    for input_split, label_split in zip(inputs_split, labels_split):
-        batch_split += ((input_split, label_split), )
+    # batch_split = ()
+    # for input_split, label_split in zip(inputs_split, labels_split):
+    #     batch_split += ((input_split, label_split), )
 
     return batch_split
 
@@ -482,3 +484,114 @@ initization_mapping = {
     "ones": torch.nn.init.ones_,
     "zeros": torch.nn.init.zeros_
 }
+
+def auto_param_call(fn: Callable, *args, signature_fn: Optional[Callable] = None,
+                    mapping: Optional[Dict] = None) -> Any:
+    r"""
+    该函数会根据输入函数的形参名从 ``*args`` （均为 **dict** 类型）中找到匹配的值进行调用，如果传入的数据与 ``fn`` 的形参不匹配，可以通过
+    ``mapping`` 参数进行转换。``mapping`` 参数中的一对 ``(key, value)`` 表示在 ``*args`` 中找到 ``key`` 对应的值，并将这个值传递给形参中名为
+    ``value`` 的参数。
+
+    1. 该函数用来提供给用户根据字符串匹配从而实现自动调用；
+    2. 注意 ``mapping`` 默认为 ``None``，如果您希望指定输入和运行函数的参数的对应方式，那么您应当让 ``mapping`` 为一个字典传入进来；
+       如果 ``mapping`` 不为 ``None``，那么我们一定会先使用 ``mapping`` 将输入的字典的 ``keys`` 修改过来，因此请务必亲自检查 ``mapping`` 的正确性；
+    3. 如果输入的函数的参数有默认值，那么如果之后的输入中没有该参数对应的值，我们就会使用该参数对应的默认值，否则也会使用之后的输入的值；
+    4. 如果输入的函数是一个 ``partial`` 函数，情况同第三点，即和默认参数的情况相同；
+
+    Examples::
+
+        >>> # 1
+        >>> loss_fn = CrossEntropyLoss()  # 如果其需要的参数为 def CrossEntropyLoss(y, pred)；
+        >>> batch = {"x": 20, "y": 1}
+        >>> output = {"pred": 0}
+        >>> acc = auto_param_call(loss_fn, batch, output)
+
+        >>> # 2
+        >>> def test_fn(x, y, a, b=10):
+        >>>     return x + y + a + b
+        >>> print(auto_param_call(test_fn, {"x": 10}, {"y": 20, "a": 30}))  # res: 70
+        >>> print(auto_param_call(partial(test_fn, a=100), {"x": 10}, {"y": 20}))  # res: 140
+        >>> print(auto_param_call(partial(test_fn, a=100), {"x": 10}, {"y": 20, "a": 200}))  # res: 240
+
+    :param fn: 用来进行实际计算的函数，其参数可以包含有默认值；
+    :param args: 一系列的位置参数，应当为一系列的字典，我们需要从这些输入中提取 ``fn`` 计算所需要的实际参数；
+    :param signature_fn: 函数，用来替换 ``fn`` 的函数签名，如果该参数不为 ``None``，那么我们首先会从该函数中提取函数签名，
+        然后通过该函数签名提取参数值后，再传给 ``fn`` 进行实际的运算；
+    :param mapping: 一个字典，用来更改其前面的字典的键值；
+
+    :return:  ``fn`` 运行的结果；
+    """
+
+    if signature_fn is not None:
+        if not callable(signature_fn):
+            raise ValueError(f"Parameter `signature_fn` should be `Callable`.")
+        _need_params = OrderedDict(inspect.signature(signature_fn).parameters)
+    else:
+        _need_params = OrderedDict(inspect.signature(fn).parameters)
+    _kwargs = None
+    for _name, _param in _need_params.items():
+        if _param.kind == Parameter.VAR_POSITIONAL:
+            fn_msg = _get_fun_msg(fn if signature_fn is None else signature_fn)
+            raise ValueError(f"It is not allowed to have parameter `*args` in your function:{fn_msg}.")
+        if _param.kind == Parameter.VAR_KEYWORD:
+            _kwargs = (_name, _param)
+
+    if _kwargs is not None:
+        _need_params.pop(_kwargs[0])
+
+    _default_params = {}
+    for _name, _param in _need_params.items():
+        if _param.default != Parameter.empty:
+            _default_params[_name] = _param.default
+
+    if mapping is not None:
+        fn_msg = _get_fun_msg(fn if signature_fn is None else signature_fn)
+        assert isinstance(mapping, Dict), f"Exception happens when calling {fn_msg}. " \
+                                          f"Parameter `mapping` should be of 'Dict' type, instead of {type(mapping)}."
+
+    _has_params = {}
+    duplicate_names = []
+    for arg in args:
+        if not isinstance(arg, (Dict, dict)):
+            fn_msg = _get_fun_msg(fn if signature_fn is None else signature_fn)
+            raise TypeError(f"Exception happens when calling {fn_msg}. "
+                            f"The input part of function `auto_param_call` must be `Dict` type, instead of {type(arg)}.")
+        for _name, _value in arg.items():
+            if mapping is not None and _name in mapping:
+                _name = mapping[_name]
+
+            if _name not in _has_params:
+                if _kwargs is not None or _name in _need_params:
+                    _has_params[_name] = _value
+            # 同一参数对象在两个输入的资源中都出现，造成混淆；
+            elif _name in _need_params and not (_has_params[_name] is _value):
+                duplicate_names.append(_name)
+    if duplicate_names:
+        fn_msg = _get_fun_msg(fn if signature_fn is None else signature_fn)
+        raise ValueError(f"The following key present in several inputs:{duplicate_names} when calling {fn_msg}.")
+
+    # 将具有默认值但是没有被输入修改过的参数值传进去；
+    for _name, _value in _default_params.items():
+        if _name not in _has_params:
+            _has_params[_name] = _value
+
+    if len(_has_params) < len(_need_params):
+        miss_params = list(set(_need_params.keys()) - set(_has_params.keys()))
+        fn_msg = _get_fun_msg(fn if signature_fn is None else signature_fn)
+        _provided_keys = _get_keys(args)
+        raise ValueError(f"The parameters:`{miss_params}` needed by function:{fn_msg} "
+                         f"are not found in the input keys({_provided_keys}).")
+
+    return fn(**_has_params)
+
+def _get_keys(args:List[Dict]) -> List[List[str]]:
+    """
+    返回每个 dict 的 keys
+
+    :param args:
+    :return:
+    """
+    _provided_keys = []
+    for arg in args:
+        _provided_keys.append(list(arg.keys()))
+    return _provided_keys

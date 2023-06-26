@@ -130,21 +130,31 @@ class GPTLMLoss(torch.nn.Module):
         self.ignore_index = ignore_index
         self.loss = torch.nn.CrossEntropyLoss(ignore_index=ignore_index)  # ignore <pad> when compute loss
 
-    def forward(self, outputs: Dict[str, torch.Tensor], labels: Dict[str, torch.Tensor], *args):
+    # def forward(self, outputs: Dict[str, torch.Tensor], labels: Dict[str, torch.Tensor], *args):
+    #     """ 计算损失
+    #     :param logits: 模型的输出
+    #     :param labels: 真实标签
+    #     """
+    #     labels_mask = None
+    #     if isinstance(labels, dict):
+    #         if "labels_mask" in labels.keys():
+    #             labels_mask = labels["labels_mask"]
+    #         labels = labels["labels"]
+    #     # TODO key
+    #     if isinstance(outputs, dict):
+    #         logits = outputs["logits"]
+    #     if labels_mask is not None:
+    #         labels = labels.masked_fill(labels_mask==1, value=self.ignore_index)
+    #     shift_logits = logits[..., :-1, :].contiguous()
+    #     shift_labels = labels[..., 1:].contiguous().to(logits.device)
+    #     # Flatten the tokens
+    #     return self.loss(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+    
+    def forward(self, logits: torch.Tensor, labels: torch.Tensor):
         """ 计算损失
-        :param logits: 模型的输出
+        :param logits: 语言模型的输出
         :param labels: 真实标签
         """
-        labels_mask = None
-        if isinstance(labels, dict):
-            if "labels_mask" in labels.keys():
-                labels_mask = labels["labels_mask"]
-            labels = labels["labels"]
-        # TODO key
-        if isinstance(outputs, dict):
-            logits = outputs["logits"]
-        if labels_mask is not None:
-            labels = labels.masked_fill(labels_mask==1, value=self.ignore_index)
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous().to(logits.device)
         # Flatten the tokens
@@ -340,8 +350,8 @@ class PipelineGenerationMixin(nn.Module, GenerationMixin):
             inputs["attention_mask"] = attention_mask
         if position_ids is not None:
             inputs["position_ids"] = position_ids
-        batch = (inputs, {"labels": inputs["input_ids"]})
-        outputs = self.engine.generate_batch(batch, use_cache)
+        inputs["labels"] = inputs["input_ids"]
+        outputs = self.engine.generate_batch(inputs, use_cache)
         hidden_states = self._get_hidden_states()
         if self.is_contrastive_search:
             # contrastive search 时每个 stage 拿到的 last_hidden_states

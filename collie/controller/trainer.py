@@ -29,7 +29,8 @@ from collie.config import CollieConfig
 from collie.module import PipelineGenerationMixin, GPTLMLoss, PipelineModel
 from collie.driver.io import IODriver
 from collie.log import logger
-from collie.utils import progress, env, setup_ds_engine, BaseProvider, _GenerationStreamer, is_zero3_enabled, BaseMonitor, _MultiMonitors, broadcast_tensor, ColliePadder
+from collie.utils import progress, env, setup_ds_engine, BaseProvider, _GenerationStreamer, is_zero3_enabled, \
+    BaseMonitor, _MultiMonitors, broadcast_tensor, ColliePadder
 from collie.optim import Lomo
 from collie.models.base import CollieModelForCausalLM
 from .evaluator import Evaluator
@@ -405,11 +406,11 @@ class Trainer(TrainerEventTrigger):
         self.on_evaluate_end(results)
 
     @staticmethod
-    def train_fn(trainer, batch: Tuple, global_step: int) -> float:
+    def train_fn(trainer, batch: Dict, global_step: int) -> float:
         """一次训练的基本单元
 
         :param trainer: 训练器
-        :param batch: 一个 batch 的数据，类型为长度为 2 的 ``Tuple``，其中第一个元素为 ``input_ids``，第二个元素为 ``labels``
+        :param batch: 一个 batch 的数据，类型为 ``Dict``
 
             .. note::
                 
@@ -422,14 +423,13 @@ class Trainer(TrainerEventTrigger):
         if trainer.config.pp_size > 1:
             loss = trainer.engine.train_batch(batch)
         else:
-            inputs, labels = batch
             # concat prompt labels for p-tuning
             if trainer.config.peft_config and trainer.config.peft_config.peft_type in ["PROMPT_TUNING", "P_TUNING"]:
-                batch_size = inputs["input_ids"].shape[0]
+                batch_size = batch["input_ids"].shape[0]
                 prefix_labels = torch.full((batch_size, trainer.config.peft_config.num_virtual_tokens), -100).to(labels.device)
                 labels = torch.cat((prefix_labels, labels), dim=1)
-
-            outputs = trainer.engine(**inputs)
+            
+            outputs = trainer.engine(**batch)
             loss = trainer.loss_fn(outputs, labels)
             if not isinstance(trainer.optimizer, Lomo):
                 trainer.engine.backward(loss)
@@ -441,7 +441,7 @@ class Trainer(TrainerEventTrigger):
                     if trainer.optimizer.zero_enabled:
                         trainer.engine.optimizer.get_param_coordinator(training=True).reset_step()
                         # zero-3 doesn't support backward twice, so need an additional forward here
-                        outputs = trainer.engine(**inputs)
+                        outputs = trainer.engine(**batch)
                         loss = trainer.loss_fn(outputs, labels)
                 if trainer.lr_scheduler:
                     lr = trainer.lr_scheduler.step(global_step)

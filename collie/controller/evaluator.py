@@ -1,6 +1,7 @@
 from typing import Optional, Dict, Callable, Sequence, Tuple, Any, List, Iterable
 
 import torch
+from torch import nn
 import torch.distributed as dist
 from deepspeed.runtime.pipe.engine import PipelineEngine
 from deepspeed.accelerator import get_accelerator
@@ -12,7 +13,7 @@ from collie.data.dataloader import CollieDataLoader
 from collie.utils.rich_progress import f_rich_progress
 from collie.log import logger
 from collie.config import CollieConfig
-from collie.utils import progress, env, setup_ds_engine, BaseProvider, _GenerationStreamer, _MetricsWrapper, BaseMonitor, _MultiMonitors, broadcast_tensor, ColliePadder
+from collie.utils import progress, env, setup_ds_engine, BaseProvider, _GenerationStreamer, _MetricsWrapper, BaseMonitor, _MultiMonitors, broadcast_tensor, ColliePadder, auto_param_call
 
 class Evaluator:
     """
@@ -219,19 +220,18 @@ class EvaluatorForGeneration(Evaluator):
         :return: 一次验证的结果，为 `Dict` 类型，该结果会被传入 `metric` 的 `update` 方法中
         """
         assert evaluator.tokenizer is not None, "You must provide a tokenizer to decode the generated results."
-        inputs, labels = batch
         if isinstance(evaluator.engine, PipelineEngine):
             generation_model = PipelineGenerationMixin(
                 engine=evaluator.engine
             )
         else:
             generation_model = evaluator.engine.module
-        generated_ids = generation_model.generate(input_ids=inputs["input_ids"], attention_mask=inputs["attention_mask"], 
+        generated_ids = generation_model.generate(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"], 
                                               generation_config=evaluator.generation_config)
-        prompt_length = inputs["input_ids"].shape[1]
+        prompt_length = batch["input_ids"].shape[1]
         result = {"pred": [evaluator.tokenizer.decode(sample[prompt_length:], skip_special_tokens=evaluator.skip_special_tokens) for sample in generated_ids]}
-        if "target" in labels.keys():
-            result["target"] = [evaluator.tokenizer.decode(sample, skip_special_tokens=evaluator.skip_special_tokens) for sample in labels["target"]]
+        if "target" in batch.keys():
+            result["target"] = [evaluator.tokenizer.decode(sample, skip_special_tokens=evaluator.skip_special_tokens) for sample in batch["target"]]
         return result
         
 class EvaluatorForPerplexity(Evaluator):
@@ -257,18 +257,18 @@ class EvaluatorForPerplexity(Evaluator):
     
         :return: 一次验证的结果，为 `Dict` 类型，该结果会被传入 `metric` 的 `update` 方法中
         """
-        inputs, labels = batch
         if evaluator.config.pp_size > 1:
             outputs = evaluator.engine.eval_batch(batch)
         else:
             # concat prompt labels for p-tuning
             if evaluator.config.peft_config and evaluator.config.peft_config.peft_type in ["PROMPT_TUNING", "P_TUNING"]:
-                batch_size = inputs["input_ids"].shape[0]
-                if "labels" in labels.keys():
-                    prefix_labels = torch.full((batch_size, evaluator.config.peft_config.num_virtual_tokens), -100).to(labels["labels"].device)
-                    labels["labels"] = torch.cat((prefix_labels, labels["labels"]), dim=1)
-            outputs = evaluator.engine(**inputs)
-        ppl = torch.exp(evaluator.loss_fn(outputs, labels))
+                batch_size = batch["input_ids"].shape[0]
+                if "labels" in batch.keys():
+                    prefix_labels = torch.full((batch_size, evaluator.config.peft_config.num_virtual_tokens), -100).to(batch["labels"].device)
+                    batch["labels"] = torch.cat((prefix_labels, batch["labels"]), dim=1)
+            outputs = evaluator.engine(**batch)
+        ppl = torch.exp(auto_param_call(evaluator.loss_fn, {**batch, **outputs}, 
+                                        signature_fn=evaluator.loss_fn.forward if isinstance(evaluator.loss_fn, nn.Module) else evaluator.loss_fn))
         return {
             "ppl": ppl.detach().clone().view(1,).cuda(),
             # **{key: value.cuda() for key, value in batch[1].items() if isinstance(value, torch.Tensor)}
@@ -289,31 +289,28 @@ class EvaluatorForClassfication(EvaluatorForPerplexity):
     
         :return: 一次验证的结果，为 `Dict` 类型，该结果会被传入 `metric` 的 `update` 方法中
         """
-        inputs_group, labels_group = batch
-        assert isinstance(inputs_group["input_ids"], Sequence), f"input_ids must be a list for classification task. But got {type(inputs_group['input_ids'])}."
-        assert isinstance(inputs_group["attention_mask"], Sequence), f"input_ids must be a list for classification task. But got {type(inputs_group['attention_mask'])}."
-        pred = torch.zeros((inputs_group["input_ids"][0].shape[0], len(inputs_group["input_ids"])))
-        for idx, input_ids in enumerate(inputs_group["input_ids"]):
+        assert isinstance(batch["input_ids"], Sequence), f"input_ids must be a list for classification task. But got {type(batch['input_ids'])}."
+        assert isinstance(batch["attention_mask"], Sequence), f"input_ids must be a list for classification task. But got {type(batch['attention_mask'])}."
+        pred = torch.zeros((batch["input_ids"][0].shape[0], len(batch["input_ids"])))
+        for idx, input_ids in enumerate(batch["input_ids"]):
             assert isinstance(input_ids, torch.Tensor), "input_ids must be a list of torch.Tensor for classification task."
-            inputs = {"input_ids": input_ids.cuda(), "attention_mask": inputs_group["attention_mask"][idx].cuda(), 
-                      **{key: value.cuda() for key, value in inputs_group.items() if key not in ("input_ids", "attention_mask")}}
-            labels = {"labels": labels_group["labels"][idx].cuda(), 
-                      **{key: value.cuda() for key, value in labels_group.items() if key != "labels"}}
+            inputs = {"input_ids": input_ids.cuda(), "labels": batch["labels"][idx].cuda(), "attention_mask": batch["attention_mask"][idx].cuda(), 
+                      **{key: value.cuda() for key, value in batch.items() if key not in ("input_ids", "attention_mask", "labels")}}
             if evaluator.config.pp_size > 1:
-                logits = evaluator.engine.eval_batch((inputs, labels))["logits"]
+                logits = evaluator.engine.eval_batch(inputs)["logits"]
             else:
                 # concat prompt labels for p-tuning
                 if evaluator.config.peft_config and evaluator.config.peft_config.peft_type in ["PROMPT_TUNING", "P_TUNING"]:
                     batch_size = input_ids.shape[0]
-                    if "labels" in labels.keys():
-                        prefix_labels = torch.full((batch_size, evaluator.config.peft_config.num_virtual_tokens), -100).to(labels["labels"].device)
-                        labels["labels"] = torch.cat((prefix_labels, labels["labels"]), dim=1)
+                    if "labels" in inputs.keys():
+                        prefix_labels = torch.full((batch_size, evaluator.config.peft_config.num_virtual_tokens), -100).to(inputs["labels"].device)
+                        inputs["labels"] = torch.cat((prefix_labels, inputs["labels"]), dim=1)
                 logits = evaluator.engine(**inputs)["logits"]
             for sample_idx in range(input_ids.shape[0]):
-                pred[sample_idx, idx] = evaluator.loss_fn(logits[sample_idx: sample_idx + 1, :], labels["labels"][sample_idx: sample_idx + 1, :]).detach().cpu().item()
+                pred[sample_idx, idx] = evaluator.loss_fn(logits[sample_idx: sample_idx + 1, :], inputs["labels"][sample_idx: sample_idx + 1, :]).detach().cpu().item()
         pred = pred.argmin(dim=1)
         return {
             "pred": pred.cuda(),
-            "target": labels_group["target"].squeeze(1).cuda(),
+            "target": batch["target"].squeeze(1).cuda(),
             # **{key: value.cuda() for key, value in labels.items() if isinstance(value, torch.Tensor)}
         }

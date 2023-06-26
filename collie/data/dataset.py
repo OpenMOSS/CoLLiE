@@ -125,11 +125,10 @@ class CollieDatasetForTraining(Dataset):
             return self._get_slice(index)
         if index > len(self):
             raise IndexError("Index out of range.")
-        labels_mask = None
         index = self.indices[index]
         if self.tokenizer is None:
             input_ids = self.dataset[index]["tokens"]
-            labels_mask = self.dataset[index].get("labels_mask", None)
+            labels = self.dataset[index].get("labels", input_ids.detach().clone())
             if "attention_mask" in self.dataset[index].keys():
                 attention_mask = self.dataset[index]["attention_mask"]
             else:
@@ -139,31 +138,24 @@ class CollieDatasetForTraining(Dataset):
                 inputs = self.tokenizer(
                     self.dataset[index]["text"], add_special_tokens=self.add_special_tokens)
                 input_ids = inputs["input_ids"]
+                labels = torch.tensor(input_ids).cpu().tolist()
                 attention_mask = inputs.get("attention_mask", torch.ones_like(torch.tensor(input_ids)).cpu().tolist())
             elif "input" in self.dataset[0].keys() and "output" in self.dataset[0].keys():
                 inputs = self.tokenizer(
                     self.dataset[index]["input"] + self.dataset[index]["output"], add_special_tokens=self.add_special_tokens)
                 input_ids = inputs["input_ids"]
                 attention_mask = inputs.get("attention_mask", torch.ones_like(torch.tensor(input_ids)).cpu().tolist())
-                labels_mask = torch.ones_like(torch.tensor(input_ids))
+                labels = torch.tensor(input_ids)
                 context_length = len(self.tokenizer(
                     self.dataset[index]["input"], add_special_tokens=self.add_special_tokens).input_ids)
                 _, eos_length = self._inspect_special_tokens_length()
                 context_length -= eos_length
-                labels_mask[context_length - 1:] = 0
-                labels_mask = labels_mask.cpu().tolist()
+                labels[context_length - 1:] = -100
+                labels = labels.cpu().tolist()
             else:
                 raise ValueError("Dataset must have one or two fields.")
-        if labels_mask is None:
-            return {"input_ids": input_ids, "attention_mask": attention_mask}, {
-                "labels": input_ids
-            }
-        else:
-            return {"input_ids": input_ids, "attention_mask": attention_mask}, {
-                "labels": input_ids,
-                "labels_mask": labels_mask
-            }
-            
+        return {"input_ids": input_ids, "attention_mask": attention_mask, "labels": input_ids}
+    
     def _get_slice(self, s: slice):
         result = []
         for idx in self.indices[s]:
@@ -241,11 +233,10 @@ class CollieDatasetForGeneration(CollieDatasetForTraining):
                 elif isinstance(self.dataset[index]["target"], (list, tuple, set)):
                     target = [self.tokenizer(
                         x).input_ids for x in self.dataset[index]["target"]]
-        inputs = {"input_ids": input_ids, "attention_mask": attention_mask}
-        labels = {"labels": input_ids}
+        sample = {"input_ids": input_ids, "attention_mask": attention_mask, "labels": input_ids}
         if target is not None:
-            labels["target"] = target
-        return inputs, labels
+            sample["target"] = target
+        return sample
 
 
 class CollieDatasetForClassification(CollieDatasetForTraining):
@@ -285,7 +276,4 @@ class CollieDatasetForClassification(CollieDatasetForTraining):
             else:
                 raise ValueError(
                     "CollieDatasetForClassification must have three fields (`input`, `output` and `target`).")
-        return {"input_ids": input_ids, "attention_mask": attention_mask}, {
-            "labels": input_ids,
-            "target": target
-        }
+        return {"input_ids": input_ids, "attention_mask": attention_mask, "labels": input_ids, "target": target}
