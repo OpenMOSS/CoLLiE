@@ -16,6 +16,7 @@ from functools import reduce
 import torch
 import deepspeed
 import numpy as np
+from torch import nn
 import torch.distributed as dist
 from torch.optim.lr_scheduler import _LRScheduler
 from deepspeed.accelerator import get_accelerator
@@ -30,7 +31,7 @@ from collie.module import PipelineGenerationMixin, GPTLMLoss, PipelineModel
 from collie.driver.io import IODriver
 from collie.log import logger
 from collie.utils import progress, env, setup_ds_engine, BaseProvider, _GenerationStreamer, is_zero3_enabled, \
-    BaseMonitor, _MultiMonitors, broadcast_tensor, ColliePadder
+    BaseMonitor, _MultiMonitors, broadcast_tensor, ColliePadder, auto_param_call
 from collie.optim import Lomo
 from collie.models.base import CollieModelForCausalLM
 from .evaluator import Evaluator
@@ -430,7 +431,8 @@ class Trainer(TrainerEventTrigger):
                 labels = torch.cat((prefix_labels, labels), dim=1)
             
             outputs = trainer.engine(**batch)
-            loss = trainer.loss_fn(outputs, labels)
+            loss = auto_param_call(trainer.loss_fn, {**batch, **outputs}, 
+                                   signature_fn=trainer.loss_fn.forward if isinstance(trainer.loss_fn, nn.Module) else trainer.loss_fn)
             if not isinstance(trainer.optimizer, Lomo):
                 trainer.engine.backward(loss)
                 trainer.engine.step()
