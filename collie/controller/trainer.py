@@ -421,6 +421,7 @@ class Trainer(TrainerEventTrigger):
         
         :return: 当前 batch 的 loss
         """
+        
         if trainer.config.pp_size > 1:
             loss = trainer.engine.train_batch(batch)
         else:
@@ -431,12 +432,14 @@ class Trainer(TrainerEventTrigger):
                 labels = torch.cat((prefix_labels, labels), dim=1)
             
             outputs = trainer.engine(**batch)
+            
             loss = auto_param_call(trainer.loss_fn, {**batch, **outputs}, 
                                    signature_fn=trainer.loss_fn.forward if isinstance(trainer.loss_fn, nn.Module) else trainer.loss_fn)
             if not isinstance(trainer.optimizer, Lomo):
                 trainer.engine.backward(loss)
                 trainer.engine.step()
             else:
+                
                 # for lomo only
                 if trainer.optimizer.clip_grad_norm is not None:
                     trainer.optimizer.grad_norm(loss)
@@ -449,7 +452,8 @@ class Trainer(TrainerEventTrigger):
                         trainer.engine.optimizer.get_param_coordinator(training=True).reset_step()
                         # zero-3 doesn't support backward twice, so need an additional forward here
                         outputs = trainer.engine(**batch)
-                        loss = trainer.loss_fn(outputs, labels)
+                        loss = auto_param_call(trainer.loss_fn, {**batch, **outputs}, 
+                                               signature_fn=trainer.loss_fn.forward if isinstance(trainer.loss_fn, nn.Module) else trainer.loss_fn)
                 if trainer.lr_scheduler:
                     lr = trainer.lr_scheduler.step(global_step)
                 else:

@@ -3,6 +3,7 @@ import torch
 from torch.optim import Optimizer
 import torch.distributed as dist
 
+from ..utils.dist_utils import env
 
 class Lomo(Optimizer):
     """
@@ -26,8 +27,6 @@ class Lomo(Optimizer):
     def __init__(self, model, lr=1e-3, zero3_enabled=False, clip_grad_norm=None, clip_grad_value=None, loss_scale_args={}):
         self.model = model
         self.lr = lr
-        self.local_rank = int(os.environ["LOCAL_RANK"])
-        self.world_size = int(os.environ["WORLD_SIZE"])
         self.clip_grad_norm = clip_grad_norm
         self.clip_grad_value = clip_grad_value
 
@@ -61,6 +60,14 @@ class Lomo(Optimizer):
                 p.register_hook(self.grad_func)
         defaults = dict(lr=lr, clip_grad_norm=clip_grad_norm, clip_grad_value=clip_grad_value)
         super(Lomo, self).__init__(self.model.parameters(), defaults)
+        
+    @property
+    def dp_rank(self):
+        return env.dp_rank
+    
+    @property
+    def world_size(self):
+        return env.world_size
 
     def fuse_update(self):
         """
@@ -132,7 +139,7 @@ class Lomo(Optimizer):
                         else:  # update param
                             one_dim_grad_fp32 = grad_fp32.view(-1)
                             partition_size = p.ds_tensor.numel()
-                            start = partition_size * self.local_rank
+                            start = partition_size * self.dp_rank
                             end = min(start + partition_size, grad_fp32.numel())
                             partitioned_grad_fp32 = one_dim_grad_fp32.narrow(0, start, end - start)
 
