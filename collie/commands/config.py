@@ -23,22 +23,22 @@ def config_command_parser(subparsers=None):
 
 
 _prompt_argname_map = {
-    "随机数种子": "seed",
-    "流水线并行的大小": "pp_size",
-    "张量并行大小": "tp_size",
-    "数据并行大小": "dp_size",
-    "流水线的切分策略": "pp_partition_method",
-    "训练时的迭代次数": "train_epochs",
-    "训练的一个 epoch 中，每隔多少 step 进行一次验证": "eval_per_n_steps",
-    "训练过程中每隔多少次迭代进行一次验证": "eval_per_n_epochs",
-    "每个 gpu 上的 batch_size": "train_micro_batch_size",
-    "梯度累积的 step 数目": "gradient_accumulation_steps",
-    "验证时的 batch 大小": "eval_batch_size",
-    "你希望使用梯度检查点吗？": "checkpointing",
-    "你希望使用 FlashAttention 吗？": "use_flash",
-    "Dropout 的概率": "dropout",
-    "初始化方法": "initization_method",
-    "DeepSpeed 配置": "ds_config",
+    "Seed: ": "seed",
+    "Size for pipeline parallelism: ": "pp_size",
+    "Size for tensor parallelism: ": "tp_size",
+    "Size for data paralellism: ": "dp_size",
+    "Choose the partition method for pipeline parallelism.": "pp_partition_method",
+    "Training epochs: ": "train_epochs",
+    "After how many training steps in an epoch is the evaluation performed? ": "eval_per_n_steps",
+    "After how many training epochs is the evaluation performed? ": "eval_per_n_epochs",
+    "Micro batch size for each GPU: ": "train_micro_batch_size",
+    "Steps for gradient accumulation: ": "gradient_accumulation_steps",
+    "Batch size for evaluation: ": "eval_batch_size",
+    "Do you want to use the gradient checkpointing?": "checkpointing",
+    "Do you want to use FlashAttention?": "use_flash",
+    "The possibility for dropout: ": "dropout",
+    "Choose the method for parameter initialization": "initization_method",  # TODO: a spelling mistake?
+    "Path to the configuration file for DeepSpeed: ": "ds_config",  # TODO: choose between using an existing config or to generate a new one.
 }
 
 
@@ -58,19 +58,27 @@ def config_command_entry(args):
 
     config_command_cli = VerticalPrompt(
         [
-            Input("随机数种子", default="42", word_color=word_color),
-            Input("训练时的迭代次数", default="100", word_color=word_color),
+            Input("Seed: ", default="42", word_color=word_color),
+            Input("Training epochs: ", default="100", word_color=word_color),
             Input(
-                "训练的一个 epoch 中，每隔多少 step 进行一次验证",
+                "After how many training steps in an epoch is the evaluation performed? ",
                 default="0",
                 word_color=word_color,
             ),
-            Input("训练过程中每隔多少次迭代进行一次验证", default="0", word_color=word_color),
-            Input("每个 gpu 上的 batch_size", default="1", word_color=word_color),
-            Input("梯度累积的 step 数目", default="1", word_color=word_color),
-            Input("验证时的 batch 大小", default="1", word_color=word_color),
+            Input(
+                "After how many training epochs is the evaluation performed? ",
+                default="0",
+                word_color=word_color,
+            ),
+            Input(
+                "Micro batch size for each GPU: ", default="1", word_color=word_color
+            ),
+            Input(
+                "Steps for gradient accumulation: ", default="1", word_color=word_color
+            ),
+            Input("Batch size for evaluation: ", default="1", word_color=word_color),
             Bullet(
-                "你希望使用梯度检查点吗？",
+                "Do you want to use the gradient checkpointing?",
                 choices=[
                     "Yes",
                     "No",
@@ -79,7 +87,7 @@ def config_command_entry(args):
                 word_color=word_color,
             ),
             Bullet(
-                "你希望使用 FlashAttention 吗？",
+                "Do you want to use FlashAttention?",
                 choices=[
                     "Yes",
                     "No",
@@ -87,9 +95,11 @@ def config_command_entry(args):
                 bullet=" >",
                 word_color=word_color,
             ),
-            Input("Dropout 的概率", default="0.0", word_color=word_color),
+            Input(
+                "The possibility for dropout: ", default="0.0", word_color=word_color
+            ),
             Bullet(
-                "初始化方法",
+                "Choose the method for parameter initialization",
                 choices=[
                     "normal",
                     "xavier_normal",
@@ -104,12 +114,18 @@ def config_command_entry(args):
                 bullet=" >",
                 word_color=word_color,
             ),
-            Input("DeepSpeed 配置", default="ds_config.yml", word_color=word_color),
-            Input("流水线并行的大小", default="1", word_color=word_color),
-            Input("张量并行大小", default="1", word_color=word_color),
-            Input("数据并行大小", default="1", word_color=word_color),
+            Input(
+                "Path to the configuration file for DeepSpeed: ",
+                default="ds_config.yml",
+                word_color=word_color,
+            ),
+            Input(
+                "Size for pipeline parallelism: ", default="1", word_color=word_color
+            ),
+            Input("Size for tensor parallelism: ", default="1", word_color=word_color),
+            Input("Size for data paralellism: ", default="1", word_color=word_color),
             Bullet(
-                "流水线的切分策略",
+                "Choose the partition method for pipeline parallelism.",
                 choices=["parameters", "uniform", "type:[regex]"],
                 bullet=" >",
                 margin=2,
@@ -121,7 +137,7 @@ def config_command_entry(args):
     regx_cli = VerticalPrompt(
         [
             Input(
-                "你选择的流水线切分策略为 type:[regex]，请在此输入正则表达式：",
+                "You've selected the type:[regex] method, please enter the regex: ",
                 default="",
                 word_color=word_color,
             )
@@ -137,4 +153,4 @@ def config_command_entry(args):
 
     with open(args.config_file, "w") as f:
         yaml.dump(config, f, Dumper=yaml.SafeDumper)
-        print(f"🎉 配置文件已保存至 {args.config_file}")
+        print(f"🎉 Configuration saved to {args.config_file}")
