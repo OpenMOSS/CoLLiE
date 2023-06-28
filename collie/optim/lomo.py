@@ -2,6 +2,7 @@ import os
 import torch
 from torch.optim import Optimizer
 import torch.distributed as dist
+from transformers.deepspeed import is_deepspeed_zero3_enabled
 
 from ..utils.dist_utils import env
 
@@ -13,7 +14,6 @@ class Lomo(Optimizer):
 
     :param model: 待优化的模型
     :param lr: 学习率，默认值为1e-3
-    :param zero3_enabled: 是否启用ZeRO-3模式，默认值为False
     :param clip_grad_norm: 梯度裁剪的范数阈值
 
         .. note::
@@ -24,7 +24,7 @@ class Lomo(Optimizer):
     :param loss_scale_args: 用于初始化 :class:`DynamicLossScaler` 的参数
     """
 
-    def __init__(self, model, lr=1e-3, zero3_enabled=False, clip_grad_norm=None, clip_grad_value=None, loss_scale_args={}):
+    def __init__(self, model, lr=1e-3, clip_grad_norm=None, clip_grad_value=None, loss_scale_args={}):
         self.model = model
         self.lr = lr
         self.clip_grad_norm = clip_grad_norm
@@ -38,6 +38,7 @@ class Lomo(Optimizer):
         self.clip_coef = None
 
         # check if zero3 is enabled
+        zero3_enabled = is_deepspeed_zero3_enabled()
         self.zero3_enabled = zero3_enabled
         if zero3_enabled:  # zero3 is enabled
             self.grad_func = self.fuse_update_zero3()

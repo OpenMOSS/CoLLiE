@@ -3,7 +3,7 @@ tqdm
 torch>=1.13.0
 einops
 deepspeed>=0.9.5
-transformers
+transformers>=4.30.2
 sentencepiece
 protobuf==3.20.1
 websockets
@@ -16,3 +16,6 @@ wandb
 pandas
 bullet
 psutil
+accelerate>=0.19.0
+bitsandbytes>=0.39.0
+scipy

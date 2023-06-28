@@ -13,6 +13,7 @@ import copy
 import types
 import json
 import torch
+from types import MethodType
 from typing import Optional, List, Sequence, Dict
 
 from torch import nn
@@ -35,7 +36,7 @@ from transformers.modeling_utils import PretrainedConfig
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from collie.log import logger
-from collie.utils import env, broadcast_tensor
+from collie.utils import env, broadcast_tensor, setup_ds_engine
 
 class ColumnParallelLinearWithoutBias(ColumnParallelLinear):
     """重写 ``megatron`` 提供的列并行全连接层以去掉结果中的 ``bias``。
@@ -161,7 +162,179 @@ class GPTLMLoss(torch.nn.Module):
         return self.loss(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
 
 
-class PipelineModel(PipelineModule):
+class PipelineGenerationMixin(GenerationMixin):
+    """
+    重写 ``transformers`` 提供的 ``GenerationMixin`` 以支持 **CoLLie** 中的流水线
+    模型。
+
+    :param engine: `DeepSpeedEngine` 实例，可由 :meth:`~collie.utils.\
+        setup_ds_engine` 函数生成
+    """
+    def __init__(self) -> None:
+        self.config = PretrainedConfig(is_decoder=True)
+        self.generation_config = GenerationConfig()
+        self.main_input_name = "input_ids"
+        self.device = torch.device("cuda")
+        self.engine_container = [None]
+        self.layers = None
+        self._find_layers()
+        self.is_contrastive_search = False
+        self.inner_forward = True
+        
+    def set_engine(self, engine: DeepSpeedEngine):
+        """设置DeepSpeed Engine
+        """
+        self.engine_container[0] = engine
+
+    def generate(self, *args, **kwargs):
+        """开始迭代的生成过程
+        """
+        if len(self.engine_container) == 0:
+            self.engine_container[0] = setup_ds_engine(config=self.collie_config, model=self)[0]
+        self.engine_container[0].eval()
+        self.inner_forward = False
+        res = super().generate(*args, **kwargs)
+        self.inner_forward = True
+        self._clean_past_key_values()
+        self._clean_hidden_states()
+        # contrastive learning
+        if self.is_contrastive_search:
+            src = self.engine_container[0].grid.stage_to_global(self.engine_container[0].num_stages - 1)
+            res = broadcast_tensor(res, dtype=res.dtype, src=src,
+                                   ndim=len(res.shape), group=env.pp_group)
+            self.is_contrastive_search = False
+        return res
+    
+    def contrastive_search(self, *args, **kwargs):
+        self.is_contrastive_search = True
+        return super().contrastive_search(*args, **kwargs)
+        
+    def generation_forward(self,
+                input_ids: torch.Tensor,
+                attention_mask: Optional[torch.Tensor] = None,
+                position_ids: Optional[torch.Tensor] = None,
+                use_cache: bool = True, **kwargs) -> torch.Tensor:
+        """ 进行一次流水线模型的前向传播
+        """
+        if use_cache:
+            logger.rank_zero_warning(
+                "In Pipeline Parallelism, `use_cache=True` will result in "
+                "slowing down the generate process.", once=True
+            )
+        inputs = {"input_ids": input_ids}
+        if attention_mask is not None:
+            inputs["attention_mask"] = attention_mask
+        if position_ids is not None:
+            inputs["position_ids"] = position_ids
+        inputs["labels"] = inputs["input_ids"]
+        self.inner_forward = True
+        outputs = self.engine_container[0].generate_batch(inputs, use_cache)
+        self.inner_forward = False
+        hidden_states = self._get_hidden_states()
+        if self.is_contrastive_search:
+            # contrastive search 时每个 stage 拿到的 last_hidden_states
+            # 不一样，所以广播出去
+            src = self.engine_container[0].grid.stage_to_global(self.engine_container[0].num_stages - 1)
+            if hidden_states is not None:
+                last_hidden_states = hidden_states[-1]
+            else:
+                # 防止流水线段数过多时某些 stage 没有分到 block
+                hidden_states = []
+                last_hidden_states = None
+            last_hidden_states = broadcast_tensor(
+                last_hidden_states, src=src, group=env.pp_group
+            )
+            hidden_states.append(last_hidden_states)
+        return CausalLMOutputWithPast(
+            loss=None,
+            logits=outputs["logits"],
+            past_key_values=self._get_past_key_values(),
+            hidden_states=hidden_states,
+            attentions=None
+        )
+    
+    def prepare_inputs_for_generation(self, 
+                                      input_ids: torch.Tensor,
+                                      past_key_values: Optional[list] = None,
+                                      attention_mask: Optional[torch.Tensor] = None,
+                                      use_cache: bool = False,
+                                      **kwargs):
+        self._set_use_cache(use_cache)
+        if past_key_values is None:
+            self._clean_past_key_values()
+        else:
+            self._set_past_key_values(past_key_values)
+        return self.engine_container[0].module.prepare_inputs(
+            input_ids=input_ids, past_key_values=past_key_values,
+            attention_mask=attention_mask, use_cache=use_cache, **kwargs
+        )
+    
+    def can_generate(self) -> bool:
+        """ 判断当前流水线模型是否可以进行生成
+        """
+        return True
+    
+    def _find_layers(self):
+        """ 从流水线 `engine` 中找到所有的层
+        """
+        self.layers = self.forward_funcs
+    
+    def _get_past_key_values(self, attr_name: str="past_key_values"):
+        """ 从所有层中获取 `past_key_values`
+        """
+        past_key_values = []
+        for layer in self.layers:
+            if hasattr(layer, attr_name) and getattr(layer, attr_name) is not None:
+                past_key_values.append(getattr(layer, attr_name))
+        return past_key_values if len(past_key_values) > 1 else None
+    
+    def _clean_past_key_values(self, attr_name: str="past_key_values"):
+        """ 清除所有层中的 `past_key_values`
+        """
+        for layer in self.layers:
+            if hasattr(layer, attr_name):
+                object.__setattr__(layer, attr_name, None)
+                
+    def _set_past_key_values(self, past_key_values: List[List[torch.Tensor]], attr_name: str="past_key_values"):
+        """ 设置所有层中的 `past_key_values`
+        """
+        past_key_values = iter(past_key_values)
+        for layer in self.layers:
+            if hasattr(layer, attr_name):
+                object.__setattr__(layer, attr_name, next(past_key_values))
+            
+    def _get_hidden_states(self, attr_name: str="hidden_states"):
+        """ 从所有层中获取 `hidden_states`
+        """
+        all_hidden_states = []
+        for layer in self.layers:
+            if hasattr(layer, attr_name) and getattr(layer, attr_name) is not None:
+                all_hidden_states.append(getattr(layer, attr_name))
+        return all_hidden_states if len(all_hidden_states) > 1 else None
+    
+    def _clean_hidden_states(self, attr_name: str="hidden_states"):
+        """ 清除所有层中的 `hidden_states`
+        """
+        for layer in self.layers:
+            if hasattr(layer, attr_name):
+                object.__setattr__(layer, attr_name, None)
+                
+    def _set_hidden_states(self, hidden_states: List[torch.Tensor], attr_name: str="hidden_states"):
+        """ 设置所有层中的 `hidden_states`
+        """
+        hidden_states = iter(hidden_states)
+        for layer in self.layers:
+            if hasattr(layer, attr_name):
+                object.__setattr__(layer, attr_name, next(hidden_states))   
+                
+    def _set_use_cache(self, use_cache: bool=True, attr_name: str="use_cache"):
+        """ 设置所有层中的 `use_cache`
+        """ 
+        for layer in self.layers:
+            if hasattr(layer, attr_name):
+                object.__setattr__(layer, attr_name, use_cache)
+
+class PipelineModel(PipelineModule, PipelineGenerationMixin):
     """
     重写 ``megatron`` 提供的 ``PipelineModule`` 以支持 **CoLLie** 中的
     :class:`.Trainer`。
@@ -178,6 +351,7 @@ class PipelineModel(PipelineModule):
     :param checkpointable_layers: 可检查点的层
     """
     def __init__(self,
+                 config,
                  layers: Sequence[callable],
                  topology: ProcessTopology,
                  loss_fn: callable=None,
@@ -192,7 +366,7 @@ class PipelineModel(PipelineModule):
         Rewrite PipelineModule to use megaton's process group
         """
         nn.Module.__init__(self)
-
+        self.collie_config = config
         if topology is None:
             raise RuntimeError('must provide topology')
 
@@ -265,6 +439,14 @@ class PipelineModel(PipelineModule):
         os.environ["COLLIE_PP_RANK"] = str(self.stage_id)
         os.environ["COLLIE_DP_RANK"] = str(self._grid.data_parallel_id)
         
+        PipelineGenerationMixin.__init__(self)
+        
+    def forward(self, *args, **kwargs):
+        if not self.inner_forward:
+            return self.generation_forward(*args, **kwargs)
+        else:
+            return super(PipelineModel, self).forward(*args, **kwargs)
+        
     def get_input_embedding(self):
         if env.pp_rank != 0:
             return None, None
@@ -292,171 +474,8 @@ class PipelineModel(PipelineModule):
             key = list(self.tied_modules.keys())[list(self.tied_modules.values()).index(self.get_lm_head()[1])]
             self.tied_modules[key] = lm_head
         self.forward_funcs[name] = lm_head
-
-
-class PipelineGenerationMixin(nn.Module, GenerationMixin):
-    """
-    重写 ``transformers`` 提供的 ``GenerationMixin`` 以支持 **CoLLie** 中的流水线
-    模型。
-
-    :param engine: `DeepSpeedEngine` 实例，可由 :meth:`~collie.utils.\
-        setup_ds_engine` 函数生成
-    """
-    def __init__(self, engine: DeepSpeedEngine) -> None:
-        super().__init__()
-        self.config = PretrainedConfig(is_decoder=True)
-        self.generation_config = GenerationConfig()
-        self.main_input_name = "input_ids"
-        self.device = torch.device("cuda")
-        self.engine = engine
-        self.model_config = self.engine.module.config
-        self.layers = None
-        self._find_layers()
-        self.is_contrastive_search = False
-
-    def generate(self, *args, **kwargs):
-        """开始迭代的生成过程
-        """
-        self.engine.eval()
-        res = super().generate(*args, **kwargs)
-        self._clean_past_key_values()
-        self._clean_hidden_states()
-        # contrastive learning
-        if self.is_contrastive_search:
-            src = self.engine.grid.stage_to_global(self.engine.num_stages - 1)
-            res = broadcast_tensor(res, dtype=res.dtype, src=src,
-                                   ndim=len(res.shape), group=env.pp_group)
-            self.is_contrastive_search = False
-        return res
-    
-    def contrastive_search(self, *args, **kwargs):
-        self.is_contrastive_search = True
-        return super().contrastive_search(*args, **kwargs)
         
-    def forward(self,
-                input_ids: torch.Tensor,
-                attention_mask: Optional[torch.Tensor] = None,
-                position_ids: Optional[torch.Tensor] = None,
-                use_cache: bool = True, **kwargs) -> torch.Tensor:
-        """ 进行一次流水线模型的前向传播
-        """
-        if use_cache:
-            logger.rank_zero_warning(
-                "In Pipeline Parallelism, `use_cache=True` will result in "
-                "slowing down the generate process.", once=True
-            )
-        inputs = {"input_ids": input_ids}
-        if attention_mask is not None:
-            inputs["attention_mask"] = attention_mask
-        if position_ids is not None:
-            inputs["position_ids"] = position_ids
-        inputs["labels"] = inputs["input_ids"]
-        outputs = self.engine.generate_batch(inputs, use_cache)
-        hidden_states = self._get_hidden_states()
-        if self.is_contrastive_search:
-            # contrastive search 时每个 stage 拿到的 last_hidden_states
-            # 不一样，所以广播出去
-            src = self.engine.grid.stage_to_global(self.engine.num_stages - 1)
-            if hidden_states is not None:
-                last_hidden_states = hidden_states[-1]
-            else:
-                # 防止流水线段数过多时某些 stage 没有分到 block
-                hidden_states = []
-                last_hidden_states = None
-            last_hidden_states = broadcast_tensor(
-                last_hidden_states, src=src, group=env.pp_group
-            )
-            hidden_states.append(last_hidden_states)
-        return CausalLMOutputWithPast(
-            loss=None,
-            logits=outputs["logits"],
-            past_key_values=self._get_past_key_values(),
-            hidden_states=hidden_states,
-            attentions=None
-        )
-    
-    def prepare_inputs_for_generation(self, 
-                                      input_ids: torch.Tensor,
-                                      past_key_values: Optional[list] = None,
-                                      attention_mask: Optional[torch.Tensor] = None,
-                                      use_cache: bool = False,
-                                      **kwargs):
-        self._set_use_cache(use_cache)
-        if past_key_values is None:
-            self._clean_past_key_values()
-        else:
-            self._set_past_key_values(past_key_values)
-        return self.engine.module.prepare_inputs(
-            input_ids=input_ids, past_key_values=past_key_values,
-            attention_mask=attention_mask, use_cache=use_cache, **kwargs
-        )
-    
-    def can_generate(self) -> bool:
-        """ 判断当前流水线模型是否可以进行生成
-        """
-        return True
-    
-    def _find_layers(self):
-        """ 从流水线 `engine` 中找到所有的层
-        """
-        self.layers = self.engine.module.forward_funcs
-    
-    def _get_past_key_values(self, attr_name: str="past_key_values"):
-        """ 从所有层中获取 `past_key_values`
-        """
-        past_key_values = []
-        for layer in self.layers:
-            if hasattr(layer, attr_name) and getattr(layer, attr_name) is not None:
-                past_key_values.append(getattr(layer, attr_name))
-        return past_key_values if len(past_key_values) > 1 else None
-    
-    def _clean_past_key_values(self, attr_name: str="past_key_values"):
-        """ 清除所有层中的 `past_key_values`
-        """
-        for layer in self.layers:
-            if hasattr(layer, attr_name):
-                object.__setattr__(layer, attr_name, None)
-                
-    def _set_past_key_values(self, past_key_values: List[List[torch.Tensor]], attr_name: str="past_key_values"):
-        """ 设置所有层中的 `past_key_values`
-        """
-        past_key_values = iter(past_key_values)
-        for layer in self.layers:
-            if hasattr(layer, attr_name):
-                object.__setattr__(layer, attr_name, next(past_key_values))
-            
-    def _get_hidden_states(self, attr_name: str="hidden_states"):
-        """ 从所有层中获取 `hidden_states`
-        """
-        all_hidden_states = []
-        for layer in self.layers:
-            if hasattr(layer, attr_name) and getattr(layer, attr_name) is not None:
-                all_hidden_states.append(getattr(layer, attr_name))
-        return all_hidden_states if len(all_hidden_states) > 1 else None
-    
-    def _clean_hidden_states(self, attr_name: str="hidden_states"):
-        """ 清除所有层中的 `hidden_states`
-        """
-        for layer in self.layers:
-            if hasattr(layer, attr_name):
-                object.__setattr__(layer, attr_name, None)
-                
-    def _set_hidden_states(self, hidden_states: List[torch.Tensor], attr_name: str="hidden_states"):
-        """ 设置所有层中的 `hidden_states`
-        """
-        hidden_states = iter(hidden_states)
-        for layer in self.layers:
-            if hasattr(layer, attr_name):
-                object.__setattr__(layer, attr_name, next(hidden_states))   
-                
-    def _set_use_cache(self, use_cache: bool=True, attr_name: str="use_cache"):
-        """ 设置所有层中的 `use_cache`
-        """ 
-        for layer in self.layers:
-            if hasattr(layer, attr_name):
-                object.__setattr__(layer, attr_name, use_cache)
-
-
+        
 class MultiParallelGrid(PipelineParallelGrid):
     """
     重写以支持 ``megatron`` 中的张量并行进程组

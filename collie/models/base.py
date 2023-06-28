@@ -121,7 +121,8 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                 dist.barrier()
                 return model
         else:
-            pipeline_model =  PipelineModel(
+            pipeline_model = PipelineModel(
+                config=config,
                 layers=model_cls.pipeline_layers(config),
                 base_seed=config.seed,
                 partition_method=config.pp_partition_method,
@@ -168,7 +169,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         )
 
     @classmethod
-    def from_pretrained(cls, model_path_or_name: str, config: Optional[Union[CollieConfig, str]] = None, **kwargs):
+    def from_pretrained(cls, model_path_or_name: str, config: Union[CollieConfig, str], **kwargs):
         """
         从 ``model_path_or_name`` 中加载预训练好的模型。
 
@@ -189,7 +190,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                 "Distributed group is not initialized and `process_exclusion` "
                 "will not take effect."
             )
-        if not os.path.exists(model_path_or_name):
+        if not os.path.exists(model_path_or_name) and kwargs.get("protocol", "file") == "file":
             model_path_or_name = snapshot_download(model_path_or_name)
         if config is None:
             config = model_path_or_name

@@ -5,7 +5,7 @@ from datasets import load_dataset
 from transformers import LlamaTokenizer, GenerationConfig
 from collie import Trainer, EvaluatorForPerplexity, LlamaForCausalLM, CollieConfig, PPLMetric, AccuracyMetric, DecodeMetric, CollieDatasetForTraining, CollieDatasetForGeneration, \
     LossMonitor, TGSMonitor, MemoryMonitor, EvalMonitor, GradioProvider, EvaluatorForGeneration, LRMonitor, BleuMetric, DashProvider
-config = CollieConfig.from_pretrained("decapoda-research/llama-7b-hf")
+config = CollieConfig.from_pretrained("/mnt/petrelfs/zhangshuo/model/llama-7b-hf")
 config.pp_size = 8
 config.train_micro_batch_size = 1
 config.eval_batch_size = 1
@@ -21,7 +21,7 @@ config.ds_config = {
         "wandb": {
             "enabled": True,
             "team": "00index",
-            "project": "collie",
+            "project": "collie-experiment",
             "group": "translation"
         }
     }

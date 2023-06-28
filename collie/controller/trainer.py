@@ -23,7 +23,7 @@ from deepspeed.accelerator import get_accelerator
 from deepspeed.runtime.pipe.engine import PipelineEngine
 from deepspeed.runtime.engine import DeepSpeedSchedulerCallable
 from transformers.generation.utils import GenerationConfig
-from transformers.modeling_utils import PreTrainedModel
+from transformers.modeling_utils import PreTrainedModel, load_state_dict
 from transformers import PreTrainedTokenizerBase
 
 from collie.config import CollieConfig
@@ -35,6 +35,7 @@ from collie.utils import progress, env, setup_ds_engine, BaseProvider, _Generati
 from collie.optim import Lomo
 from collie.models.base import CollieModelForCausalLM
 from .evaluator import Evaluator
+from .server import Server
 from collie.data import CollieDataLoader
 from collie.callbacks.callback import Callback
 from collie.callbacks.callback_manager import CallbackManager, prepare_callback
@@ -184,11 +185,14 @@ class Trainer(TrainerEventTrigger):
         
         self.communicate_buffer_shape = None
         self.setup_parallel_model()
+        if isinstance(self.engine.module, PipelineGenerationMixin):
+            self.engine.module.set_engine(self.engine)
         self.data_provider = data_provider
         self.monitor = _MultiMonitors(monitors)
-        if self.data_provider is not None and dist.get_rank() == 0:
-            self.data_provider.start_provider()
-
+        self.server = None
+        if self.data_provider is not None:
+            self.server = Server(model=self.model, data_provider=self.data_provider, config=self.config)
+            self.server.start()
         if evaluators is not None and eval_dataset is not None:
             logger.rank_zero_warning(
                 "Note that you have set both `evaluators` and `eval_dataset` "
@@ -208,8 +212,7 @@ class Trainer(TrainerEventTrigger):
             if self.tokenizer is not None:
                 evaluator.tokenizer = self.tokenizer
             evaluator.engine = self.engine
-            evaluator.data_provider = self.data_provider
-
+            evaluator.server = self.server
         self.evaluators = evaluators
 
         callbacks = prepare_callback(callbacks)
@@ -250,42 +253,6 @@ class Trainer(TrainerEventTrigger):
         """获取当前全局步数
         """
         return self.epoch_idx * self.steps_per_epoch + self.batch_idx
-
-    def data_provider_handler(self):
-        """当初始化 :class:`collie.Trainer` 的过程中提供了 ``data_provider`` 时会使用此方法。
-            ``data_provider`` 中维持一个异步队列 ``queue.Queue``，该方法会不断从中取出数据，放入模型中进行生成
-        """
-        if self.data_provider is None:
-            return None
-        has_data = torch.tensor(False).cuda()
-        input_ids = None
-        if dist.get_rank() == 0:
-            input_ids = self.data_provider.get_data()
-            if input_ids is not None:
-                has_data = ~has_data
-                input_ids = input_ids.cuda()
-        dist.broadcast(has_data, 0)
-        if not has_data:
-            return
-        input_ids = broadcast_tensor(input_ids, src=0)
-        if isinstance(self.engine, PipelineEngine):
-            generation_model = PipelineGenerationMixin(
-                engine=self.engine
-            )
-        else:
-            generation_model = self.engine.module
-        if not generation_model.can_generate():
-            return
-        use_stream = self.data_provider.stream
-        streamer = _GenerationStreamer(server=self.data_provider)
-        generated_ids = generation_model.generate(
-            input_ids=input_ids.cuda(), 
-            attention_mask=torch.ones_like(input_ids).cuda(), 
-            generation_config=self.data_provider.generation_config,
-            streamer=streamer if use_stream else None
-        )
-        if not use_stream:
-            self.data_provider.put_feedback(generated_ids[0].cpu())
 
     def setup_parallel_model(self):
         """
@@ -365,7 +332,8 @@ class Trainer(TrainerEventTrigger):
             )
             for self.batch_idx, batch in enumerate(tqbar_batch, start=self.batch_idx):
                 tqbar_batch.set_description(f"Training Batch: {self.batch_idx} / {self.steps_per_epoch}")
-                self.data_provider_handler()
+                if self.server is not None:
+                    self.server.data_provider_handler()
                 self.engine.train()
                 self.on_train_batch_begin(batch)
                 with self.monitor as item:

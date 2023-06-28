@@ -115,6 +115,17 @@ class NetworkIOMonitor(BaseMonitor):
     def __init__(self, config, interface: Optional[str] = None) -> None:
         super().__init__(config)
         self.interface = interface
+        start_time = time.time()
+        start_info = psutil.net_io_counters(pernic=self.interface is not None, nowrap=True)
+        time.sleep(5)
+        end_time = time.time()
+        end_info = psutil.net_io_counters(pernic=self.interface is not None, nowrap=True)
+        if self.interface is not None:
+            assert isinstance(self.end_info, (dict, Dict)) and self.interface in self.end_info.keys(), f"Wrong interface! Interface can only be selected in {list(self.end_info.keys())}."
+            self.start_info = self.start_info[self.interface]
+            self.end_info = self.end_info[self.interface]
+        self.norm_sent = (end_info.bytes_sent - start_info.bytes_sent) / (end_time - start_time)
+        self.norm_recv = (end_info.bytes_recv - start_info.bytes_recv) / (end_time - start_time)
         
     def __enter__(self):
         self.start_time = time.time()
@@ -129,8 +140,8 @@ class NetworkIOMonitor(BaseMonitor):
                 assert isinstance(self.end_info, (dict, Dict)) and self.interface in self.end_info.keys(), f"Wrong interface! Interface can only be selected in {list(self.end_info.keys())}."
                 self.start_info = self.start_info[self.interface]
                 self.end_info = self.end_info[self.interface]
-            self.monitor.write_events([(f"Network IO (Sent) bytes/second", (self.end_info.bytes_sent - self.start_info.bytes_sent) / (self.end_time - self.start_time), self.item['global_batch_idx'])])
-            self.monitor.write_events([(f"Network IO (Recv) bytes/second", (self.end_info.bytes_recv - self.start_info.bytes_recv) / (self.end_time - self.start_time), self.item['global_batch_idx'])])
+            self.monitor.write_events([(f"Network IO (Sent) bytes/second", ((self.end_info.bytes_sent - self.start_info.bytes_sent) / (self.end_time - self.start_time)) - self.norm_sent, self.item['global_batch_idx'])])
+            self.monitor.write_events([(f"Network IO (Recv) bytes/second", ((self.end_info.bytes_recv - self.start_info.bytes_recv) / (self.end_time - self.start_time)) - self.norm_recv, self.item['global_batch_idx'])])
             
 class DiskIOMonitor(BaseMonitor):
     """ 用来记录每个step的硬盘读写情况

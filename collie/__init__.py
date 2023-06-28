@@ -20,7 +20,7 @@ from .module import PipelineGenerationMixin, ColumnParallelLinear, \
     RowParallelLinearWithoutBias, LinearWithHiddenStates, \
     ColumnParallelLMHead, GPTLMLoss
 from .controller import Trainer, Evaluator, EvaluatorForPerplexity, \
-    EvaluatorForClassfication, EvaluatorForGeneration
+    EvaluatorForClassfication, EvaluatorForGeneration, Server
 from .config import CollieConfig
 from .metrics import BaseMetric, DecodeMetric, AccuracyMetric, PPLMetric, BleuMetric
 from .data import CollieDatasetForClassification, CollieBatchSampler, \
@@ -34,6 +34,7 @@ __all__ = [
     'EvaluatorForPerplexity',
     'EvaluatorForClassfication',
     'EvaluatorForGeneration',
+    'Server',
 
     # config
     'CollieConfig',
