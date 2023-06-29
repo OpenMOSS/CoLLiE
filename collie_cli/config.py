@@ -4,15 +4,22 @@ import yaml
 
 from .bullet import Bullet, Input, VerticalPrompt, colors
 
+description = "Launches an interactive instruction to create and save a configuration file for CoLLiE. The configuration file will be saved at the given path, default to ./collie_default.yml."
+
 
 def config_command_parser(subparsers=None):
     if subparsers is not None:
-        parser = subparsers.add_parser("config")
+        parser = subparsers.add_parser("config", description=description)
     else:
-        parser = argparse.ArgumentParser("Accelerate config command")
+        parser = argparse.ArgumentParser(
+            "CoLLiE config command", description=description
+        )
+
+    parser.usage = "collie config [<args>]"
 
     parser.add_argument(
         "--config_file",
+        "-c",
         default="./collie_default.yml",
         help="If --config_file is specified, the configuration file will be generated at the given path. Otherwise, the configuration file will be generated at ./collie_default.yml.",
         type=str,
