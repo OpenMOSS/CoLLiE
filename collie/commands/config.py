@@ -1,7 +1,7 @@
 import argparse
 
 import yaml
-from bullet import Bullet, Input, VerticalPrompt, colors
+from .bullet import Bullet, Input, VerticalPrompt, colors
 
 
 def config_command_parser(subparsers=None):
