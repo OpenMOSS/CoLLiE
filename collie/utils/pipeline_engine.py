@@ -1,4 +1,5 @@
 import torch
+from torch import nn
 import torch.distributed as dist
 from deepspeed.runtime.pipe.engine import PipelineEngine, _tensor_bytes
 from deepspeed.runtime.pipe import schedule, p2p
@@ -6,7 +7,7 @@ from deepspeed.runtime.utils import PartitionedTensor
 from deepspeed.runtime.activation_checkpointing import checkpointing as ds_checkpointing
 from deepspeed.utils import logger
 
-from .utils import _split_batch
+from .utils import _split_batch, auto_param_call
 from .dist_utils import broadcast_tensor, env
 
 class ColliePipelineEngine(PipelineEngine):
@@ -19,18 +20,18 @@ class ColliePipelineEngine(PipelineEngine):
     def reset_buffer_shape(self, batch):
         if self.buffer_shape is None:
             self.buffer_shape = {}
-            for key, value in batch[0].items():
+            for key, value in batch.items():
                 self.buffer_shape[key] = value.shape
         else:
             flag = False
-            if batch[0].keys() != self.buffer_shape.keys():
+            if batch.keys() != self.buffer_shape.keys():
                 flag = True
-            for key, value in batch[0].items():
+            for key, value in batch.items():
                 if self.buffer_shape[key] != value.shape:
                     flag = True
             if flag:
                 self.buffer_shape = {}
-                for key, value in batch[0].items():
+                for key, value in batch.items():
                     self.buffer_shape[key] = value.shape
                 self.reset_activation_shape()
 
@@ -72,7 +73,7 @@ class ColliePipelineEngine(PipelineEngine):
             total_loss = None
         self.total_loss = None
         # special case for generation
-        gradient_accumulation_steps = batch[0]["input_ids"].shape[0]
+        gradient_accumulation_steps = batch["input_ids"].shape[0]
         if use_cache:
             batch = [batch]
         else:
@@ -237,7 +238,9 @@ class ColliePipelineEngine(PipelineEngine):
             if self._compute_loss and self.module.loss_fn is not None:
                 # TODO 参数匹配
                 labels = self.pipe_buffers['labels'][buffer_id]
-                self.loss = self.module.loss_fn(outputs, labels)
+                self.loss = auto_param_call(self.module.loss_fn, {**labels, **outputs}, 
+                                            signature_fn=self.module.loss_fn.forward if isinstance(self.module.loss_fn, nn.Module) else self.module.loss_fn)
+                # self.loss = self.module.loss_fn(outputs, labels)
             else:
                 # Some models just return loss from forward()
                 self.loss = outputs
@@ -340,34 +343,47 @@ class ColliePipelineEngine(PipelineEngine):
     def _exec_load_micro_batch(self, buffer_id):
         if self.wall_clock_breakdown():
             self.timers('batch_input').start()
+            
+        batch = self._next_batch() # {"input_ids": torch.Tensor, "labels": torch.Tensor}
 
-        batch = self._next_batch() # (inputs, labels)
+        # batch = self._next_batch() # (inputs, labels)
 
-        if self.is_first_stage():
+        # if self.is_first_stage():
+        #     loaded = {}
+        #     for key, tensor in batch[0].items():
+        #         assert torch.is_tensor(tensor)
+        #         mine = tensor.clone().detach().to(self.device)
+        #         mine.requires_grad = mine.is_floating_point()
+        #         loaded[key] = mine
+
+        #     self.pipe_buffers["inputs"][buffer_id] = loaded
+
+        # if self.is_last_stage():
+        #     loaded = batch[1]
+        #     # tensor or dict
+        #     if torch.is_tensor(batch[1]):
+        #         loaded = batch[1].to(self.device)
+        #     elif isinstance(batch[1], dict):
+        #         loaded = {}
+        #         for key, tensor in batch[1].items():
+        #             assert torch.is_tensor(tensor)
+        #             tensor = tensor.to(self.device).detach()
+        #             loaded[key] = tensor
+        #     else:
+        #         raise NotImplementedError
+        #     self.pipe_buffers['labels'][buffer_id] = loaded
+        
+        if self.is_first_stage() or self.is_last_stage():
             loaded = {}
-            for key, tensor in batch[0].items():
+            for key, tensor in batch.items():
                 assert torch.is_tensor(tensor)
                 mine = tensor.clone().detach().to(self.device)
                 mine.requires_grad = mine.is_floating_point()
                 loaded[key] = mine
-
-            self.pipe_buffers["inputs"][buffer_id] = loaded
-
-        if self.is_last_stage():
-            loaded = batch[1]
-            # tensor or dict
-            if torch.is_tensor(batch[1]):
-                loaded = batch[1].to(self.device)
-            elif isinstance(batch[1], dict):
-                loaded = {}
-                for key, tensor in batch[1].items():
-                    assert torch.is_tensor(tensor)
-                    tensor = tensor.to(self.device).detach()
-                    loaded[key] = tensor
-            else:
-                raise NotImplementedError
-
-            self.pipe_buffers['labels'][buffer_id] = loaded
+            if self.is_first_stage():
+                self.pipe_buffers["inputs"][buffer_id] = loaded
+            if self.is_last_stage():
+                self.pipe_buffers['labels'][buffer_id] = loaded
 
         if self.wall_clock_breakdown():
             self.timers('batch_input').stop()

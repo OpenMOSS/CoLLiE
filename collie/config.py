@@ -2,8 +2,8 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Union
 
-from transformers import PretrainedConfig, AutoConfig
-from peft.utils import PeftConfig
+from transformers import PretrainedConfig, AutoConfig, BitsAndBytesConfig
+from peft.utils import PeftConfig, PeftType
 
 __all__ = ["CollieConfig"]
 
@@ -158,15 +158,21 @@ class CollieConfig:
         }
     )
     model_config: PretrainedConfig = field(
-        default=None,
+        default=PretrainedConfig(),
         metadata={
             "help": "Model configuration."
         }
     )
     peft_config: PeftConfig = field(
-        default=None,
+        default=PeftConfig(),
         metadata={
             "help": "PEFT configuration."
+        }
+    )
+    quantization_config: BitsAndBytesConfig = field(
+        default=BitsAndBytesConfig(),
+        metadata={
+            "help": "Configuration parameters for the `bitsandbytes` library"
         }
     )
 
@@ -206,6 +212,12 @@ class CollieConfig:
     def __post_init__(self):
         if isinstance(self.ds_config, str):
             self.ds_config = load_config(self.ds_config)
+        if isinstance(self.model_config, str):
+            self.model_config = AutoConfig.from_pretrained(self.model_config, trust_remote_code=True)
+        if isinstance(self.peft_config, str):
+            self.peft_config = PeftConfig(**load_config(self.peft_config))
+        if isinstance(self.quantization_config, str):\
+            self.quantization_config = BitsAndBytesConfig.from_dict(load_config(self.quantization_config))
         assert isinstance(self.ds_config, dict), self.ds_config
         os.environ["COLLIE_SEED"] = str(self.seed)
 
@@ -214,6 +226,16 @@ class CollieConfig:
         r = f"{title}:\n"
         r += _repr_dict(self.__dict__, 0)
         return r
+    
+    def valid_config(self):
+        if "zero_optimization" in self.ds_config.keys() \
+            and "stage" in self.ds_config["zero_optimization"].keys() \
+            and self.ds_config["zero_optimization"]["stage"] == 3:
+                assert self.pp_size == 1, "Pipeline is not compatible with Zero3."
+        if self.tp_size > 1:
+            assert self.peft_config.peft_type != PeftType.LORA, "Tensor parallelism is not compatible with LoRa"
+            assert not self.quantization_config.load_in_4bit and not self.quantization_config.load_in_8bit, \
+                "Tensor parallelism is not compatible with int8 quantization and int4 quantization"
 
     
 def load_config(path: str):

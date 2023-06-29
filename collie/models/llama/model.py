@@ -251,9 +251,8 @@ class LlamaForCausalLM(CollieModelForCausalLM):
         self.config = PretrainedConfig(is_decoder=True)
         self.main_input_name = "input_ids"
 
-    def forward(self, input_ids: torch.Tensor, **kwargs):
+    def forward(self, input_ids: torch.Tensor, attention_mask: Optional[torch.Tensor] = None, **kwargs):
         inputs = {"input_ids": input_ids}
-        attention_mask = kwargs.get("attention_mask", None)
         if attention_mask is not None:
             inputs["attention_mask"] = attention_mask
         inputs["hidden_states"] = self.embed_tokens(inputs["input_ids"])

@@ -2,6 +2,7 @@ import argparse
 
 import yaml
 from bullet import Bullet, Input, VerticalPrompt, colors
+from transformers import PretrainedConfig, AutoConfig
 
 
 def config_command_parser(subparsers=None):
@@ -23,6 +24,7 @@ def config_command_parser(subparsers=None):
 
 
 _prompt_argname_map = {
+    "HuggingFace模型名称或路径": "model_config",
     "随机数种子": "seed",
     "流水线并行的大小": "pp_size",
     "张量并行大小": "tp_size",
@@ -58,6 +60,7 @@ def config_command_entry(args):
 
     config_command_cli = VerticalPrompt(
         [
+            Input("HuggingFace模型名称或路径", default="decapoda-research/llama-7b-hf", word_color=word_color),
             Input("随机数种子", default="42", word_color=word_color),
             Input("训练时的迭代次数", default="100", word_color=word_color),
             Input(
@@ -130,7 +133,8 @@ def config_command_entry(args):
 
     result = config_command_cli.launch()
     config = {_prompt_argname_map[k]: _parse(v) for k, v in result}
-
+    model_config = AutoConfig.from_pretrained(config["model_config"])
+    config["model_config"] = model_config.to_dict()
     if config["pp_partition_method"] == "type:[regex]":
         regx_result = regx_cli.launch()
         config["pp_partition_method"] = regx_result[0][1]

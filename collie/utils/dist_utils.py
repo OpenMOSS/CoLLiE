@@ -4,12 +4,11 @@ import os
 import copy
 import json
 import re
-import contextlib
 import subprocess
 
 import torch
 from torch import distributed as dist
-from torch.multiprocessing import Process
+from torch.multiprocessing import Process, set_start_method
 import deepspeed
 from deepspeed.monitor.wandb import WandbMonitor
 from deepspeed.runtime.utils import set_random_seed
@@ -513,8 +512,10 @@ def launch(target: callable,
     :param port: 启动的端口
     """
     def _wrapper(environ):
+        torch.set_default_device(torch.device(int(environ.get("LOCAL_RANK"))))
         os.environ.update(environ)
         target()
+    set_start_method("fork")
     processes = []
     for rank in range(len(devices.split(","))):
         environ = copy.deepcopy(os.environ)
