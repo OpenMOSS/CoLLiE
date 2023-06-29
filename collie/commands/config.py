@@ -1,6 +1,7 @@
 import argparse
 
 import yaml
+
 from .bullet import Bullet, Input, VerticalPrompt, colors
 
 
@@ -23,22 +24,22 @@ def config_command_parser(subparsers=None):
 
 
 _prompt_argname_map = {
-    "Seed: ": "seed",
-    "Size for pipeline parallelism: ": "pp_size",
-    "Size for tensor parallelism: ": "tp_size",
-    "Size for data paralellism: ": "dp_size",
+    "Seed": "seed",
+    "Size for pipeline parallelism": "pp_size",
+    "Size for tensor parallelism": "tp_size",
+    "Size for data paralellism": "dp_size",
     "Choose the partition method for pipeline parallelism.": "pp_partition_method",
-    "Training epochs: ": "train_epochs",
+    "Training epochs": "train_epochs",
     "After how many training steps in an epoch is the evaluation performed? ": "eval_per_n_steps",
     "After how many training epochs is the evaluation performed? ": "eval_per_n_epochs",
-    "Micro batch size for each GPU: ": "train_micro_batch_size",
-    "Steps for gradient accumulation: ": "gradient_accumulation_steps",
-    "Batch size for evaluation: ": "eval_batch_size",
+    "Micro batch size for each GPU": "train_micro_batch_size",
+    "Steps for gradient accumulation": "gradient_accumulation_steps",
+    "Batch size for evaluation": "eval_batch_size",
     "Do you want to use the gradient checkpointing?": "checkpointing",
     "Do you want to use FlashAttention?": "use_flash",
-    "The possibility for dropout: ": "dropout",
+    "The possibility for dropout": "dropout",
     "Choose the method for parameter initialization": "initization_method",  # TODO: a spelling mistake?
-    "Path to the configuration file for DeepSpeed: ": "ds_config",  # TODO: choose between using an existing config or to generate a new one.
+    "Path to the configuration file for DeepSpeed": "ds_config",  # TODO: choose between using an existing config or to generate a new one.
 }
 
 
@@ -58,8 +59,8 @@ def config_command_entry(args):
 
     config_command_cli = VerticalPrompt(
         [
-            Input("Seed: ", default="42", word_color=word_color),
-            Input("Training epochs: ", default="100", word_color=word_color),
+            Input("Seed", default="42", word_color=word_color),
+            Input("Training epochs", default="100", word_color=word_color),
             Input(
                 "After how many training steps in an epoch is the evaluation performed? ",
                 default="0",
@@ -70,13 +71,11 @@ def config_command_entry(args):
                 default="0",
                 word_color=word_color,
             ),
+            Input("Micro batch size for each GPU", default="1", word_color=word_color),
             Input(
-                "Micro batch size for each GPU: ", default="1", word_color=word_color
+                "Steps for gradient accumulation", default="1", word_color=word_color
             ),
-            Input(
-                "Steps for gradient accumulation: ", default="1", word_color=word_color
-            ),
-            Input("Batch size for evaluation: ", default="1", word_color=word_color),
+            Input("Batch size for evaluation", default="1", word_color=word_color),
             Bullet(
                 "Do you want to use the gradient checkpointing?",
                 choices=[
@@ -95,9 +94,7 @@ def config_command_entry(args):
                 bullet=" >",
                 word_color=word_color,
             ),
-            Input(
-                "The possibility for dropout: ", default="0.0", word_color=word_color
-            ),
+            Input("The possibility for dropout", default="0.0", word_color=word_color),
             Bullet(
                 "Choose the method for parameter initialization",
                 choices=[
@@ -115,15 +112,13 @@ def config_command_entry(args):
                 word_color=word_color,
             ),
             Input(
-                "Path to the configuration file for DeepSpeed: ",
+                "Path to the configuration file for DeepSpeed",
                 default="ds_config.yml",
                 word_color=word_color,
             ),
-            Input(
-                "Size for pipeline parallelism: ", default="1", word_color=word_color
-            ),
-            Input("Size for tensor parallelism: ", default="1", word_color=word_color),
-            Input("Size for data paralellism: ", default="1", word_color=word_color),
+            Input("Size for pipeline parallelism", default="1", word_color=word_color),
+            Input("Size for tensor parallelism", default="1", word_color=word_color),
+            Input("Size for data paralellism", default="1", word_color=word_color),
             Bullet(
                 "Choose the partition method for pipeline parallelism.",
                 choices=["parameters", "uniform", "type:[regex]"],
@@ -137,7 +132,7 @@ def config_command_entry(args):
     regx_cli = VerticalPrompt(
         [
             Input(
-                "You've selected the type:[regex] method, please enter the regex: ",
+                "You've selected the type:[regex] method, please enter the regex",
                 default="",
                 word_color=word_color,
             )
