@@ -26,9 +26,10 @@ class ColliePipelineEngine(PipelineEngine):
             flag = False
             if batch.keys() != self.buffer_shape.keys():
                 flag = True
-            for key, value in batch.items():
-                if self.buffer_shape[key] != value.shape:
-                    flag = True
+            if not flag:
+                for key, value in batch[0].items():
+                    if self.buffer_shape[key] != value.shape:
+                        flag = True
             if flag:
                 self.buffer_shape = {}
                 for key, value in batch.items():
@@ -139,7 +140,6 @@ class ColliePipelineEngine(PipelineEngine):
                 # torch.cat 会导致显存大幅度增长，为了防止 OOM 迁移到 cpu 上
                 _logits[key] = [l[key].cpu() for l in logits]
             logits.clear()
-            torch.cuda.empty_cache()
             # 广播数目
             count_tensor = torch.LongTensor(data=[len(_logits)]).to(self.device)
             broadcast_tensor(count_tensor, dtype=torch.long, src=src_rank,
