@@ -38,10 +38,11 @@ class BaseProvider:
     def start_provider(self):
         """ start_provider 为异步数据提供器的启动函数，会在一个新的进程中启动 `provider_handler` 函数
         """
-        process = Process(target=self.provider_handler)
-        process.daemon = True
-        process.start()
-        self.provider_started = True
+        if not self.provider_started:
+            process = Process(target=self.provider_handler)
+            process.daemon = True
+            process.start()
+            self.provider_started = True
         
     def get_data(self):
         """ get_data 为异步数据提供器的数据获取函数，会从队列 `self.data` 中获取数据
@@ -116,8 +117,9 @@ class DashProvider(BaseProvider):
         import diskcache
         # 文件上传
         import dash_uploader as du
-        
+        import logging
 
+        logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
         CACHE_PATH = "./.cache"
         if os.path.exists(CACHE_PATH):

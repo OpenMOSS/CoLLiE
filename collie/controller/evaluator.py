@@ -1,18 +1,20 @@
 from typing import Optional, Dict, Callable, Sequence, Tuple, Any, List, Iterable
 
 import torch
+from torch import nn
 import torch.distributed as dist
 from deepspeed.runtime.pipe.engine import PipelineEngine
 from deepspeed.accelerator import get_accelerator
 from transformers.generation.utils import GenerationConfig
 from transformers import PreTrainedTokenizerBase
 
-from collie.module import PipelineGenerationMixin, GPTLMLoss
+from collie.module import PipelineGenerationMixin, GPTLMLoss, PipelineModel
 from collie.data.dataloader import CollieDataLoader
 from collie.utils.rich_progress import f_rich_progress
 from collie.log import logger
 from collie.config import CollieConfig
-from collie.utils import progress, env, setup_ds_engine, BaseProvider, _GenerationStreamer, _MetricsWrapper, BaseMonitor, _MultiMonitors, broadcast_tensor, ColliePadder
+from collie.utils import progress, env, setup_ds_engine, BaseProvider, _GenerationStreamer, _MetricsWrapper, BaseMonitor, _MultiMonitors, broadcast_tensor, ColliePadder, auto_param_call
+from .server import Server
 
 class Evaluator:
     """
@@ -76,6 +78,9 @@ class Evaluator:
         self.collate_fn = collate_fn
         self.eval_dataloader = None
         self.data_provider = data_provider
+        self.server = None
+        if self.data_provider is not None:
+            self.server = Server(model=self.model, data_provider=self.data_provider, config=self.config)
         self.monitor = _MultiMonitors(monitors)
         self.global_batch_idx = 0
 
@@ -88,10 +93,11 @@ class Evaluator:
                                      f"{dist.get_world_size()} != {self.config.tp_size} * {self.config.dp_size} * {self.config.dp_size}.")
             self.config.dp_size = dist.get_world_size() // (self.config.tp_size * self.config.pp_size)
             logger.rank_zero_warning(f"Set dp_size to {self.config.dp_size}.")
-        self.engine, _, _, _ = setup_ds_engine(
-            model=self.model,
-            config=self.config,
-        )
+        object.__setattr__(self, 
+                           "engine", 
+                           setup_ds_engine(config=self.config, model=self.model)[0])
+        if isinstance(self.engine.module, PipelineGenerationMixin):
+            self.engine.module.set_engine(self.engine)
     
     def eval(self, dataloader: Optional[Iterable] = None):
         """
@@ -101,9 +107,8 @@ class Evaluator:
         """
         if self.engine is None:
             self.init_engine()
-        if self.data_provider is not None and dist.get_rank() == 0:
-            if not self.data_provider.provider_started:
-                self.data_provider.start_provider()
+        if self.server is not None:
+            self.server.start()
         if self.eval_dataloader is None:
             self.eval_dataloader = CollieDataLoader(
                 self.dataset, self.config.eval_batch_size,
@@ -119,7 +124,8 @@ class Evaluator:
         with progress(eval_dataloader, desc="Evaluating Batch: ", disable=env.rank != 0, total=self.eval_steps) as tqbar_batch:
             for batch_idx, batch in enumerate(tqbar_batch):
                 tqbar_batch.set_description(f"Evaluating Batch: {batch_idx} / {self.eval_steps}")
-                self.data_provider_handler()
+                if self.server is not None:
+                    self.server.data_provider_handler()
                 self.engine.eval()
                 with torch.no_grad():
                     result = self.eval_fn(self, batch)
@@ -158,42 +164,6 @@ class Evaluator:
         """
         raise NotImplementedError
 
-    def data_provider_handler(self):
-        """当初始化 :class:`collie.Evaluator` 的过程中提供了 ``data_provider`` 时会使用此方法。
-            ``data_provider`` 中维持一个异步队列 ``queue.Queue``，该方法会不断从中取出数据，放入模型中进行生成
-        """
-        if self.data_provider is None:
-            return None
-        has_data = torch.tensor(False).cuda()
-        input_ids = None
-        if dist.get_rank() == 0:
-            input_ids = self.data_provider.get_data()
-            if input_ids is not None:
-                has_data = ~has_data
-                input_ids = input_ids.cuda()
-        dist.broadcast(has_data, 0)
-        if not has_data:
-            return
-        input_ids = broadcast_tensor(input_ids, src=0)
-        if isinstance(self.engine, PipelineEngine):
-            generation_model = PipelineGenerationMixin(
-                engine=self.engine
-            )
-        else:
-            generation_model = self.engine.module
-        if not generation_model.can_generate():
-            return
-        use_stream = self.data_provider.stream
-        streamer = _GenerationStreamer(server=self.data_provider)
-        generated_ids = generation_model.generate(
-            input_ids=input_ids.cuda(), 
-            attention_mask=torch.ones_like(input_ids).cuda(), 
-            generation_config=self.data_provider.generation_config,
-            streamer=streamer if use_stream else None
-        )
-        if not use_stream:
-            self.data_provider.put_feedback(generated_ids[0].cpu())
-            
 class EvaluatorForGeneration(Evaluator):
     def __init__(self, 
                  generation_config: GenerationConfig = GenerationConfig(),
@@ -219,19 +189,13 @@ class EvaluatorForGeneration(Evaluator):
         :return: 一次验证的结果，为 `Dict` 类型，该结果会被传入 `metric` 的 `update` 方法中
         """
         assert evaluator.tokenizer is not None, "You must provide a tokenizer to decode the generated results."
-        inputs, labels = batch
-        if isinstance(evaluator.engine, PipelineEngine):
-            generation_model = PipelineGenerationMixin(
-                engine=evaluator.engine
-            )
-        else:
-            generation_model = evaluator.engine.module
-        generated_ids = generation_model.generate(input_ids=inputs["input_ids"], attention_mask=inputs["attention_mask"], 
+        generation_model = evaluator.engine.module
+        generated_ids = generation_model.generate(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"], 
                                               generation_config=evaluator.generation_config)
-        prompt_length = inputs["input_ids"].shape[1]
+        prompt_length = batch["input_ids"].shape[1]
         result = {"pred": [evaluator.tokenizer.decode(sample[prompt_length:], skip_special_tokens=evaluator.skip_special_tokens) for sample in generated_ids]}
-        if "target" in labels.keys():
-            result["target"] = [evaluator.tokenizer.decode(sample, skip_special_tokens=evaluator.skip_special_tokens) for sample in labels["target"]]
+        if "target" in batch.keys():
+            result["target"] = [evaluator.tokenizer.decode(sample, skip_special_tokens=evaluator.skip_special_tokens) for sample in batch["target"]]
         return result
         
 class EvaluatorForPerplexity(Evaluator):
@@ -257,18 +221,18 @@ class EvaluatorForPerplexity(Evaluator):
     
         :return: 一次验证的结果，为 `Dict` 类型，该结果会被传入 `metric` 的 `update` 方法中
         """
-        inputs, labels = batch
         if evaluator.config.pp_size > 1:
             outputs = evaluator.engine.eval_batch(batch)
         else:
             # concat prompt labels for p-tuning
             if evaluator.config.peft_config and evaluator.config.peft_config.peft_type in ["PROMPT_TUNING", "P_TUNING"]:
-                batch_size = inputs["input_ids"].shape[0]
-                if "labels" in labels.keys():
-                    prefix_labels = torch.full((batch_size, evaluator.config.peft_config.num_virtual_tokens), -100).to(labels["labels"].device)
-                    labels["labels"] = torch.cat((prefix_labels, labels["labels"]), dim=1)
-            outputs = evaluator.engine(**inputs)
-        ppl = torch.exp(evaluator.loss_fn(outputs, labels))
+                batch_size = batch["input_ids"].shape[0]
+                if "labels" in batch.keys():
+                    prefix_labels = torch.full((batch_size, evaluator.config.peft_config.num_virtual_tokens), -100).to(batch["labels"].device)
+                    batch["labels"] = torch.cat((prefix_labels, batch["labels"]), dim=1)
+            outputs = evaluator.engine(**batch)
+        ppl = torch.exp(auto_param_call(evaluator.loss_fn, {**batch, **outputs}, 
+                                        signature_fn=evaluator.loss_fn.forward if isinstance(evaluator.loss_fn, nn.Module) else evaluator.loss_fn))
         return {
             "ppl": ppl.detach().clone().view(1,).cuda(),
             # **{key: value.cuda() for key, value in batch[1].items() if isinstance(value, torch.Tensor)}
@@ -289,31 +253,28 @@ class EvaluatorForClassfication(EvaluatorForPerplexity):
     
         :return: 一次验证的结果，为 `Dict` 类型，该结果会被传入 `metric` 的 `update` 方法中
         """
-        inputs_group, labels_group = batch
-        assert isinstance(inputs_group["input_ids"], Sequence), f"input_ids must be a list for classification task. But got {type(inputs_group['input_ids'])}."
-        assert isinstance(inputs_group["attention_mask"], Sequence), f"input_ids must be a list for classification task. But got {type(inputs_group['attention_mask'])}."
-        pred = torch.zeros((inputs_group["input_ids"][0].shape[0], len(inputs_group["input_ids"])))
-        for idx, input_ids in enumerate(inputs_group["input_ids"]):
+        assert isinstance(batch["input_ids"], Sequence), f"input_ids must be a list for classification task. But got {type(batch['input_ids'])}."
+        assert isinstance(batch["attention_mask"], Sequence), f"input_ids must be a list for classification task. But got {type(batch['attention_mask'])}."
+        pred = torch.zeros((batch["input_ids"][0].shape[0], len(batch["input_ids"])))
+        for idx, input_ids in enumerate(batch["input_ids"]):
             assert isinstance(input_ids, torch.Tensor), "input_ids must be a list of torch.Tensor for classification task."
-            inputs = {"input_ids": input_ids.cuda(), "attention_mask": inputs_group["attention_mask"][idx].cuda(), 
-                      **{key: value.cuda() for key, value in inputs_group.items() if key not in ("input_ids", "attention_mask")}}
-            labels = {"labels": labels_group["labels"][idx].cuda(), 
-                      **{key: value.cuda() for key, value in labels_group.items() if key != "labels"}}
+            inputs = {"input_ids": input_ids.cuda(), "labels": batch["labels"][idx].cuda(), "attention_mask": batch["attention_mask"][idx].cuda(), 
+                      **{key: value.cuda() for key, value in batch.items() if key not in ("input_ids", "attention_mask", "labels")}}
             if evaluator.config.pp_size > 1:
-                logits = evaluator.engine.eval_batch((inputs, labels))["logits"]
+                logits = evaluator.engine.eval_batch(inputs)["logits"]
             else:
                 # concat prompt labels for p-tuning
                 if evaluator.config.peft_config and evaluator.config.peft_config.peft_type in ["PROMPT_TUNING", "P_TUNING"]:
                     batch_size = input_ids.shape[0]
-                    if "labels" in labels.keys():
-                        prefix_labels = torch.full((batch_size, evaluator.config.peft_config.num_virtual_tokens), -100).to(labels["labels"].device)
-                        labels["labels"] = torch.cat((prefix_labels, labels["labels"]), dim=1)
+                    if "labels" in inputs.keys():
+                        prefix_labels = torch.full((batch_size, evaluator.config.peft_config.num_virtual_tokens), -100).to(inputs["labels"].device)
+                        inputs["labels"] = torch.cat((prefix_labels, inputs["labels"]), dim=1)
                 logits = evaluator.engine(**inputs)["logits"]
             for sample_idx in range(input_ids.shape[0]):
-                pred[sample_idx, idx] = evaluator.loss_fn(logits[sample_idx: sample_idx + 1, :], labels["labels"][sample_idx: sample_idx + 1, :]).detach().cpu().item()
+                pred[sample_idx, idx] = evaluator.loss_fn(logits[sample_idx: sample_idx + 1, :], inputs["labels"][sample_idx: sample_idx + 1, :]).detach().cpu().item()
         pred = pred.argmin(dim=1)
         return {
             "pred": pred.cuda(),
-            "target": labels_group["target"].squeeze(1).cuda(),
+            "target": batch["target"].squeeze(1).cuda(),
             # **{key: value.cuda() for key, value in labels.items() if isinstance(value, torch.Tensor)}
         }

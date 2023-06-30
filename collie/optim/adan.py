@@ -26,6 +26,21 @@ class MultiTensorApply(object):
 
 
 class Adan(Optimizer):
+    """
+    一个优化器Adan的官方实现。
+    论文地址：https://arxiv.org/pdf/2208.06677.pdf
+    仓库地址：https://github.com/sail-sg/Adan
+    
+    :param params: 待优化的模型参数
+    :param lr: 学习率，默认值为1e-3
+    :param betas: 用于计算一阶和二阶动量的系数元组
+    :param eps: 分母上的微小数值，用于提高数值稳定性，默认值为1e-8
+    :param weight_decay: 权重衰减系数，默认值为0.0
+    :param max_grad_norm: 最大梯度范数，默认值为0.0
+    :param no_prox: 用于指定是否进行解耦权重衰减，默认值为False
+    :param foreach: 如果为True，则使用torch._foreach实现优化。这样速度更快，但会使用更多的显存，默认值为True
+    :param fused: 用于指定是否使用融合实现，默认值为False
+    """
     def __init__(self,
                  params,
                  lr=1e-3,
@@ -87,8 +102,6 @@ class Adan(Optimizer):
 
     @torch.no_grad()
     def step(self, closure=None):
-        """Performs a single optimization step."""
-
         loss = None
         if closure is not None:
             with torch.enable_grad():
