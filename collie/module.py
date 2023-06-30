@@ -130,26 +130,6 @@ class GPTLMLoss(torch.nn.Module):
         super().__init__()
         self.ignore_index = ignore_index
         self.loss = torch.nn.CrossEntropyLoss(ignore_index=ignore_index)  # ignore <pad> when compute loss
-
-    # def forward(self, outputs: Dict[str, torch.Tensor], labels: Dict[str, torch.Tensor], *args):
-    #     """ 计算损失
-    #     :param logits: 模型的输出
-    #     :param labels: 真实标签
-    #     """
-    #     labels_mask = None
-    #     if isinstance(labels, dict):
-    #         if "labels_mask" in labels.keys():
-    #             labels_mask = labels["labels_mask"]
-    #         labels = labels["labels"]
-    #     # TODO key
-    #     if isinstance(outputs, dict):
-    #         logits = outputs["logits"]
-    #     if labels_mask is not None:
-    #         labels = labels.masked_fill(labels_mask==1, value=self.ignore_index)
-    #     shift_logits = logits[..., :-1, :].contiguous()
-    #     shift_labels = labels[..., 1:].contiguous().to(logits.device)
-    #     # Flatten the tokens
-    #     return self.loss(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
     
     def forward(self, logits: torch.Tensor, labels: torch.Tensor):
         """ 计算损失
@@ -175,7 +155,7 @@ class PipelineGenerationMixin(GenerationMixin):
         self.generation_config = GenerationConfig()
         self.main_input_name = "input_ids"
         self.device = torch.device("cuda")
-        self.engine_container = [None]
+        self.engine_container = []
         self.layers = None
         self._find_layers()
         self.is_contrastive_search = False
@@ -184,14 +164,14 @@ class PipelineGenerationMixin(GenerationMixin):
     def set_engine(self, engine: DeepSpeedEngine):
         """设置DeepSpeed Engine
         """
-        self.engine_container[0] = engine
+        self.engine_container.append(engine)
 
     def generate(self, *args, **kwargs):
         """开始迭代的生成过程
         """
         if len(self.engine_container) == 0:
-            self.engine_container[0] = setup_ds_engine(config=self.collie_config, model=self)[0]
-        self.engine_container[0].eval()
+            self.engine_container.append(setup_ds_engine(config=self.collie_config, model=self)[0])
+        self.engine_container[-1].eval()
         self.inner_forward = False
         res = super().generate(*args, **kwargs)
         self.inner_forward = True
@@ -199,7 +179,7 @@ class PipelineGenerationMixin(GenerationMixin):
         self._clean_hidden_states()
         # contrastive learning
         if self.is_contrastive_search:
-            src = self.engine_container[0].grid.stage_to_global(self.engine_container[0].num_stages - 1)
+            src = self.engine_container[-1].grid.stage_to_global(self.engine_container[-1].num_stages - 1)
             res = broadcast_tensor(res, dtype=res.dtype, src=src,
                                    ndim=len(res.shape), group=env.pp_group)
             self.is_contrastive_search = False
@@ -228,13 +208,13 @@ class PipelineGenerationMixin(GenerationMixin):
             inputs["position_ids"] = position_ids
         inputs["labels"] = inputs["input_ids"]
         self.inner_forward = True
-        outputs = self.engine_container[0].generate_batch(inputs, use_cache)
+        outputs = self.engine_container[-1].generate_batch(inputs, use_cache)
         self.inner_forward = False
         hidden_states = self._get_hidden_states()
         if self.is_contrastive_search:
             # contrastive search 时每个 stage 拿到的 last_hidden_states
             # 不一样，所以广播出去
-            src = self.engine_container[0].grid.stage_to_global(self.engine_container[0].num_stages - 1)
+            src = self.engine_container[-1].grid.stage_to_global(self.engine_container[-1].num_stages - 1)
             if hidden_states is not None:
                 last_hidden_states = hidden_states[-1]
             else:
@@ -264,7 +244,7 @@ class PipelineGenerationMixin(GenerationMixin):
             self._clean_past_key_values()
         else:
             self._set_past_key_values(past_key_values)
-        return self.engine_container[0].module.prepare_inputs(
+        return self.engine_container[-1].module.prepare_inputs(
             input_ids=input_ids, past_key_values=past_key_values,
             attention_mask=attention_mask, use_cache=use_cache, **kwargs
         )
@@ -427,7 +407,6 @@ class PipelineModel(PipelineModule, PipelineGenerationMixin):
         self.tied_weight_attrs = {}
 
         self._build()
-        self.to(get_accelerator().device_name(self.local_rank))
 
         self.tied_comms = self._index_tied_modules()
         self._synchronize_tied_weights()
@@ -474,6 +453,9 @@ class PipelineModel(PipelineModule, PipelineGenerationMixin):
             key = list(self.tied_modules.keys())[list(self.tied_modules.values()).index(self.get_lm_head()[1])]
             self.tied_modules[key] = lm_head
         self.forward_funcs[name] = lm_head
+        
+    def tie_weights(self):
+        pass
         
         
 class MultiParallelGrid(PipelineParallelGrid):

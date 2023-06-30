@@ -2,7 +2,7 @@ from .dist_utils import (setup_distribution, set_seed, env, setup_ds_engine,
                          zero3_load_state_dict, is_zero3_enabled,
                          broadcast_tensor)
 from .utils import find_tensors, progress, dictToObj, apply_to_collection, dict_as_params, \
-    initization_mapping, is_static_method, auto_param_call
+    initization_mapping, is_static_method, auto_param_call, get_keys_to_not_convert
 from .data_provider import BaseProvider, GradioProvider, _GenerationStreamer, DashProvider
 from .metric_wrapper import _MetricsWrapper
 from .monitor import BaseMonitor, StepTimeMonitor, _MultiMonitors, TGSMonitor, MemoryMonitor, \
@@ -28,6 +28,7 @@ __all__ = [
     "initization_mapping",
     "is_static_method",
     "auto_param_call",
+    "get_keys_to_not_convert",
 
     # data_provider
     "BaseProvider",

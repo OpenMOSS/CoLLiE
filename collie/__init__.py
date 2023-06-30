@@ -15,7 +15,7 @@ from .utils import progress, setup_distribution, set_seed, env, \
     MemoryMonitor, LossMonitor, EvalMonitor, LRMonitor, dict_as_params, \
         DashProvider, initization_mapping, is_static_method, \
             auto_param_call, NetworkIOMonitor, DiskIOMonitor, \
-                CPUMemoryMonitor, ColliePadder
+                CPUMemoryMonitor, ColliePadder, get_keys_to_not_convert
 from .module import PipelineGenerationMixin, ColumnParallelLinear, \
     RowParallelLinearWithoutBias, LinearWithHiddenStates, \
     ColumnParallelLMHead, GPTLMLoss
@@ -91,6 +91,7 @@ __all__ = [
     "DiskIOMonitor",
     "CPUMemoryMonitor",
     "ColliePadder",
+    "get_keys_to_not_convert",
     
     # metrics
     'BaseMetric',

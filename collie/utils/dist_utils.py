@@ -135,6 +135,7 @@ def setup_distribution(config) -> None:
         config = load_config(config)
     if isinstance(config.ds_config, str):
         config.ds_config = load_config(config.ds_config)
+    patch_bitesandbytes(config)
     patch_deepspeed(config)
     patch_megatron()
     patch_peft()
@@ -263,6 +264,25 @@ def patch_megatron():
     parallel_state.get_model_parallel_world_size = lambda: parallel_state.get_tensor_model_parallel_world_size()
     parallel_state.get_model_parallel_rank = lambda: parallel_state.get_tensor_model_parallel_rank()
     parallel_state.get_pipe_parallel_rank = lambda: parallel_state.get_pipeline_model_parallel_rank()
+    
+def patch_bitesandbytes(config: CollieConfig):
+    if config.quantization_config.load_in_4bit or config.quantization_config.load_in_8bit:
+        from bitsandbytes.nn import Int8Params, Params4bit
+        raw_cuda = copy.deepcopy(Int8Params.cuda)
+        def cuda(self, device):
+            if self.data.is_cuda:
+                return self
+            else:
+                return raw_cuda(self, device)
+        Int8Params.cuda = cuda
+        raw_cuda = copy.deepcopy(Params4bit.cuda)
+        def cuda(self, device):
+            if self.data.is_cuda:
+                return self
+            else:
+                return raw_cuda(self, device)
+        Params4bit.cuda = cuda
+        
 
 def broadcast_tensor(tensor, dtype=None, src=0, shape=None,
                      ndim=None, group=None):
