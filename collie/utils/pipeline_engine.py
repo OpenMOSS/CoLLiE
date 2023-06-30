@@ -25,9 +25,10 @@ class ColliePipelineEngine(PipelineEngine):
             flag = False
             if batch[0].keys() != self.buffer_shape.keys():
                 flag = True
-            for key, value in batch[0].items():
-                if self.buffer_shape[key] != value.shape:
-                    flag = True
+            if not flag:
+                for key, value in batch[0].items():
+                    if self.buffer_shape[key] != value.shape:
+                        flag = True
             if flag:
                 self.buffer_shape = {}
                 for key, value in batch[0].items():
