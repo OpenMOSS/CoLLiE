@@ -76,8 +76,7 @@ model = MossForCausalLM.from_pretrained(pretrained_model, config=config)
 optimizer = Lomo(
     model,
     lr = 0.001,
-    clip_grad_norm = 5.0,
-    zero3_enabled = True
+    clip_grad_norm = 5.0
 )
 
 # 7. 添加监视器
