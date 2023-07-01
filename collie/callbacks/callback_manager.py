@@ -40,6 +40,10 @@ class CallbackManager:
         self.callbacks = callbacks
 
     @_exec_callback
+    def on_setup_parallel_model(self, trainer):
+        pass
+
+    @_exec_callback
     def on_after_trainer_initialized(self, trainer):
         pass
 

@@ -7,6 +7,19 @@ class Callback:
     """
     回调机制的基类，包含了数个回调时机。所有的 ``Callback`` 都应该继承该类。
     """
+    def on_setup_parallel_model(self, trainer):
+        r"""
+        在 ``Trainer`` 初始化中途初始化 engine 之前会被触发。
+
+        .. warning::
+
+            注意，此时 :class:`.Trainer` 只能访问到 model、optimizer 等一些不依赖
+            并行设置的基础属性。
+
+        :param trainer: :class:`.Trainer` 实例。
+        """
+        pass
+
     def on_after_trainer_initialized(self, trainer):
         r"""
         在 ``Trainer`` 初始化后会被触发；

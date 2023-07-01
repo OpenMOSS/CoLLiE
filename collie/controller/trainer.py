@@ -183,7 +183,8 @@ class Trainer(TrainerEventTrigger):
                 and "input_ids" not in self.eval_dataset_collate_fn.padding_token_id.keys():
             self.train_dataset_collate_fn.padding_token_id["input_ids"] = self.tokenizer.pad_token_id
         
-        self.communicate_buffer_shape = None
+        callbacks = prepare_callback(callbacks)
+        self.callback_manager = CallbackManager(callbacks)
         self.setup_parallel_model()
         if isinstance(self.engine.module, PipelineGenerationMixin):
             self.engine.module.set_engine(self.engine)
@@ -204,7 +205,7 @@ class Trainer(TrainerEventTrigger):
             evaluators = [evaluators]
         if self.eval_dataset is not None:
             assert eval_fn is not None, "eval_fn should not be None when eval_dataset is not None."
-            evaluator = Evaluator(model=model, dataset=eval_dataset, metrics=metrics, eval_fn=eval_fn,
+            evaluator = Evaluator(model=self.model, dataset=eval_dataset, metrics=metrics, eval_fn=eval_fn,
                 config=config, collate_fn=eval_dataset_collate_fn, data_provider=None)
             evaluator.monitor = self.monitor
             evaluators.append(evaluator)
@@ -214,9 +215,6 @@ class Trainer(TrainerEventTrigger):
             evaluator.engine = self.engine
             evaluator.server = self.server
         self.evaluators = evaluators
-
-        callbacks = prepare_callback(callbacks)
-        self.callback_manager = CallbackManager(callbacks)
 
         self.checkpoint_file = "collie_dp{}_pp{}_tp{}.pt".format(
             env.dp_rank, env.pp_rank, env.tp_rank
@@ -263,6 +261,7 @@ class Trainer(TrainerEventTrigger):
                                      f"{dist.get_world_size()} != {self.config.tp_size} * {self.config.dp_size} * {self.config.dp_size}.")
             self.config.dp_size = dist.get_world_size() // (self.config.tp_size * self.config.pp_size)
             logger.rank_zero_warning(f"Set dp_size to {self.config.dp_size}.")
+        self.on_setup_parallel_model()
         if self.config.pp_size > 1:
             # GPTLMLoss 是 Module，会被 nn.Module 加入 _Modules
             # 如果 loss_fn 是一个函数就会在此时报错
