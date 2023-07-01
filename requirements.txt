@@ -1,4 +1,4 @@
-rich
+rich>=13.3.5
 tqdm
 torch>=1.13.0
 einops
@@ -16,6 +16,6 @@ wandb
 pandas
 bullet
 psutil
-accelerate>=0.19.0
+accelerate>=0.20.3
 bitsandbytes>=0.39.0
 scipy

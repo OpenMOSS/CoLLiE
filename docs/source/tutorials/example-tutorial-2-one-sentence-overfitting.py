@@ -1,8 +1,8 @@
 """
-一个使用CoLLie训练Moss的实例。
+使用CoLLie训练Moss：LOMO、ZeRO3、全参数微调MOSS、过拟合一句话
 """
+
 import sys
-sys.path.append('..')
 import os
 import json
 import torch
@@ -27,13 +27,13 @@ from collie.module import GPTLMLoss
 
 # 1. 设置路径
 # 1.1 预训练模型路径
-pretrained_model = "fnlp/moss-moon-003-sft"
+pretrained_model = "fnlp/moss-moon-003-sft"  
 
 # 2. 设置配置
 # 2.1 加载配置
 config = CollieConfig.from_pretrained(pretrained_model, trust_remote_code=True)
-config.tp_size = 2
-config.dp_size = 2
+config.tp_size = 1
+config.dp_size = 1
 config.pp_size = 1
 config.train_epochs = 1
 config.eval_per_n_steps = 0
@@ -69,7 +69,7 @@ train_dataset = CollieDatasetForTraining(train_dataset, tokenizer)
 eval_dataset = train_dataset[:32]
 
 # 5. 加载预训练模型
-model = MossForCausalLM.from_pretrained("/mnt/petrelfs/share_data/zhangshuo/model/moss-moon-003-sft/", config=config)
+model = MossForCausalLM.from_pretrained(pretrained_model, config=config)
 
 # 6. 设置优化器
 optimizer = Lomo(
@@ -126,5 +126,3 @@ trainer = Trainer(
 
 # 10. 训练/验证
 trainer.train()
-
-#  Command CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --rdzv_backend=c10d --rdzv_endpoint=localhost:29402 --nnodes=1 --nproc_per_node=4 train.py

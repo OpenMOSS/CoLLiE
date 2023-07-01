@@ -308,10 +308,6 @@ class Trainer(TrainerEventTrigger):
         loss = None
         if dataloader is not None:
             train_dataloader = dataloader
-        # if env.rank == 0:
-        #     torch.set_printoptions(threshold=np.inf)
-        #     logger.info("Sample of train_dataset:")
-        #     logger.info(next(iter(train_dataloader)))
         self.on_train_begin()
         tqbar_epoch = progress(
             range(self.epoch_idx, self.config.train_epochs),

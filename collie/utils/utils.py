@@ -2,6 +2,7 @@ import os
 import functools
 import inspect
 from inspect import Parameter
+from accelerate.utils.modeling import find_tied_parameters
 import dataclasses
 from types import MethodType
 from typing import (Callable, Any, Dict, Union, Mapping, Sequence, Tuple,
@@ -17,7 +18,7 @@ from .rich_progress import f_rich_progress
 
 __all__ = ["find_tensors", "progress", "dictToObj", "apply_to_collection", 
            "dict_as_params", "initization_mapping", "is_static_method", 
-           "auto_param_call"]
+           "auto_param_call", "get_keys_to_not_convert"]
 
 def find_tensors():
     """
@@ -595,3 +596,40 @@ def _get_keys(args:List[Dict]) -> List[List[str]]:
     for arg in args:
         _provided_keys.append(list(arg.keys()))
     return _provided_keys
+
+def get_keys_to_not_convert(model):
+    r"""
+    An utility function to get the key of the module to keep in full precision if any For example for CausalLM modules
+    we may want to keep the lm_head in full precision for numerical stability reasons. For other architectures, we want
+    to keep the tied weights of the model. The function will return a list of the keys of the modules to not convert in
+    int8.
+
+    :param model: Input model
+    """
+
+    tied_params = find_tied_parameters(model)
+    # For compatibility with Accelerate < 0.18
+    if isinstance(tied_params, dict):
+        tied_keys = list(tied_params.values())
+    else:
+        tied_keys = sum([x[1:] for x in tied_params], [])
+    has_tied_params = len(tied_keys) > 0
+
+    # otherwise they have an attached head
+    list_modules = list(model.named_parameters())
+    list_last_module = [list_modules[-1][0]]
+
+    # add last module together with tied weights
+    intersection = set(list_last_module) - set(tied_keys)
+    list_untouched = tied_keys + list(intersection)
+
+    # remove ".weight" from the keys
+    names_to_remove = [".weight", ".bias"]
+    filtered_module_names = []
+    for name in list_untouched:
+        for name_to_remove in names_to_remove:
+            if name_to_remove in name:
+                name = name.replace(name_to_remove, "")
+        filtered_module_names.append(name)
+
+    return filtered_module_names
