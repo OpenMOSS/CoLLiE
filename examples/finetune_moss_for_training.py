@@ -2,8 +2,7 @@
 一个使用CoLLie训练Moss的实例。
 """
 import sys
-sys.path.append('../../')
-sys.path.append("/mnt/petrelfs/gutianle/Megatron-LM/")
+sys.path.append('..')
 import os
 import json
 import torch
@@ -70,7 +69,7 @@ train_dataset = CollieDatasetForTraining(train_dataset, tokenizer)
 eval_dataset = train_dataset[:32]
 
 # 5. 加载预训练模型
-model = MossForCausalLM.from_pretrained(pretrained_model, config=config)
+model = MossForCausalLM.from_pretrained("/mnt/petrelfs/share_data/zhangshuo/model/moss-moon-003-sft/", config=config)
 
 # 6. 设置优化器
 optimizer = Lomo(

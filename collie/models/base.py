@@ -18,6 +18,7 @@ from accelerate.utils.modeling import set_module_tensor_to_device
 from transformers.generation.utils import GenerationMixin
 from transformers.generation.utils import GenerationConfig
 from transformers.utils import ContextManagers
+from transformers.deepspeed import is_deepspeed_zero3_enabled
 from collie.module import PipelineModel, GPTLMLoss
 from collie.config import CollieConfig, load_config
 from collie.log import logger
@@ -203,8 +204,10 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
             config = CollieConfig.from_pretrained(config, **kwargs)
         # prepare contexts
         contexts = []
-        if config.low_cpu_mem_usage or \
-            config.quantization_config.load_in_4bit or config.quantization_config.load_in_8bit:
+        if (config.low_cpu_mem_usage or \
+            config.quantization_config.load_in_4bit or \
+                config.quantization_config.load_in_8bit) and \
+                    not is_zero3_enabled(config):
             contexts.append(init_empty_weights())
         if config.model_config.torch_dtype is None and \
             (config.quantization_config.load_in_4bit or config.quantization_config.load_in_8bit):
@@ -251,10 +254,13 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                             value=state_dict[name].data
                         )
                     else:
-                        set_module_tensor_to_device(
-                            module=model, tensor_name=name, device="cpu" if param.device == torch.device("meta") else param.device, 
-                            value=state_dict[name].data, dtype=config.model_config.torch_dtype
-                        )
+                        if param.device == torch.device("meta"):
+                            set_module_tensor_to_device(
+                                module=model, tensor_name=name, device="cpu" if param.device == torch.device("meta") else param.device, 
+                                value=state_dict[name].data, dtype=config.model_config.torch_dtype
+                            )
+                        else:
+                            param.data = state_dict[name].data.to(config.model_config.torch_dtype).to(param.device)
         return model
 
     @classmethod
