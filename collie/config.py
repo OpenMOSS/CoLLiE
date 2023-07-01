@@ -46,15 +46,15 @@ class CollieConfig:
         仅对部分模型有效。
     :param dropout: :class:`Dropout` 的概率。仅对部分模型有效。
     :param initization_method: 初始化方法。可以是以下几种取值：
-        ``none``, ``normal``, ``xavier_normal``, ``xavier_uniform``, ``kaiming_normal``,
+        ``None``, ``normal``, ``xavier_normal``, ``xavier_uniform``, ``kaiming_normal``,
         ``kaiming_uniform``, ``orthogonal``, ``sparse``, ``eye``, ``dirac``。
-        默认为 ``none``, 即不进行初始化, 有助于提高模型加载速度。
+        默认为 ``None``, 即不进行初始化, 有助于提高模型加载速度。
     :param low_cpu_mem_usage: 是否在初始化模型时尝试减少 CPU 占用
     :param ds_config: **DeepSpeed** 的配置文件。可以是一个路径或字典。
     :param model_config: 模型设置。一般情况下无需手动设置，而是通过
         :meth:`from_pretrained` 获取，
     :param peft_config: Peft 的配置。
-    :param quantization_config: 模型得量化配置
+    :param quantization_config: 模型的量化配置
     """
     seed: int = field(
         default=42,
