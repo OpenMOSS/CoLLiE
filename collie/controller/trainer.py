@@ -16,23 +16,26 @@ from functools import reduce
 import torch
 import deepspeed
 import numpy as np
+from torch import nn
 import torch.distributed as dist
 from torch.optim.lr_scheduler import _LRScheduler
 from deepspeed.accelerator import get_accelerator
 from deepspeed.runtime.pipe.engine import PipelineEngine
 from deepspeed.runtime.engine import DeepSpeedSchedulerCallable
 from transformers.generation.utils import GenerationConfig
-from transformers.modeling_utils import PreTrainedModel
+from transformers.modeling_utils import PreTrainedModel, load_state_dict
 from transformers import PreTrainedTokenizerBase
 
 from collie.config import CollieConfig
 from collie.module import PipelineGenerationMixin, GPTLMLoss, PipelineModel
 from collie.driver.io import IODriver
 from collie.log import logger
-from collie.utils import progress, env, setup_ds_engine, BaseProvider, _GenerationStreamer, is_zero3_enabled, BaseMonitor, _MultiMonitors, broadcast_tensor, ColliePadder
+from collie.utils import progress, env, setup_ds_engine, BaseProvider, _GenerationStreamer, is_zero3_enabled, \
+    BaseMonitor, _MultiMonitors, broadcast_tensor, ColliePadder, auto_param_call
 from collie.optim import Lomo
 from collie.models.base import CollieModelForCausalLM
 from .evaluator import Evaluator
+from .server import Server
 from collie.data import CollieDataLoader
 from collie.callbacks.callback import Callback
 from collie.callbacks.callback_manager import CallbackManager, prepare_callback
@@ -56,7 +59,7 @@ class Trainer(TrainerEventTrigger):
     :param train_fn: 用于训练的函数，默认使用 :meth:`~collie.controller.Trainer.train_fn`
     :param eval_fn: 用于验证的函数
 
-        ..note::
+        .. note::
 
             **CoLLie** 未提供默认的验证策略，若未传入 ``eval_fn``，但传入了 ``eval_dataset``，则会抛出异常。若不需要自定义验证循环，
             可以考虑使用 **CoLLie** 定义的多种验证器，例如 :class:`~collie.controller.evaluator.EvaluatorForPerplexity`、
@@ -180,13 +183,17 @@ class Trainer(TrainerEventTrigger):
                 and "input_ids" not in self.eval_dataset_collate_fn.padding_token_id.keys():
             self.train_dataset_collate_fn.padding_token_id["input_ids"] = self.tokenizer.pad_token_id
         
-        self.communicate_buffer_shape = None
+        callbacks = prepare_callback(callbacks)
+        self.callback_manager = CallbackManager(callbacks)
         self.setup_parallel_model()
+        if isinstance(self.engine.module, PipelineGenerationMixin):
+            self.engine.module.set_engine(self.engine)
         self.data_provider = data_provider
         self.monitor = _MultiMonitors(monitors)
-        if self.data_provider is not None and dist.get_rank() == 0:
-            self.data_provider.start_provider()
-
+        self.server = None
+        if self.data_provider is not None:
+            self.server = Server(model=self.model, data_provider=self.data_provider, config=self.config)
+            self.server.start()
         if evaluators is not None and eval_dataset is not None:
             logger.rank_zero_warning(
                 "Note that you have set both `evaluators` and `eval_dataset` "
@@ -198,7 +205,7 @@ class Trainer(TrainerEventTrigger):
             evaluators = [evaluators]
         if self.eval_dataset is not None:
             assert eval_fn is not None, "eval_fn should not be None when eval_dataset is not None."
-            evaluator = Evaluator(model=model, dataset=eval_dataset, metrics=metrics, eval_fn=eval_fn,
+            evaluator = Evaluator(model=self.model, dataset=eval_dataset, metrics=metrics, eval_fn=eval_fn,
                 config=config, collate_fn=eval_dataset_collate_fn, data_provider=None)
             evaluator.monitor = self.monitor
             evaluators.append(evaluator)
@@ -206,12 +213,8 @@ class Trainer(TrainerEventTrigger):
             if self.tokenizer is not None:
                 evaluator.tokenizer = self.tokenizer
             evaluator.engine = self.engine
-            evaluator.data_provider = self.data_provider
-
+            evaluator.server = self.server
         self.evaluators = evaluators
-
-        callbacks = prepare_callback(callbacks)
-        self.callback_manager = CallbackManager(callbacks)
 
         self.checkpoint_file = "collie_dp{}_pp{}_tp{}.pt".format(
             env.dp_rank, env.pp_rank, env.tp_rank
@@ -249,42 +252,6 @@ class Trainer(TrainerEventTrigger):
         """
         return self.epoch_idx * self.steps_per_epoch + self.batch_idx
 
-    def data_provider_handler(self):
-        """当初始化 :class:`collie.Trainer` 的过程中提供了 ``data_provider`` 时会使用此方法。
-            ``data_provider`` 中维持一个异步队列 ``queue.Queue``，该方法会不断从中取出数据，放入模型中进行生成
-        """
-        if self.data_provider is None:
-            return None
-        has_data = torch.tensor(False).cuda()
-        input_ids = None
-        if dist.get_rank() == 0:
-            input_ids = self.data_provider.get_data()
-            if input_ids is not None:
-                has_data = ~has_data
-                input_ids = input_ids.cuda()
-        dist.broadcast(has_data, 0)
-        if not has_data:
-            return
-        input_ids = broadcast_tensor(input_ids, src=0)
-        if isinstance(self.engine, PipelineEngine):
-            generation_model = PipelineGenerationMixin(
-                engine=self.engine
-            )
-        else:
-            generation_model = self.engine.module
-        if not generation_model.can_generate():
-            return
-        use_stream = self.data_provider.stream
-        streamer = _GenerationStreamer(server=self.data_provider)
-        generated_ids = generation_model.generate(
-            input_ids=input_ids.cuda(), 
-            attention_mask=torch.ones_like(input_ids).cuda(), 
-            generation_config=self.data_provider.generation_config,
-            streamer=streamer if use_stream else None
-        )
-        if not use_stream:
-            self.data_provider.put_feedback(generated_ids[0].cpu())
-
     def setup_parallel_model(self):
         """
         初始化分布式模型。
@@ -294,6 +261,7 @@ class Trainer(TrainerEventTrigger):
                                      f"{dist.get_world_size()} != {self.config.tp_size} * {self.config.dp_size} * {self.config.dp_size}.")
             self.config.dp_size = dist.get_world_size() // (self.config.tp_size * self.config.pp_size)
             logger.rank_zero_warning(f"Set dp_size to {self.config.dp_size}.")
+        self.on_setup_parallel_model()
         if self.config.pp_size > 1:
             # GPTLMLoss 是 Module，会被 nn.Module 加入 _Modules
             # 如果 loss_fn 是一个函数就会在此时报错
@@ -340,10 +308,6 @@ class Trainer(TrainerEventTrigger):
         loss = None
         if dataloader is not None:
             train_dataloader = dataloader
-        # if env.rank == 0:
-        #     torch.set_printoptions(threshold=np.inf)
-        #     logger.info("Sample of train_dataset:")
-        #     logger.info(next(iter(train_dataloader)))
         self.on_train_begin()
         tqbar_epoch = progress(
             range(self.epoch_idx, self.config.train_epochs),
@@ -363,7 +327,8 @@ class Trainer(TrainerEventTrigger):
             )
             for self.batch_idx, batch in enumerate(tqbar_batch, start=self.batch_idx):
                 tqbar_batch.set_description(f"Training Batch: {self.batch_idx} / {self.steps_per_epoch}")
-                self.data_provider_handler()
+                if self.server is not None:
+                    self.server.data_provider_handler()
                 self.engine.train()
                 self.on_train_batch_begin(batch)
                 with self.monitor as item:
@@ -405,11 +370,11 @@ class Trainer(TrainerEventTrigger):
         self.on_evaluate_end(results)
 
     @staticmethod
-    def train_fn(trainer, batch: Tuple, global_step: int) -> float:
+    def train_fn(trainer, batch: Dict, global_step: int) -> float:
         """一次训练的基本单元
 
         :param trainer: 训练器
-        :param batch: 一个 batch 的数据，类型为长度为 2 的 ``Tuple``，其中第一个元素为 ``input_ids``，第二个元素为 ``labels``
+        :param batch: 一个 batch 的数据，类型为 ``Dict``
 
             .. note::
                 
@@ -419,36 +384,45 @@ class Trainer(TrainerEventTrigger):
         
         :return: 当前 batch 的 loss
         """
+        
         if trainer.config.pp_size > 1:
             loss = trainer.engine.train_batch(batch)
         else:
-            inputs, labels = batch
             # concat prompt labels for p-tuning
             if trainer.config.peft_config and trainer.config.peft_config.peft_type in ["PROMPT_TUNING", "P_TUNING"]:
-                batch_size = inputs["input_ids"].shape[0]
+                batch_size = batch["input_ids"].shape[0]
                 prefix_labels = torch.full((batch_size, trainer.config.peft_config.num_virtual_tokens), -100).to(labels.device)
                 labels = torch.cat((prefix_labels, labels), dim=1)
-
-            outputs = trainer.engine(**inputs)
-            loss = trainer.loss_fn(outputs, labels)
+            
+            outputs = trainer.engine(**batch)
+            
+            loss = auto_param_call(trainer.loss_fn, {**batch, **outputs}, 
+                                   signature_fn=trainer.loss_fn.forward if isinstance(trainer.loss_fn, nn.Module) else trainer.loss_fn)
             if not isinstance(trainer.optimizer, Lomo):
                 trainer.engine.backward(loss)
                 trainer.engine.step()
             else:
+                
                 # for lomo only
                 if trainer.optimizer.clip_grad_norm is not None:
                     trainer.optimizer.grad_norm(loss)
-                    if trainer.optimizer.zero_enabled:
+                    if trainer.optimizer.loss_scaler and trainer.optimizer.loss_scaler.has_overflow_serial:
+                        print(f"Gradient overflow, skipping step {global_step}")
+                        if trainer.optimizer.zero3_enabled:
+                            trainer.engine.optimizer.get_param_coordinator(training=True).reset_step()
+                        return loss.detach().cpu().item()
+                    if trainer.optimizer.zero3_enabled:
                         trainer.engine.optimizer.get_param_coordinator(training=True).reset_step()
                         # zero-3 doesn't support backward twice, so need an additional forward here
-                        outputs = trainer.engine(**inputs)
-                        loss = trainer.loss_fn(outputs, labels)
+                        outputs = trainer.engine(**batch)
+                        loss = auto_param_call(trainer.loss_fn, {**batch, **outputs}, 
+                                               signature_fn=trainer.loss_fn.forward if isinstance(trainer.loss_fn, nn.Module) else trainer.loss_fn)
                 if trainer.lr_scheduler:
                     lr = trainer.lr_scheduler.step(global_step)
                 else:
                     lr = trainer.optimizer.lr
-                trainer.optimizer.backward_step(loss, lr)
-                if trainer.optimizer.zero_enabled:  # TODO: should tp do this too?
+                trainer.optimizer.fused_backward(loss, lr)
+                if trainer.optimizer.zero3_enabled:  # TODO: should tp do this too?
                     trainer.engine.optimizer.get_param_coordinator(training=True).reset_step()
         return loss.detach().cpu().item()
     

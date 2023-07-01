@@ -5,7 +5,7 @@ from datasets import load_dataset
 from transformers import LlamaTokenizer, GenerationConfig
 from collie import Trainer, EvaluatorForPerplexity, LlamaForCausalLM, CollieConfig, PPLMetric, AccuracyMetric, DecodeMetric, CollieDatasetForTraining, CollieDatasetForGeneration, \
     LossMonitor, TGSMonitor, MemoryMonitor, EvalMonitor, GradioProvider, EvaluatorForGeneration, LRMonitor, BleuMetric, DashProvider
-config = CollieConfig.from_pretrained("decapoda-research/llama-7b-hf")
+config = CollieConfig.from_pretrained("/mnt/petrelfs/zhangshuo/model/llama-7b-hf")
 config.pp_size = 8
 config.train_micro_batch_size = 1
 config.eval_batch_size = 1
@@ -21,7 +21,7 @@ config.ds_config = {
         "wandb": {
             "enabled": True,
             "team": "00index",
-            "project": "collie",
+            "project": "collie-experiment",
             "group": "translation"
         }
     }
@@ -30,7 +30,7 @@ config.seed = 1024
 # Prepare training dataset
 train_dataset = [
     {
-        "input": f"Translate from French to English. French: {sample['translation']['fr']} English: ",
+        "input": f"<s>Translate from French to English. French: {sample['translation']['fr']} English: ",
         "output": f"{sample['translation']['en']}</s>"
     } for sample in load_dataset("iwslt2017", name="iwslt2017-fr-en", split="train[:8000]")
 ]
@@ -41,7 +41,7 @@ eval_dataset_ppl, train_dataset = train_dataset[:int(
 # Prepare classification evaluation dataset
 eval_dataset_bleu = [
     {
-        "text": f"Translate from French to English. French: {sample['translation']['fr']} English: ",
+        "text": f"<s>Translate from French to English. French: {sample['translation']['fr']} English: ",
         "target": " ".join(f"{sample['translation']['en']}</s>".split())
     } for sample in load_dataset("iwslt2017", name="iwslt2017-fr-en", split="train[100:150]")
 ]
@@ -55,9 +55,9 @@ lr_scheduler = torch.optim.lr_scheduler.StepLR(
     optimizer=optimizer, step_size=1, gamma=0.9
 )
 tokenizer = LlamaTokenizer.from_pretrained(
-    "/mnt/petrelfs/zhangshuo/model/llama-7b-hf", add_eos_token=False)
+    "/mnt/petrelfs/zhangshuo/model/llama-7b-hf", add_eos_token=False, add_bos_token=False)
 # Convert to CoLLie Dataset
-traine_dataset = CollieDatasetForTraining(train_dataset,
+train_dataset = CollieDatasetForTraining(train_dataset,
                                           tokenizer=tokenizer)
 eval_dataset_ppl = CollieDatasetForTraining(eval_dataset_ppl,
                                             tokenizer=tokenizer)
@@ -99,7 +99,7 @@ trainer = Trainer(
     lr_scheduler=lr_scheduler,
     config=config,
     optimizer=optimizer,
-    train_dataset=traine_dataset,
+    train_dataset=train_dataset,
     monitors=[
         LossMonitor(config),
         TGSMonitor(config),

@@ -10,9 +10,9 @@ __all__ = [
 ]
 
 class ColliePadder:
-    """ **CoLLie** 中的通用 ``collate_fn`` 构造器
+    """**CoLLie** 中的通用 ``collate_fn`` 构造器
 
-    :param padding_token: 用于填充模型输入数据 (input_ids) 的 token
+    :param padding_token: 用于填充模型输入数据 (input_ids) 的 token，为一个 ``Dict`` 决定不同的字段使用不同 id
     :param labels_padding_token: 用于填充模型标签数据 (labels) 的 token
     :param padding_left: 是否在左侧填充
     """
@@ -60,25 +60,23 @@ class ColliePadder:
                 batch[i] = F.pad(batch[i], [shape.pop() if (d + 1) % 2 == 0 else 0 for d in range(len(shape) * 2)], value=padding_token_id)
         return torch.stack(batch, dim=0).cuda()
     
-    def __call__(self, batch: List[Tuple]) -> Any:
-        assert len(batch[0]) == 2, "Samples from dataset must be a tuple of size 2. Eg: (input_ids, labels)"
-        padded_batch = []
-        for i in range(2):
-            if isinstance(batch[0][i], (torch.Tensor, np.ndarray, list, int, float)):
-                padded_batch.append(self.collate_fn([x[i] for x in batch]))
-            elif isinstance(batch[0][i], tuple):
-                padded_batch.append(tuple([self.collate_fn([x[i][j] for x in batch]) for j in range(len(batch[0][i]))]))
-            elif isinstance(batch[0][i], Dict):
-                padded_dict = {}
-                for key in batch[0][i].keys():
-                    self.key = key
-                    if isinstance(batch[0][i][key], (torch.Tensor, np.ndarray, list, int, float)):
-                        padded_dict[key] = self.collate_fn([x[i][key] for x in batch])
-                    elif isinstance(batch[0][i][key], tuple) and isinstance(batch[0][i][key][0], (torch.Tensor, np.ndarray, list)):
-                        padded_dict[key] = [self.collate_fn([x[i][key][j] for x in batch]) for j in range(len(batch[0][i][key]))]
-                    else:
-                        raise TypeError(f"Unsupported type: {type(batch[0][i][key])}")
-                padded_batch.append(padded_dict)
-            else:
-                raise TypeError(f"Unsupported type: {type(batch[0][i])}")
-        return tuple(padded_batch)
+    def __call__(self, batch: List[Any]) -> Any:
+        padded_batch = None
+        if isinstance(batch[0], (torch.Tensor, np.ndarray, list, int, float)):
+            padded_batch = self.collate_fn([x for x in batch])
+        elif isinstance(batch[0], tuple):
+            padded_batch = tuple([self.collate_fn([x[j] for x in batch]) for j in range(len(batch[0]))])
+        elif isinstance(batch[0], Dict):
+            padded_dict = {}
+            for key in batch[0].keys():
+                self.key = key
+                if isinstance(batch[0][key], (torch.Tensor, np.ndarray, list, int, float)):
+                    padded_dict[key] = self.collate_fn([x[key] for x in batch])
+                elif isinstance(batch[0][key], tuple) and isinstance(batch[0][key][0], (torch.Tensor, np.ndarray, list)):
+                    padded_dict[key] = [self.collate_fn([x[key][j] for x in batch]) for j in range(len(batch[0][key]))]
+                else:
+                    raise TypeError(f"Unsupported type: {type(batch[0][key])}")
+            padded_batch = padded_dict
+        else:
+            raise TypeError(f"Unsupported type: {type(batch[0])}")
+        return padded_batch

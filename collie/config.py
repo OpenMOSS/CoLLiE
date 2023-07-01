@@ -2,8 +2,9 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Union
 
-from transformers import PretrainedConfig, AutoConfig
-from peft.utils import PeftConfig
+from transformers import PretrainedConfig, AutoConfig, BitsAndBytesConfig
+from peft.utils import PeftConfig, PeftType
+import torch
 
 __all__ = ["CollieConfig"]
 
@@ -45,13 +46,15 @@ class CollieConfig:
         仅对部分模型有效。
     :param dropout: :class:`Dropout` 的概率。仅对部分模型有效。
     :param initization_method: 初始化方法。可以是以下几种取值：
-        ``normal``, ``xavier_normal``, ``xavier_uniform``, ``kaiming_normal``,
+        ``none``, ``normal``, ``xavier_normal``, ``xavier_uniform``, ``kaiming_normal``,
         ``kaiming_uniform``, ``orthogonal``, ``sparse``, ``eye``, ``dirac``。
-        默认为 ``normal``。
+        默认为 ``none``, 即不进行初始化, 有助于提高模型加载速度。
+    :param low_cpu_mem_usage: 是否在初始化模型时尝试减少 CPU 占用
     :param ds_config: **DeepSpeed** 的配置文件。可以是一个路径或字典。
     :param model_config: 模型设置。一般情况下无需手动设置，而是通过
         :meth:`from_pretrained` 获取，
     :param peft_config: Peft 的配置。
+    :param quantization_config: 模型的量化配置
     """
     seed: int = field(
         default=42,
@@ -138,17 +141,23 @@ class CollieConfig:
         }
     )
     initization_method: str = field(
-        default="normal",
+        default="none",
         metadata={
-            "help": "Initialization method. Possible values are 'normal', 'xavier_normal', "
+            "help": "Initialization method. Possible values are 'none', 'normal', 'xavier_normal', "
             "'xavier_uniform', 'kaiming_normal', 'kaiming_uniform', 'orthogonal', 'sparse', "
-            "'eye', 'dirac'. Default is 'normal'."
+            "'eye', 'dirac'. Default is 'none'."
         }
     )
     initization_method_params: dict = field(
         default=None,
         metadata={
             "help": "Parameters for initialization method."
+        }
+    )
+    low_cpu_mem_usage: bool = field(
+        default=True,
+        metadata={
+            "help": "Tries to not use more than 1x model size in CPU memory (including peak memory) while loading the model."
         }
     )
     ds_config: Union[str, dict] = field(
@@ -158,15 +167,21 @@ class CollieConfig:
         }
     )
     model_config: PretrainedConfig = field(
-        default=None,
+        default=PretrainedConfig(),
         metadata={
             "help": "Model configuration."
         }
     )
     peft_config: PeftConfig = field(
-        default=None,
+        default=PeftConfig(),
         metadata={
             "help": "PEFT configuration."
+        }
+    )
+    quantization_config: BitsAndBytesConfig = field(
+        default=BitsAndBytesConfig(),
+        metadata={
+            "help": "Configuration parameters for the `bitsandbytes` library"
         }
     )
 
@@ -206,6 +221,12 @@ class CollieConfig:
     def __post_init__(self):
         if isinstance(self.ds_config, str):
             self.ds_config = load_config(self.ds_config)
+        if isinstance(self.model_config, str):
+            self.model_config = AutoConfig.from_pretrained(self.model_config, trust_remote_code=True)
+        if isinstance(self.peft_config, str):
+            self.peft_config = PeftConfig(**load_config(self.peft_config))
+        if isinstance(self.quantization_config, str):\
+            self.quantization_config = BitsAndBytesConfig.from_dict(load_config(self.quantization_config))
         assert isinstance(self.ds_config, dict), self.ds_config
         os.environ["COLLIE_SEED"] = str(self.seed)
 
@@ -214,6 +235,16 @@ class CollieConfig:
         r = f"{title}:\n"
         r += _repr_dict(self.__dict__, 0)
         return r
+    
+    def valid_config(self):
+        if "zero_optimization" in self.ds_config.keys() \
+            and "stage" in self.ds_config["zero_optimization"].keys() \
+            and self.ds_config["zero_optimization"]["stage"] == 3:
+                assert self.pp_size == 1, "Pipeline is not compatible with Zero3."
+        if self.tp_size > 1:
+            assert self.peft_config.peft_type != PeftType.LORA, "Tensor parallelism is not compatible with LoRa"
+            assert not self.quantization_config.load_in_4bit and not self.quantization_config.load_in_8bit, \
+                "Tensor parallelism is not compatible with int8 quantization and int4 quantization"
 
     
 def load_config(path: str):

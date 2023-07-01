@@ -4,12 +4,11 @@ import os
 import copy
 import json
 import re
-import contextlib
 import subprocess
 
 import torch
 from torch import distributed as dist
-from torch.multiprocessing import Process
+from torch.multiprocessing import Process, set_start_method
 import deepspeed
 from deepspeed.monitor.wandb import WandbMonitor
 from deepspeed.runtime.utils import set_random_seed
@@ -41,14 +40,14 @@ DTYPE_ENUM = [
 ]
 
 def zero3_load_state_dict(model: torch.nn.Module, state_dict: dict):
-    """ 用于加载 ZeRO stage 3 的模型参数。
+    """用于加载 ZeRO stage 3 的模型参数。
     """
     for name, param in model.named_parameters():
         with deepspeed.zero.GatheredParameters(param, modifier_rank=0):
             param.data = state_dict[name].data.to(param.device).to(param.dtype)
 
 def is_zero3_enabled(config: CollieConfig):
-    """ 判断是否启用了 ZeRO stage 3。
+    """判断是否启用了 ZeRO stage 3。
     """
     if isinstance(config.ds_config, str) and os.path.exists(config.ds_config):
         config.ds_config = load_config(config.ds_config)
@@ -66,7 +65,7 @@ def setup_ds_engine(
         optimizer: Optional[Union[torch.optim.Optimizer, DeepSpeedOptimizerCallable]] = None,
         lr_scheduler: Optional[Union[torch.optim.lr_scheduler._LRScheduler, DeepSpeedSchedulerCallable]] = None
 ):
-    """ 启动 DeepSpeed 引擎。
+    """启动 DeepSpeed 引擎。
 
     :param config: **CoLLie** 的配置
     :param model: 模型
@@ -94,7 +93,7 @@ def setup_ds_engine(
     return engine, optimizer, _, lr_scheduler
 
 def _decompose_slurm_nodes(s):
-    # 使用正则表达式找到所有符合模式的子串
+    #使用正则表达式找到所有符合模式的子串
     sub_strings = re.findall(r'[\w-]+\-\[[^\]]*\]|[\w-]+\-\d+', s)
 
     results = []
@@ -119,17 +118,16 @@ def _decompose_slurm_nodes(s):
 
 
 def setup_distribution(config) -> None:
-    """
-    设置分布式环境。
+    """设置分布式环境。
 
     可以支持多机情况下的分布式训练：
 
     1. launch from torchrun
-       eg: torchrun --standalone --nproc_per_node=8 train.py
+       eg: ``torchrun --standalone --nproc_per_node=8 train.py``
     2. launch from slurm
-       eg. srun --partition=xxx --gres=gpu:8 --ntasks=8 --ntasks-per-node=8 --job-name=xxx --kill-on-bad-exit=1 train.py
+       eg. ``srun --partition=xxx --gres=gpu:8 --ntasks=8 --ntasks-per-node=8 --job-name=xxx --kill-on-bad-exit=1 train.py``
 
-    :param config: :class:`.CollieConfig`
+    :param config: :class:`.CollieConfig` 有关分布式并行的策略配置
     """
     if torch.distributed.is_initialized():
         return
@@ -137,6 +135,7 @@ def setup_distribution(config) -> None:
         config = load_config(config)
     if isinstance(config.ds_config, str):
         config.ds_config = load_config(config.ds_config)
+    patch_bitesandbytes(config)
     patch_deepspeed(config)
     patch_megatron()
     patch_peft()
@@ -200,8 +199,7 @@ def setup_distribution(config) -> None:
 
 
 def set_seed(config):
-    """
-    设置随机数种子。
+    """设置随机数种子。
     """
     tensor_parallel.model_parallel_cuda_manual_seed(config.seed)
     set_random_seed(config.seed)
@@ -266,11 +264,29 @@ def patch_megatron():
     parallel_state.get_model_parallel_world_size = lambda: parallel_state.get_tensor_model_parallel_world_size()
     parallel_state.get_model_parallel_rank = lambda: parallel_state.get_tensor_model_parallel_rank()
     parallel_state.get_pipe_parallel_rank = lambda: parallel_state.get_pipeline_model_parallel_rank()
+    
+def patch_bitesandbytes(config: CollieConfig):
+    if config.quantization_config.load_in_4bit or config.quantization_config.load_in_8bit:
+        from bitsandbytes.nn import Int8Params, Params4bit
+        raw_cuda = copy.deepcopy(Int8Params.cuda)
+        def cuda(self, device):
+            if self.data.is_cuda:
+                return self
+            else:
+                return raw_cuda(self, device)
+        Int8Params.cuda = cuda
+        raw_cuda = copy.deepcopy(Params4bit.cuda)
+        def cuda(self, device):
+            if self.data.is_cuda:
+                return self
+            else:
+                return raw_cuda(self, device)
+        Params4bit.cuda = cuda
+        
 
 def broadcast_tensor(tensor, dtype=None, src=0, shape=None,
                      ndim=None, group=None):
-    """
-    从 ``src`` 广播 ``tensor``。
+    """从 ``src`` 广播 ``tensor``。
 
     该函数支持广播 ``tensor`` 的维度和类型。如果 ``ndim`` 和 ``shape`` 为 ``None``
     则会首先广播 ``tensor`` 的维度。
@@ -321,8 +337,7 @@ def broadcast_tensor(tensor, dtype=None, src=0, shape=None,
     return tensor
 
 class Env:
-    """
-    **CoLLiE** 的环境变量，可以从中获取各种并行的 world_size 和 rank。
+    """**CoLLiE** 的环境变量，可以从中获取各种并行的 world_size 和 rank。
 
     调用时直接导入已经实例化好的对象 ``env`` 即可。
 
@@ -517,8 +532,10 @@ def launch(target: callable,
     :param port: 启动的端口
     """
     def _wrapper(environ):
+        torch.set_default_device(torch.device(int(environ.get("LOCAL_RANK"))))
         os.environ.update(environ)
         target()
+    set_start_method("fork")
     processes = []
     for rank in range(len(devices.split(","))):
         environ = copy.deepcopy(os.environ)

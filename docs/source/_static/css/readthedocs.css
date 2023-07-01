@@ -3,10 +3,12 @@ table.colwidths-auto td {
 }
 
 .header-logo {
-    background-image: url("../image/fnlp-logo.png");
-    background-size: 130px 40px;
-    height: 40px;
-    width: 130px;
+    background-image: url("../images/logo.svg");
+    background-size: 300px 200px;
+    height: 200px;
+    width: 300px;
+    top: -80px;
+    left: -40px;
 }
 
 .two-column-table-wrapper {

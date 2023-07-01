@@ -229,30 +229,32 @@ class LlamaLayer(nn.Module):
 
 
 class LlamaForCausalLM(CollieModelForCausalLM):
+    
     def __init__(self, config: CollieConfig) -> None:
         super().__init__(config)
         self.embed_tokens = tensor_parallel.VocabParallelEmbedding(
-            self.config.vocab_size,
-            self.config.hidden_size
+            self.collie_config.vocab_size,
+            self.collie_config.hidden_size
         )
-        self.layers = nn.Sequential(
-            *[LlamaLayer(self.config) for _ in range(self.config.num_hidden_layers)])
+        self.layers = nn.ModuleList(
+            [LlamaLayer(self.collie_config) for _ in range(self.collie_config.num_hidden_layers)])
         self.norm = RMSNormalize(
-            dim=self.config.hidden_size,
-            eps=self.config.rms_norm_eps
+            dim=self.collie_config.hidden_size,
+            eps=self.collie_config.rms_norm_eps
         )
         self.lm_head = ColumnParallelLinearWithoutBias(
-            self.config.hidden_size,
-            self.config.vocab_size,
+            self.collie_config.hidden_size,
+            self.collie_config.vocab_size,
             bias=False
         )
         # GenerationMixin 需要的额外参数
         self.config = PretrainedConfig(is_decoder=True)
+        if config.model_config.tie_word_embeddings:
+            self.lm_head.weight = self.embed_tokens.weight
         self.main_input_name = "input_ids"
 
-    def forward(self, input_ids: torch.Tensor, **kwargs):
+    def forward(self, input_ids: torch.Tensor, attention_mask: Optional[torch.Tensor] = None, **kwargs):
         inputs = {"input_ids": input_ids}
-        attention_mask = kwargs.get("attention_mask", None)
         if attention_mask is not None:
             inputs["attention_mask"] = attention_mask
         inputs["hidden_states"] = self.embed_tokens(inputs["input_ids"])
@@ -263,7 +265,6 @@ class LlamaForCausalLM(CollieModelForCausalLM):
         inputs["hidden_states"] = self.norm(inputs["hidden_states"])
         all_hidden_states += (inputs["hidden_states"], )
         inputs["logits"] = self.lm_head(inputs["hidden_states"])
-
         return CausalLMOutputWithPast(
             loss=None,
             logits=inputs["logits"],
@@ -299,25 +300,44 @@ class LlamaForCausalLM(CollieModelForCausalLM):
         """
         if isinstance(config, str):
             config = CollieConfig.from_pretrained(config)
-        return [TiedLayerSpec(
-            "embed_tokens",
-            dict_as_params(input_keys="input_ids", output_keys="hidden_states"),
-            tensor_parallel.VocabParallelEmbedding,
-            config.vocab_size,
-            config.hidden_size),
-            *[LayerSpec(LlamaLayer, config)
-              for _ in range(config.num_hidden_layers)],
-            LayerSpec(dict_as_params(input_keys="hidden_states", output_keys="hidden_states"), RMSNormalize,
-                      dim=config.hidden_size,
-                      eps=config.rms_norm_eps),
-            TiedLayerSpec(
-            "embed_tokens",
-            dict_as_params(input_keys="hidden_states", output_keys="logits"),
-            ColumnParallelLMHead,
-            config.hidden_size,
-            config.vocab_size,
-            bias=False)
-        ]
+        if config.model_config.tie_word_embeddings:
+            return [TiedLayerSpec(
+                "embed_tokens",
+                dict_as_params(input_keys="input_ids", output_keys="hidden_states"),
+                tensor_parallel.VocabParallelEmbedding,
+                config.vocab_size,
+                config.hidden_size),
+                *[LayerSpec(LlamaLayer, config)
+                for _ in range(config.num_hidden_layers)],
+                LayerSpec(dict_as_params(input_keys="hidden_states", output_keys="hidden_states"), RMSNormalize,
+                        dim=config.hidden_size,
+                        eps=config.rms_norm_eps),
+                TiedLayerSpec(
+                "embed_tokens",
+                dict_as_params(input_keys="hidden_states", output_keys="logits"),
+                ColumnParallelLMHead,
+                config.hidden_size,
+                config.vocab_size,
+                bias=False)
+            ]
+        else:
+            return [LayerSpec(
+                dict_as_params(input_keys="input_ids", output_keys="hidden_states"),
+                tensor_parallel.VocabParallelEmbedding,
+                config.vocab_size,
+                config.hidden_size),
+                *[LayerSpec(LlamaLayer, config)
+                for _ in range(config.num_hidden_layers)],
+                LayerSpec(dict_as_params(input_keys="hidden_states", output_keys="hidden_states"), RMSNormalize,
+                        dim=config.hidden_size,
+                        eps=config.rms_norm_eps),
+                LayerSpec(
+                dict_as_params(input_keys="hidden_states", output_keys="logits"),
+                ColumnParallelLMHead,
+                config.hidden_size,
+                config.vocab_size,
+                bias=False)
+            ]
 
     @staticmethod
     def load_parallel_state_dict(path: str, config: Union[CollieConfig, str],
@@ -474,7 +494,10 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                                 state_dict.pop(key)
                         if key.endswith("embed_tokens.weight"):
                             if 0 in layers:
-                                state_dict["tied_modules.embed_tokens.weight"] = state_dict.pop(key)
+                                if config.model_config.tie_word_embeddings:
+                                    state_dict["tied_modules.embed_tokens.weight"] = state_dict.pop(key)
+                                else:
+                                    state_dict["0.weight"] = state_dict.pop(key)
                             else:
                                 state_dict.pop(key)
                         if key == "norm.weight":
@@ -484,7 +507,10 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                                 state_dict.pop(key)
                         if key.endswith("lm_head.weight"):
                             if max(parts) - 1 in layers:
-                                state_dict["tied_modules.embed_tokens.weight"] = state_dict.pop(key)
+                                if config.model_config.tie_word_embeddings:
+                                    state_dict["tied_modules.embed_tokens.weight"] = state_dict.pop(key)
+                                else:
+                                    state_dict[f"{max(parts) - 1}.weight"] = state_dict.pop(key)
                             else:
                                 state_dict.pop(key)
                 # 根据用户配置的新的 tp size 进行分割

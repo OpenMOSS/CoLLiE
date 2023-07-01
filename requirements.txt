@@ -1,9 +1,9 @@
-rich
+rich>=13.3.5
 tqdm
 torch>=1.13.0
 einops
-deepspeed>=0.9.3
-transformers
+deepspeed>=0.9.5
+transformers>=4.30.2
 sentencepiece
 protobuf==3.20.1
 websockets
@@ -13,3 +13,9 @@ tensorboard
 google
 peft
 wandb
+pandas
+bullet
+psutil
+accelerate>=0.20.3
+bitsandbytes>=0.39.0
+scipy

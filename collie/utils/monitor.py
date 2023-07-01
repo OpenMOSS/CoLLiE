@@ -8,7 +8,10 @@ __all__ = [
     "TGSMonitor",
     "MemoryMonitor",
     "LossMonitor",
-    "EvalMonitor"
+    "EvalMonitor",
+    "NetworkIOMonitor",
+    "DiskIOMonitor",
+    "CPUMemoryMonitor"
 ]
 from deepspeed.monitor.monitor import MonitorMaster, Monitor
 
@@ -18,8 +21,9 @@ from collie.utils import dictToObj
 from collie.utils.dist_utils import env
 
 import time
+import psutil
 import datetime
-from typing import Sequence
+from typing import Sequence, Optional, Dict
 from functools import reduce
 
 class DummyDeepSpeedMonitor(Monitor):
@@ -31,7 +35,8 @@ class DummyDeepSpeedMonitor(Monitor):
 
 def get_monitor(config: CollieConfig):
     """
-    用于获取DeepSpeed监控器实例的函数。通过这个函数，可以启用一个或多个监控后端（如PyTorch的Tensorboard、WandB和简单的CSV文件）实时记录指标。
+    用于获取DeepSpeed监控器实例的函数。
+    通过这个函数，可以启用一个或多个监控后端（如PyTorch的Tensorboard、WandB和简单的CSV文件）实时记录指标。
     
     :param config:一个CollieConfig对象，用于配置监控器的行为
     :return: (MonitorMaster | DummyDeepSpeedMonitor) 如果传入的CollieConfig已经包含有Monitor的相关配置，则返回MonitorMaster实例；否则返回DummyDeepSpeedMonitor实例。
@@ -59,9 +64,8 @@ def get_monitor(config: CollieConfig):
         return DummyDeepSpeedMonitor(config.ds_config)
     
 class BaseMonitor:
-    """
-    BaseMonitor是一个基础的监控器类，用于记录模型训练过程中的统计信息。
-    其中，`trainer` 会将需要统计的数据存放到 `item` 中，目前 item 的内容为：
+    """BaseMonitor是一个基础的监控器类，用于记录模型训练过程中的统计信息
+        其中，`trainer` 会将需要统计的数据存放到 `item` 中，目前 item 的内容为：
 
         .. code-block::
 
@@ -105,6 +109,63 @@ class StepTimeMonitor(BaseMonitor):
         if self.item["mode"] == "train":
             self.monitor.write_events([(f"Step Time", time.time() - self.start, self.item['global_batch_idx'])])
             
+class NetworkIOMonitor(BaseMonitor):
+    """ 用来记录每个step的网络带宽情况
+    """
+    def __init__(self, config, interface: Optional[str] = None) -> None:
+        super().__init__(config)
+        self.interface = interface
+        start_time = time.time()
+        start_info = psutil.net_io_counters(pernic=self.interface is not None, nowrap=True)
+        time.sleep(5)
+        end_time = time.time()
+        end_info = psutil.net_io_counters(pernic=self.interface is not None, nowrap=True)
+        if self.interface is not None:
+            assert isinstance(self.end_info, (dict, Dict)) and self.interface in self.end_info.keys(), f"Wrong interface! Interface can only be selected in {list(self.end_info.keys())}."
+            self.start_info = self.start_info[self.interface]
+            self.end_info = self.end_info[self.interface]
+        self.norm_sent = (end_info.bytes_sent - start_info.bytes_sent) / (end_time - start_time)
+        self.norm_recv = (end_info.bytes_recv - start_info.bytes_recv) / (end_time - start_time)
+        
+    def __enter__(self):
+        self.start_time = time.time()
+        self.start_info = psutil.net_io_counters(pernic=self.interface is not None, nowrap=True)
+        return super().__enter__()
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.item["mode"] == "train":
+            self.end_time = time.time()
+            self.end_info = psutil.net_io_counters(pernic=self.interface is not None, nowrap=True)
+            if self.interface is not None:
+                assert isinstance(self.end_info, (dict, Dict)) and self.interface in self.end_info.keys(), f"Wrong interface! Interface can only be selected in {list(self.end_info.keys())}."
+                self.start_info = self.start_info[self.interface]
+                self.end_info = self.end_info[self.interface]
+            self.monitor.write_events([(f"Network IO (Sent) bytes/second", ((self.end_info.bytes_sent - self.start_info.bytes_sent) / (self.end_time - self.start_time)) - self.norm_sent, self.item['global_batch_idx'])])
+            self.monitor.write_events([(f"Network IO (Recv) bytes/second", ((self.end_info.bytes_recv - self.start_info.bytes_recv) / (self.end_time - self.start_time)) - self.norm_recv, self.item['global_batch_idx'])])
+            
+class DiskIOMonitor(BaseMonitor):
+    """ 用来记录每个step的硬盘读写情况
+    """
+    def __init__(self, config, disk: Optional[str] = None) -> None:
+        super().__init__(config)
+        self.disk = disk
+        
+    def __enter__(self):
+        self.start_time = time.time()
+        self.start_info = psutil.disk_io_counters(perdisk=self.disk is not None, nowrap=True)
+        return super().__enter__()
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.item["mode"] == "train":
+            self.end_time = time.time()
+            self.end_info = psutil.disk_io_counters(perdisk=self.disk is not None, nowrap=True)
+            if self.disk is not None:
+                assert isinstance(self.end_info, (dict, Dict)) and self.disk in self.end_info.keys(), f"Wrong disk! Disk can only be selected in {list(self.end_info.keys())}."
+                self.start_info = self.start_info[self.disk]
+                self.end_info = self.end_info[self.disk]
+            self.monitor.write_events([(f"Disk IO (Read) bytes/second", (self.end_info.read_bytes - self.start_info.read_bytes) / (self.end_time - self.start_time), self.item['global_batch_idx'])])
+            self.monitor.write_events([(f"Disk IO (Write) bytes/second", (self.end_info.write_bytes - self.start_info.write_bytes) / (self.end_time - self.start_time), self.item['global_batch_idx'])])
+            
 class TGSMonitor(BaseMonitor):
     """ 用来记录每秒每张 GPU 可训练的 token 数 (token / s / GPU)
     """
@@ -114,7 +175,14 @@ class TGSMonitor(BaseMonitor):
     
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self.item["mode"] == "train" and "batch" in self.item.keys():
-            self.monitor.write_events([(f"TGS", reduce(lambda x, y: x * y, self.item["batch"][0]["input_ids"].shape) / (env.pp_size * env.tp_size * (time.time() - self.start)), self.item['global_batch_idx'])])
+            self.monitor.write_events([(f"TGS", reduce(lambda x, y: x * y, self.item["batch"]["input_ids"].shape) / (env.pp_size * env.tp_size * (time.time() - self.start)), self.item['global_batch_idx'])])
+            
+class CPUMemoryMonitor(BaseMonitor):
+    """ 用来记录每个step的CPU内存占用
+    """
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.item["mode"] == "train":
+            self.monitor.write_events([(f"CPU Memory Used", psutil.virtual_memory().used, self.item['global_batch_idx'])])
         
 class MemoryMonitor(BaseMonitor):
     """ 用来记录每个step的内存占用
