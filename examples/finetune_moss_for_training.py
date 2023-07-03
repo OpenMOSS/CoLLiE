@@ -75,7 +75,8 @@ model = MossForCausalLM.from_pretrained("/mnt/petrelfs/share_data/zhangshuo/mode
 optimizer = Lomo(
     model,
     lr = 0.001,
-    clip_grad_norm = 5.0
+    clip_grad_norm = 5.0,
+    zero3_enabled=True
 )
 
 # 7. 添加监视器

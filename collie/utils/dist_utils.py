@@ -81,7 +81,6 @@ def setup_ds_engine(
         from collie.models import CollieModelForCausalLM
         from collie.module import PipelineModel
         assert isinstance(model, CollieModelForCausalLM) or isinstance(model, PipelineModel), "Currently pipeline or tensor parallelism only supports Collie models."
-    model = model.cuda()
     engine, optimizer, _, lr_scheduler = initialize(
         model=model,
         optimizer=optimizer,

@@ -140,7 +140,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
             setattr(pipeline_model, "collie_config", config)
             setattr(pipeline_model, "save_parallel_state_dict", cls.save_parallel_state_dict)
             setattr(pipeline_model, "load_parallel_state_dict", cls.load_parallel_state_dict)
-            for method in cls.overwrite_pipeline_methods() + [cls.resize_token_embeddings, cls.prepare_inputs]:
+            for method in cls.overwrite_pipeline_methods() + [cls.resize_token_embeddings, cls.prepare_inputs, cls.enable_input_require_grads]:
                 object.__setattr__(pipeline_model, method.__name__, types.MethodType(method, pipeline_model))
             return pipeline_model
             
@@ -583,3 +583,15 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         
     def set_lm_head(self, name, lm_head):
         self.add_module(name, lm_head)
+
+    def enable_input_require_grads(self):
+        """
+        Enables the gradients for the input embeddings. This is useful for fine-tuning adapter weights while keeping
+        the model weights fixed.
+        """
+
+        def make_inputs_require_grads(module, input, output):
+            output.requires_grad_(True)
+        input_embedding = self.get_input_embedding()[1]
+        if input_embedding is not None:
+            self._require_grads_hook = input_embedding.register_forward_hook(make_inputs_require_grads)
