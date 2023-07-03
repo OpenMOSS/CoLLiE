@@ -193,11 +193,6 @@ def _split_batch(batch, micro_batch_size, micro_batch_num):
     :param micro_batch_num:
     :return: tuple
     """
-    # Assume batch first.
-    # assert len(batch) == 2, len(batch)
-    # inputs = batch[0]
-    # labels = batch[1]
-    # micro_batch_num = inputs.shape[0] // micro_batch_size
     if isinstance(batch, torch.Tensor):
         batch_split = torch.split(batch, micro_batch_size)
     elif isinstance(batch, dict):
@@ -206,18 +201,6 @@ def _split_batch(batch, micro_batch_size, micro_batch_num):
         raise NotImplementedError(f"Invalid type of batch: {type(batch)}"
                                   "Must be Tensor or dict.")
     assert len(batch_split) == micro_batch_num, len(batch_split)
-    # if isinstance(inputs, torch.Tensor):
-    #     inputs_split = torch.split(inputs, micro_batch_size)
-    # elif isinstance(inputs, dict):
-    #     inputs_split = _split_dict(inputs, micro_batch_size, micro_batch_num)
-    # else:
-    #     raise NotImplementedError(f"Invalid type of inputs: {type(inputs)}. "
-    #                               "Must be Tensor or dict.")
-    # assert len(inputs_split) == micro_batch_num, len(inputs_split)
-    
-    # batch_split = ()
-    # for input_split, label_split in zip(inputs_split, labels_split):
-    #     batch_split += ((input_split, label_split), )
 
     return batch_split
 

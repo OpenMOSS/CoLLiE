@@ -54,7 +54,7 @@ class CollieConfig:
     :param model_config: 模型设置。一般情况下无需手动设置，而是通过
         :meth:`from_pretrained` 获取，
     :param peft_config: Peft 的配置。
-    :param quantization_config: 模型得量化配置
+    :param quantization_config: 模型的量化配置
     """
     seed: int = field(
         default=42,

@@ -3,6 +3,9 @@ from collie.callbacks.callback_manager import CallbackManager
 class TrainerEventTrigger:
     callback_manager: CallbackManager
 
+    def on_setup_parallel_model(self):
+        self.callback_manager.on_setup_parallel_model(self)
+
     def on_after_trainer_initialized(self):
         self.callback_manager.on_after_trainer_initialized(self)
 
