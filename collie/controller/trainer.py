@@ -258,7 +258,7 @@ class Trainer(TrainerEventTrigger):
         """
         if dist.get_world_size() != self.config.tp_size * self.config.dp_size * self.config.pp_size:
             logger.rank_zero_warning("The world size is not equal to the product of the parallel sizes set."
-                                     f"{dist.get_world_size()} != {self.config.tp_size} * {self.config.dp_size} * {self.config.dp_size}.")
+                                     f"{dist.get_world_size()} != {self.config.tp_size} * {self.config.dp_size} * {self.config.pp_size}.")
             self.config.dp_size = dist.get_world_size() // (self.config.tp_size * self.config.pp_size)
             logger.rank_zero_warning(f"Set dp_size to {self.config.dp_size}.")
         self.on_setup_parallel_model()
