@@ -16,6 +16,8 @@ from transformers.generation.streamers import BaseStreamer
 from transformers import PreTrainedTokenizer, GenerationConfig
 import torch
 
+from collie.driver.io.petrel import no_proxy
+
 class BaseProvider:
     """ BaseProvider 为异步数据提供器的基类，提供了一些基本的接口
     """
@@ -39,10 +41,11 @@ class BaseProvider:
         """ start_provider 为异步数据提供器的启动函数，会在一个新的进程中启动 `provider_handler` 函数
         """
         if not self.provider_started:
-            process = Process(target=self.provider_handler)
-            process.daemon = True
-            process.start()
-            self.provider_started = True
+            with no_proxy():
+                process = Process(target=self.provider_handler)
+                process.daemon = True
+                process.start()
+                self.provider_started = True
         
     def get_data(self):
         """ get_data 为异步数据提供器的数据获取函数，会从队列 `self.data` 中获取数据

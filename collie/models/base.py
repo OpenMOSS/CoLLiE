@@ -215,6 +215,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         # Actually build the model
         with ContextManagers(contexts):
             model = cls.from_config(config)
+            model = model.to(config.model_config.torch_dtype)
         # quantization
         if config.quantization_config.load_in_4bit or config.quantization_config.load_in_8bit:
             from transformers.utils.bitsandbytes import replace_with_bnb_linear, \
