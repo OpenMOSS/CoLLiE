@@ -27,24 +27,29 @@ class Saver:
         :meth:`.Trainer.load_checkpoint` 加载重新进行训练。该保存路径还可以通过
         :meth:`.CollieForCausalLM.from_pretrained` 函数或者 :meth:`.Trainer.\
         load_model` 加载到模型中；同时也可以直接加载到对应的 huggingface 模型中。
+    :param peft_only: 是否只保存 adapter；当未使用 ``peft`` 时该项无效
     :param kwargs: 传给 :meth:`.Trainer.save_checkpoint` 或者 :meth:`.Trainer.\
         save_model` 的额外参数。
     """
 
     def __init__(self, folder: Optional[str] = None, model_only: bool = True,
-                 process_exclusion: bool = False, **kwargs):
+                 peft_only: bool = True, process_exclusion: bool = False, **kwargs):
         if folder is None:
             folder = os.path.abspath(os.getcwd())
 
         self.save_folder = folder
         self.model_only = model_only
+        self.peft_only = peft_only
         self.process_exclusion = process_exclusion
         self.kwargs = kwargs
 
-        if model_only:
-            self.save_fn_name = "save_model"
+        if peft_only:
+            self.save_fn_name = "save_peft"
         else:
-            self.save_fn_name = "save_checkpoint"
+            if model_only:
+                self.save_fn_name = "save_model"
+            else:
+                self.save_fn_name = "save_checkpoint"
         logger.info('The checkpoint will be saved in this folder '
                     f'for this time: {self.save_folder}.')
 
@@ -184,6 +189,7 @@ class TopkSaver(ResultsMonitor, Saver):
         :meth:`.Trainer.load_checkpoint` 加载重新进行训练。该保存路径还可以通过
         :meth:`.CollieForCausalLM.from_pretrained` 函数或者 :meth:`.Trainer.\
         load_model` 加载到模型中；同时也可以直接加载到对应的 huggingface 模型中。
+    :param peft_only: 是否只保存 adapter；当未使用 ``peft`` 时该项无效
     :param kwargs: 传给 :meth:`.Trainer.save_checkpoint` 或者 :meth:`.Trainer.\
         save_model` 的额外参数。
     """
@@ -195,11 +201,12 @@ class TopkSaver(ResultsMonitor, Saver):
                  folder: Optional[str] = None,
                  process_exclusion: bool = False,
                  model_only: bool = True,
+                 peft_only: bool = True,
                  **kwargs):
         if topk is None:
             topk = 0
         ResultsMonitor.__init__(self, monitor, larger_better)
-        Saver.__init__(self, folder, model_only, process_exclusion, **kwargs)
+        Saver.__init__(self, folder, model_only, peft_only, process_exclusion, **kwargs)
 
         if monitor is not None and topk == 0:
             raise RuntimeError('`monitor` is set, but `topk` is 0.')

@@ -33,6 +33,7 @@ class CheckpointCallback(Callback):
         :meth:`.Trainer.load_checkpoint` 加载重新进行训练。该保存路径还可以通过
         :meth:`.CollieForCausalLM.from_pretrained` 函数或者 :meth:`.Trainer.\
         load_model` 加载到模型中；同时也可以直接加载到对应的 huggingface 模型中。
+    :param peft_only: 是否只保存 adapter；当未使用 ``peft`` 时该项无效
     :param monitor: 监控的 metric 值。
 
         * 为 ``str`` 时，
@@ -58,6 +59,7 @@ class CheckpointCallback(Callback):
             every_n_batches: Optional[int] = None,
             process_exclusion: bool = False,
             model_only: bool = True,
+            peft_only: bool = True,
             monitor: Optional[Union[str, Callable]] = None,
             larger_better: bool = True,
             topk: int = 0,
@@ -87,6 +89,7 @@ class CheckpointCallback(Callback):
             folder=folder,
             process_exclusion=process_exclusion,
             model_only=model_only,
+            peft_only=peft_only,
             **kwargs)
         self.topk_saver.log_name = self.__class__.__name__
 

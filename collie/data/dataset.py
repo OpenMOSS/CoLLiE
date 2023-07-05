@@ -150,11 +150,11 @@ class CollieDatasetForTraining(Dataset):
                     self.dataset[index]["input"], add_special_tokens=self.add_special_tokens).input_ids)
                 _, eos_length = self._inspect_special_tokens_length()
                 context_length -= eos_length
-                labels[context_length - 1:] = -100
+                labels[:context_length - 1] = -100
                 labels = labels.cpu().tolist()
             else:
                 raise ValueError("Dataset must have one or two fields.")
-        return {"input_ids": input_ids, "attention_mask": attention_mask, "labels": input_ids}
+        return {"input_ids": input_ids, "attention_mask": attention_mask, "labels": labels}
     
     def _get_slice(self, s: slice):
         result = []

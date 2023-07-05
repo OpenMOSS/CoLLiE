@@ -10,11 +10,9 @@ from typing import Union
 class Server:
     def __init__(self,
                  model: Union[CollieModelForCausalLM, PreTrainedModel],
-                 data_provider: BaseProvider,
-                 config: CollieConfig) -> None:
+                 data_provider: BaseProvider) -> None:
         self.model = model
         self.data_provider = data_provider
-        self.collie_config = config
         
     def start(self):
         if env.rank == 0:
