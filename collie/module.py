@@ -175,7 +175,7 @@ class PipelineGenerationMixin(GenerationMixin):
         self.generation_config = GenerationConfig()
         self.main_input_name = "input_ids"
         self.device = torch.device("cuda")
-        self.engine_container = [None]
+        self.engine_container = []
         self.layers = None
         self._find_layers()
         self.is_contrastive_search = False
@@ -190,7 +190,7 @@ class PipelineGenerationMixin(GenerationMixin):
         """开始迭代的生成过程
         """
         if len(self.engine_container) == 0:
-            self.engine_container[0] = setup_ds_engine(config=self.collie_config, model=self)[0]
+            self.engine_container.append(setup_ds_engine(config=self.collie_config, model=self)[0])
         self.engine_container[0].eval()
         self.inner_forward = False
         res = super().generate(*args, **kwargs)

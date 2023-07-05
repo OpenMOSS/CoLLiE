@@ -198,6 +198,8 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
             # prevent duplicate ``from_pretrained`` in load_parallel
             config = CollieConfig.from_pretrained(config, **kwargs)
         model = cls.from_config(config)
+        for key, _ in model.named_parameters():
+            print(key)
         state_dict = {}
         if not is_zero3_enabled(config) or env.dp_rank == 0:
             state_dict = cls.load_parallel_state_dict(
