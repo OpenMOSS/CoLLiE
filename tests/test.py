@@ -22,8 +22,8 @@ from collie import CollieConfig, setup_ds_engine, PipelineGenerationMixin, Serve
 from transformers import AutoTokenizer, AutoModel, GenerationConfig
 
 config = CollieConfig.from_pretrained("THUDM/chatglm2-6b", trust_remote_code=True)
-config.pp_size = 2
-config.tp_size = 1
+config.pp_size = 1
+config.tp_size = 2
 tokenizer = AutoTokenizer.from_pretrained("THUDM/chatglm2-6b", trust_remote_code=True)
 
 model = ChatGLM2ForCausalLM.from_pretrained("THUDM/chatglm2-6b", config=config).half().cuda()

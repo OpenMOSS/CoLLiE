@@ -381,14 +381,19 @@ class ChatGLM2Layer(nn.Module):
         
         # Attention heads [sq, b, h] --> [sq, b, (np * 3 * hn)]
         if self.multi_query_attention:
-    
-            query_layer = self.attention["query_layer"](hidden_states)
-            key_layer = self.attention["key_layer"](hidden_states)
-            value_layer = self.attention["value_layer"](hidden_states)
-            if self.layer_id == 1:
-                print("query_layer shape", query_layer, query_layer.shape)
-                print(key_layer)
-                print(value_layer)
+            # import pdb
+            # pdb.set_trace()
+            query_layer = self.attention["query_layer"](layernorm_output)
+            key_layer = self.attention["key_layer"](layernorm_output)
+            value_layer = self.attention["value_layer"](layernorm_output)
+            # if self.layer_id == 1:
+            #     print("query weight", self.attention["query_layer"].weight.shape, self.attention["query_layer"].weight)
+            #     print("query .bias", self.attention["query_layer"].bias.shape, self.attention["query_layer"].bias)
+            #     print("cal", hidden_states.matmul(self.attention["query_layer"].weight.t()) + self.attention["query_layer"].bias)
+            #     print("hidden_state", hidden_states.shape, hidden_states)
+            #     print("query_layer shape", query_layer, query_layer.shape)
+            #     print(key_layer)
+            #     print(value_layer)
             # (query_layer, key_layer, value_layer) = mixed_x_layer.split(
             #     [
             #         self.num_attention_heads_per_partition * self.hidden_size_per_attention_head,
@@ -397,16 +402,20 @@ class ChatGLM2Layer(nn.Module):
             #     ],
             #     dim=-1,
             # )
-            query_layer = query_layer.view(
-                query_layer.size()[:-1] + (self.num_attention_heads_per_partition // self.config.tp_size, self.hidden_size_per_attention_head)
-            )
-            key_layer = key_layer.view(
-                key_layer.size()[:-1] + (self.num_multi_query_groups_per_partition // self.config.tp_size, self.hidden_size_per_attention_head)
-            )
-            value_layer = value_layer.view(
-                value_layer.size()[:-1]
-                + (self.num_multi_query_groups_per_partition// self.config.tp_size, self.hidden_size_per_attention_head)
-            )
+            head_dim = self.config.hidden_size // self.config.num_attention_heads
+            query_layer, key_layer, value_layer = rearrange(query_layer, "b n (h d) -> b n h d", d=head_dim), \
+            rearrange(key_layer, "b n (h d) -> b n h d", d=head_dim), \
+            rearrange(value_layer, "b n (h d) -> b n h d", d=head_dim)
+            # query_layer = query_layer.view(
+            #     query_layer.size()[:-1] + (self.num_attention_heads_per_partition // self.config.tp_size, self.hidden_size_per_attention_head)
+            # )
+            # key_layer = key_layer.view(
+            #     key_layer.size()[:-1] + (self.num_multi_query_groups_per_partition // self.config.tp_size, self.hidden_size_per_attention_head)
+            # )
+            # value_layer = value_layer.view(
+            #     value_layer.size()[:-1]
+            #     + (self.num_multi_query_groups_per_partition// self.config.tp_size, self.hidden_size_per_attention_head)
+            # )
         else:
             new_tensor_shape = mixed_x_layer.size()[:-1] + \
                                (self.num_attention_heads_per_partition,
@@ -538,8 +547,9 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
         
         # Rotary positional embeddings
         self.seq_length = config.seq_length
+        # self.config.checkpointing = True
         self.layers = nn.Sequential(
-            *[ChatGLM2Layer(self.config, i+1) for i in range(self.config.num_layers)])
+            *[ChatGLM2Layer(self.collie_config, i+1) for i in range(self.config.num_layers)])
         self.final_layernorm = RMSNorm(
             self.config.hidden_size,
             eps=self.config.layernorm_epsilon
