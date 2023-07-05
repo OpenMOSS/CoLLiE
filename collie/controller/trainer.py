@@ -397,7 +397,7 @@ class Trainer(TrainerEventTrigger):
             if isinstance(trainer.engine.module, PipelineModel):
                 trainer.engine.module.forward_type = "train"
             if isinstance(trainer.engine.module, PeftModel) and isinstance(trainer.engine.modul.get_base_model(), PipelineModel):
-                trainer.engine.modul.get_base_model().forward_type = "train"
+                trainer.engine.module.get_base_model().forward_type = "train"
             loss = trainer.engine.module(**batch)["loss"]
         else:
             outputs = trainer.engine(**batch)
