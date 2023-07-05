@@ -55,11 +55,14 @@ def get_monitor(config: CollieConfig):
             config.ds_config["monitor_config"]["wandb"] = {"enabled": False}
         else:
             config.ds_config["monitor_config"]["wandb"]["job_name"] = tag + datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+            config.ds_config["monitor_config"]["wandb"]["config"] = config
         if "csv_monitor" not in config.ds_config["monitor_config"].keys():
             config.ds_config["monitor_config"]["csv_monitor"] = {"enabled": False}
         else:
             config.ds_config["monitor_config"]["csv_monitor"]["job_name"] = tag + datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-        return MonitorMaster(dictToObj(config.ds_config["monitor_config"]))
+        monitor = MonitorMaster(dictToObj(config.ds_config["monitor_config"]))
+        config.ds_config["monitor_config"]["wandb"].pop("config", {})
+        return monitor
     else:
         return DummyDeepSpeedMonitor(config.ds_config)
     

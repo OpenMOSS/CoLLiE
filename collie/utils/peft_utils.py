@@ -2,6 +2,8 @@ import os
 import math
 
 import torch
+from types import MethodType
+from typing import Optional
 from transformers import PreTrainedModel
 from peft import TaskType, PeftType, PromptEmbedding, PromptEncoder, PrefixEncoder, PeftModel, PromptTuningInit
 
@@ -100,3 +102,15 @@ def patch_peft():
     """
     patch_peft_model()
     patch_prompt_tuning()
+
+
+def skip_input_embedding(input_embedding: Optional[torch.nn.Module]):
+    if input_embedding is not None:
+        raw_foward = input_embedding.forward
+        def _forward(self, inputs: dict):
+            if "inputs_embeds" in inputs.keys():
+                inputs["hidden_states"] = inputs["inputs_embeds"]
+                return inputs
+            else:
+                return raw_foward(inputs)
+        input_embedding.forward = MethodType(_forward, input_embedding)

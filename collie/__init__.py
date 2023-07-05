@@ -1,7 +1,8 @@
 ''' **CoLLie** 为 **Causal Language Modeling** 提供了一系列的模型和工具，支持分布式训练和验证的快速部署
 '''
 from .config import CollieConfig
-from .models import LlamaForCausalLM, MossForCausalLM, CollieModelForCausalLM, ChatGLMForCausalLM
+from .models import LlamaForCausalLM, MossForCausalLM, CollieModelForCausalLM, \
+    ChatGLMForCausalLM, InternLMForCausalLM
 from .callbacks import Callback, HasMonitorCallback, CheckpointCallback, \
     LoadBestModelCallback
 from .module import PipelineGenerationMixin, ColumnParallelLinear, \
@@ -13,7 +14,7 @@ from .utils import progress, setup_distribution, set_seed, env, \
     broadcast_tensor, find_tensors, BaseProvider, GradioProvider, \
     _GenerationStreamer, BaseMonitor, StepTimeMonitor, TGSMonitor, \
     MemoryMonitor, LossMonitor, EvalMonitor, LRMonitor, dict_as_params, \
-        DashProvider, initization_mapping, is_static_method, \
+        DashProvider, is_static_method, \
             auto_param_call, NetworkIOMonitor, DiskIOMonitor, \
                 CPUMemoryMonitor, ColliePadder, get_keys_to_not_convert
 from .module import PipelineGenerationMixin, ColumnParallelLinear, \
@@ -44,6 +45,7 @@ __all__ = [
     'MossForCausalLM',
     'CollieModelForCausalLM',
     'ChatGLMForCausalLM',
+    'InternLMForCausalLM',
 
     # modules
     'PipelineGenerationMixin',
@@ -84,7 +86,6 @@ __all__ = [
     '_GenerationStreamer',
     'dict_as_params',
     "DashProvider",
-    "initization_mapping",
     "is_static_method",
     "auto_param_call",
     "NetworkIOMonitor",
