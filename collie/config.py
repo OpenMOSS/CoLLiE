@@ -1,9 +1,10 @@
 import os
-from dataclasses import dataclass, field
-from typing import Any, Union
+from dataclasses import dataclass, field, is_dataclass, asdict
+from typing import Any, Union, Callable
 
 from transformers import PretrainedConfig, AutoConfig, BitsAndBytesConfig
 from peft.utils import PeftConfig, PeftType
+from peft.mapping import get_peft_config
 import torch
 
 __all__ = ["CollieConfig"]
@@ -45,10 +46,8 @@ class CollieConfig:
     :param use_flash: 是否使用 `FlashAttention <https://github.com/HazyResearch/flash-attention>`_ 。
         仅对部分模型有效。
     :param dropout: :class:`Dropout` 的概率。仅对部分模型有效。
-    :param initization_method: 初始化方法。可以是以下几种取值：
-        ``none``, ``normal``, ``xavier_normal``, ``xavier_uniform``, ``kaiming_normal``,
-        ``kaiming_uniform``, ``orthogonal``, ``sparse``, ``eye``, ``dirac``。
-        默认为 ``none``, 即不进行初始化, 有助于提高模型加载速度。
+    :param initization_method: 初始化方法。必须是一个接收一个 ``torch.Tensor`` 
+        并返回一个 ``torch.Tensor`` 的可调用对象。
     :param low_cpu_mem_usage: 是否在初始化模型时尝试减少 CPU 占用
     :param ds_config: **DeepSpeed** 的配置文件。可以是一个路径或字典。
     :param model_config: 模型设置。一般情况下无需手动设置，而是通过
@@ -140,18 +139,12 @@ class CollieConfig:
             "help": "Dropout probability."
         }
     )
-    initization_method: str = field(
-        default="none",
+    initization_method: Callable = field(
+        default_factory=lambda: torch.nn.init.uniform_,
         metadata={
             "help": "Initialization method. Possible values are 'none', 'normal', 'xavier_normal', "
             "'xavier_uniform', 'kaiming_normal', 'kaiming_uniform', 'orthogonal', 'sparse', "
             "'eye', 'dirac'. Default is 'none'."
-        }
-    )
-    initization_method_params: dict = field(
-        default=None,
-        metadata={
-            "help": "Parameters for initialization method."
         }
     )
     low_cpu_mem_usage: bool = field(
@@ -224,8 +217,10 @@ class CollieConfig:
         if isinstance(self.model_config, str):
             self.model_config = AutoConfig.from_pretrained(self.model_config, trust_remote_code=True)
         if isinstance(self.peft_config, str):
-            self.peft_config = PeftConfig(**load_config(self.peft_config))
-        if isinstance(self.quantization_config, str):\
+            self.peft_config = load_config(self.peft_config)
+        if isinstance(self.peft_config, dict):
+            self.peft_config = get_peft_config(self.peft_config)
+        if isinstance(self.quantization_config, str):
             self.quantization_config = BitsAndBytesConfig.from_dict(load_config(self.quantization_config))
         assert isinstance(self.ds_config, dict), self.ds_config
         os.environ["COLLIE_SEED"] = str(self.seed)
@@ -246,7 +241,6 @@ class CollieConfig:
             assert not self.quantization_config.load_in_4bit and not self.quantization_config.load_in_8bit, \
                 "Tensor parallelism is not compatible with int8 quantization and int4 quantization"
 
-    
 def load_config(path: str):
     content = {}
     if path.lower().endswith("yaml"):
@@ -258,6 +252,8 @@ def load_config(path: str):
     return content
 
 def _repr_dict(d, depth):
+    if isinstance(d, CollieConfig):
+        return ""
     if isinstance(d, PretrainedConfig):
         d = d.to_diff_dict()
     if not isinstance(d, dict):
@@ -267,3 +263,4 @@ def _repr_dict(d, depth):
     for k, v in d.items():
         r += f"\n{space * depth}{k}:" + _repr_dict(v, depth+1)
     return r
+

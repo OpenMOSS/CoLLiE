@@ -2,17 +2,178 @@ import torch
 from torch import nn
 import torch.distributed as dist
 from deepspeed.runtime.pipe.engine import PipelineEngine, _tensor_bytes
-from deepspeed.runtime.pipe import schedule, p2p
+from deepspeed.runtime.pipe import schedule, p2p, PipelineModule
 from deepspeed.runtime.utils import PartitionedTensor
 from deepspeed.runtime.activation_checkpointing import checkpointing as ds_checkpointing
+from deepspeed.runtime.engine import DeepSpeedEngine
+from deepspeed.utils.timer import ThroughputTimer
 from deepspeed.utils import logger
+from peft import PeftModel
 
 from .utils import _split_batch, auto_param_call
 from .dist_utils import broadcast_tensor, env
+from ..module import PipelineModel
+
+def is_even(number):
+    return number % 2 == 0
 
 class ColliePipelineEngine(PipelineEngine):
-    def __init__(self, *args, **kwargs):
-        super(ColliePipelineEngine, self).__init__(*args, **kwargs)
+    def __init__(self, has_bool_tensors=False, *args, **kwargs):
+        DeepSpeedEngine.__init__(self, *args, **kwargs)
+        assert isinstance(self.module, PipelineModule) or (isinstance(self.module, PeftModel) and isinstance(self.module.get_base_model(), PipelineModule)), "model must base PipelineModule"
+
+        assert self.zero_optimization_stage() < 2, "ZeRO-2 and ZeRO-3 are incompatible with pipeline parallelism"
+
+        # We schedule the all-reduces, so disable it in super().backward()
+        self.enable_backward_allreduce = False
+        self.has_bool_tensors = has_bool_tensors
+        self.eval_return_logits = False
+        self.outputs = None
+
+        # used to disable the pipeline all-reduce when used with 1-bit Adam/1-bit LAMB
+        self.pipeline_enable_backward_allreduce = True
+
+        if self.elasticity_enabled():
+            if not self.is_elastic_model_parallel_supported():
+                assert not self.elasticity_enabled(), "Elasticity is not currently supported" \
+                " with pipeline parallelism."
+
+        # pipeline step for logging
+        self.log_batch_step_id = -1
+
+        self.micro_batch_size = self.train_micro_batch_size_per_gpu()
+        self.micro_batches = self.gradient_accumulation_steps()
+
+        # Set Grid and Communication Groups
+        self.grid = self.module._grid
+        if self.grid.get_global_rank() == 0:
+            logger.info(f'CONFIG: micro_batches={self.micro_batches} '
+                        f'micro_batch_size={self.micro_batch_size}')
+
+        self.global_rank = self.grid.get_global_rank()
+
+        assert self.dp_world_size == self.grid.data_parallel_size
+        assert self.train_batch_size() == \
+            self.micro_batch_size * self.micro_batches * self.grid.data_parallel_size
+
+        #  Set Stage Inf
+        self.num_stages = self.grid.pipe_parallel_size
+        self.stage_id = self.grid.get_stage_id()
+        self.prev_stage = self.stage_id - 1
+        self.next_stage = self.stage_id + 1
+
+        self.data_iterator = None
+        self.batch_fn = None
+
+        self._force_grad_boundary = False
+
+        self.batch_timer = ThroughputTimer(batch_size=self.train_batch_size(),
+                                           logging_fn=self.tput_log,
+                                           monitor_memory=False,
+                                           steps_per_output=self.steps_per_print())
+
+        # PipelineEngine needs to handle data loading specially due to only the first
+        # and last stages loading inputs/labels. We construct a sampler that uses
+        if self.training_data:
+            self._build_data_iter(self.training_data)
+
+        self.is_pipe_parallel = self.grid.pipe_parallel_size > 1
+        self.is_data_parallel = self.grid.data_parallel_size > 1
+        self.is_model_parallel = self.grid.model_parallel_size > 1
+
+        # Partition input/output buffers
+        # XXX temporarily disable while I revert some partition hacks.
+        self.is_pipe_partitioned = self.is_model_parallel
+        self.is_grad_partitioned = self.is_model_parallel
+
+        model_parameters = filter(lambda p: p.requires_grad, self.module.parameters())
+        num_params = sum([p.numel() for p in model_parameters])
+        unique_params = num_params
+        # Subtract tied parameters if we don't own them
+        if self.module.tied_comms:
+            tied_params = 0
+            for key, d in self.module.tied_comms.items():
+                if self.global_rank != min(d['ranks']):
+                    tied_params += sum(p.numel() for p in d['module'].parameters())
+            unique_params -= tied_params
+        params_tensor = torch.LongTensor(data=[num_params, unique_params]).to(self.device)
+        dist.all_reduce(params_tensor, group=self.grid.get_model_parallel_group())
+        params_tensor = params_tensor.tolist()
+        total_params = params_tensor[0]
+        unique_params = params_tensor[1]
+        if self.grid.data_parallel_id == 0:
+            logger.info(f'RANK={self.global_rank} '
+                        f'STAGE={self.stage_id} '
+                        f'LAYERS={self.module._local_stop - self.module._local_start} '
+                        f'[{self.module._local_start}, {self.module._local_stop}) '
+                        f'STAGE_PARAMS={num_params} ({num_params/1e6:0.3f}M) '
+                        f'TOTAL_PARAMS={total_params} ({total_params/1e6:0.3f}M) '
+                        f'UNIQUE_PARAMS={unique_params} ({unique_params/1e6:0.3f}M)')
+
+        #initialize peer-2-peer communication and allreduce groups
+        if self.is_pipe_parallel:
+            p2p.init_process_groups(self.grid)
+
+        # Pipeline buffers
+        self.num_pipe_buffers = 0
+        self.pipe_buffers = {
+            'inputs': [],  # batch input and received activations
+            'labels': [],  # labels from batch input
+            'outputs': [],  # activations
+            'output_tensors': [],  # tensor object to preserve backward graph
+        }
+        self.pipe_recv_buf = None
+        self.grad_layer = None
+
+        self.meta_buffer = None
+
+        self.first_output_send = True
+        self.first_gradient_send = True
+
+        #stores the loss for the current micro batch being processed
+        self.loss = torch.tensor(0.0).to(self.device)
+
+        #stores the loss for the entire batch
+        self.total_loss = None
+        self.agg_loss = torch.tensor(0.0, requires_grad=False).to(self.device)
+        self.dp_group_loss = torch.tensor(0.0, requires_grad=False).to(self.device)
+
+        if self._config.pipeline['activation_checkpoint_interval'] > 0:
+            self.module.activation_checkpoint_interval = self._config.pipeline['activation_checkpoint_interval']
+
+        self.module.checkpoint_parallel_write_pipeline = self._config.checkpoint_parallel_write_pipeline
+
+        if self.is_last_stage():
+            self.loss_model = self.module.loss_fn
+
+        self.has_attention_mask = self.module.__class__.__name__ == 'GPT2ModelPipe'
+        # Initialize pipeline communicators. Just send a 0.
+        if is_even(self.stage_id):
+            if not self.is_last_stage():
+                p2p.send(self.loss, self.next_stage)
+            if not self.is_first_stage():
+                p2p.recv(self.loss, self.prev_stage)
+        else:
+            if not self.is_first_stage():
+                p2p.recv(self.loss, self.prev_stage)
+            if not self.is_last_stage():
+                p2p.send(self.loss, self.next_stage)
+
+        # XXX look into timer reporting timing
+        # Initialize some timers because of early weirdness.
+        if self.wall_clock_breakdown():
+            self.timers('forward_microstep').start()
+            self.timers('forward_microstep').stop()
+            self.timers('backward_microstep').start()
+            self.timers('backward_microstep').stop()
+            self.timers('backward_inner_microstep').start()
+            self.timers('backward_inner_microstep').stop()
+            self.timers('backward_allreduce_microstep').start()
+            self.timers('backward_allreduce_microstep').stop()
+            self.timers('backward_allreduce').start()
+            self.timers('backward_allreduce').stop()
+            self.timers('step_microstep').start()
+            self.timers('step_microstep').stop()
         self.buffer_shape = None
         self.inputs_extra = {}
         self.outputs_extra = {}
@@ -37,15 +198,31 @@ class ColliePipelineEngine(PipelineEngine):
                 self.reset_activation_shape()
 
     def train_batch(self, batch):
+        if isinstance(self.module, PipelineModel):
+            self.module.inner_forward = True
+            self.module.forward_type = "train"
+        if isinstance(self.module, PeftModel) and isinstance(self.module.get_base_model(), PipelineModel):
+            self.module.get_base_model().inner_forward = True
+            self.module.get_base_model().forward_type = "train"
         # batch tuple, batch_size is micro_batch * accumulate_steps
         self.reset_buffer_shape(batch)
-
         batch = _split_batch(batch, self.train_micro_batch_size_per_gpu(),
                              self.gradient_accumulation_steps())
         data_iter = iter(batch)
-        return super().train_batch(data_iter)
+        result = super().train_batch(data_iter)
+        if isinstance(self.module, PipelineModel):
+            self.module.inner_forward = False
+        if isinstance(self.module, PeftModel) and isinstance(self.module.get_base_model(), PipelineModel):
+            self.module.get_base_model().inner_forward = False
+        return result
     
     def eval_batch(self, batch):
+        if isinstance(self.module, PipelineModel):
+            self.module.inner_forward = True
+            self.module.forward_type = "eval"
+        if isinstance(self.module, PeftModel) and isinstance(self.module.get_base_model(), PipelineModel):
+            self.module.get_base_model().inner_forward = True
+            self.module.get_base_model().forward_type = "eval"
         self.reset_buffer_shape(batch)
         if self.total_loss is not None:
             total_loss = self.total_loss.detach().clone()
@@ -63,9 +240,19 @@ class ColliePipelineEngine(PipelineEngine):
         # Assume batch first
         logits = self.broadcast_logits(logits)
         self.total_loss = total_loss
+        if isinstance(self.module, PipelineModel):
+            self.module.inner_forward = False
+        if isinstance(self.module, PeftModel) and isinstance(self.module.get_base_model(), PipelineModel):
+            self.module.get_base_model().inner_forward = False
         return logits
     
     def generate_batch(self, batch, use_cache=True):
+        if isinstance(self.module, PipelineModel):
+            self.module.inner_forward = True
+            self.module.forward_type = "generate"
+        if isinstance(self.module, PeftModel) and isinstance(self.module.get_base_model(), PipelineModel):
+            self.module.get_base_model().inner_forward = True
+            self.module.get_base_model().forward_type = "generate"
         self.reset_buffer_shape(batch)
 
         if self.total_loss is not None:
@@ -128,6 +315,10 @@ class ColliePipelineEngine(PipelineEngine):
         # Assume batch first
         logits = self.broadcast_logits(logits)
         self.total_loss = total_loss
+        if isinstance(self.module, PipelineModel):
+            self.module.inner_forward = False
+        if isinstance(self.module, PeftModel) and isinstance(self.module.get_base_model(), PipelineModel):
+            self.module.get_base_model().inner_forward = False
         return logits
     
     def broadcast_logits(self, logits):

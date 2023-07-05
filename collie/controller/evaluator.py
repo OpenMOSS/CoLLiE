@@ -80,7 +80,7 @@ class Evaluator:
         self.data_provider = data_provider
         self.server = None
         if self.data_provider is not None:
-            self.server = Server(model=self.model, data_provider=self.data_provider, config=self.config)
+            self.server = Server(model=self.model, data_provider=self.data_provider)
         self.monitor = _MultiMonitors(monitors)
         self.global_batch_idx = 0
 
@@ -221,15 +221,16 @@ class EvaluatorForPerplexity(Evaluator):
     
         :return: 一次验证的结果，为 `Dict` 类型，该结果会被传入 `metric` 的 `update` 方法中
         """
+        # concat prompt labels for p-tuning
+        if evaluator.config.peft_config and evaluator.config.peft_config.peft_type in ["PROMPT_TUNING", "P_TUNING"]:
+            batch_size = batch["input_ids"].shape[0]
+            if "labels" in batch.keys():
+                prefix_labels = torch.full((batch_size, evaluator.config.peft_config.num_virtual_tokens), -100).to(batch["labels"].device)
+                batch["labels"] = torch.cat((prefix_labels, batch["labels"]), dim=1)
         if evaluator.config.pp_size > 1:
-            outputs = evaluator.engine.eval_batch(batch)
+            evaluator.engine.module.forward_type = "eval"
+            outputs = evaluator.engine.module(**batch)
         else:
-            # concat prompt labels for p-tuning
-            if evaluator.config.peft_config and evaluator.config.peft_config.peft_type in ["PROMPT_TUNING", "P_TUNING"]:
-                batch_size = batch["input_ids"].shape[0]
-                if "labels" in batch.keys():
-                    prefix_labels = torch.full((batch_size, evaluator.config.peft_config.num_virtual_tokens), -100).to(batch["labels"].device)
-                    batch["labels"] = torch.cat((prefix_labels, batch["labels"]), dim=1)
             outputs = evaluator.engine(**batch)
         ppl = torch.exp(auto_param_call(evaluator.loss_fn, {**batch, **outputs}, 
                                         signature_fn=evaluator.loss_fn.forward if isinstance(evaluator.loss_fn, nn.Module) else evaluator.loss_fn))
@@ -260,15 +261,16 @@ class EvaluatorForClassfication(EvaluatorForPerplexity):
             assert isinstance(input_ids, torch.Tensor), "input_ids must be a list of torch.Tensor for classification task."
             inputs = {"input_ids": input_ids.cuda(), "labels": batch["labels"][idx].cuda(), "attention_mask": batch["attention_mask"][idx].cuda(), 
                       **{key: value.cuda() for key, value in batch.items() if key not in ("input_ids", "attention_mask", "labels")}}
+            # concat prompt labels for p-tuning
+            if evaluator.config.peft_config and evaluator.config.peft_config.peft_type in ["PROMPT_TUNING", "P_TUNING"]:
+                batch_size = input_ids.shape[0]
+                if "labels" in inputs.keys():
+                    prefix_labels = torch.full((batch_size, evaluator.config.peft_config.num_virtual_tokens), -100).to(inputs["labels"].device)
+                    inputs["labels"] = torch.cat((prefix_labels, inputs["labels"]), dim=1)
             if evaluator.config.pp_size > 1:
-                logits = evaluator.engine.eval_batch(inputs)["logits"]
+                evaluator.engine.module.forward_type = "eval"
+                logits = evaluator.engine.module(**inputs)["logits"]
             else:
-                # concat prompt labels for p-tuning
-                if evaluator.config.peft_config and evaluator.config.peft_config.peft_type in ["PROMPT_TUNING", "P_TUNING"]:
-                    batch_size = input_ids.shape[0]
-                    if "labels" in inputs.keys():
-                        prefix_labels = torch.full((batch_size, evaluator.config.peft_config.num_virtual_tokens), -100).to(inputs["labels"].device)
-                        inputs["labels"] = torch.cat((prefix_labels, inputs["labels"]), dim=1)
                 logits = evaluator.engine(**inputs)["logits"]
             for sample_idx in range(input_ids.shape[0]):
                 pred[sample_idx, idx] = evaluator.loss_fn(logits[sample_idx: sample_idx + 1, :], inputs["labels"][sample_idx: sample_idx + 1, :]).detach().cpu().item()

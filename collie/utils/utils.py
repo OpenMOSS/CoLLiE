@@ -451,24 +451,6 @@ def is_static_method(func):
             return isinstance(func, staticmethod)
     return False
 
-initization_mapping = {
-    """ 模型参数常用初始化方法
-    """
-    "normal": torch.nn.init.normal_,
-    "uniform": torch.nn.init.uniform_,
-    "xavier_normal": torch.nn.init.xavier_normal_,
-    "xavier_uniform": torch.nn.init.xavier_uniform_,
-    "kaiming_normal": torch.nn.init.kaiming_normal_,
-    "kaiming_uniform": torch.nn.init.kaiming_uniform_,
-    "orthogonal": torch.nn.init.orthogonal_,
-    "sparse": torch.nn.init.sparse_,
-    "eye": torch.nn.init.eye_,
-    "dirac": torch.nn.init.dirac_,
-    "constant": torch.nn.init.constant_,
-    "ones": torch.nn.init.ones_,
-    "zeros": torch.nn.init.zeros_
-}
-
 def auto_param_call(fn: Callable, *args, signature_fn: Optional[Callable] = None,
                     mapping: Optional[Dict] = None) -> Any:
     r"""
