@@ -11,15 +11,20 @@ import deepspeed
 from torch import nn
 from torch import distributed as dist
 from deepspeed.runtime.pipe.topology import PipeModelDataParallelTopology
+from peft import get_peft_model
 from megatron.core import parallel_state
 from megatron.core import tensor_parallel
+from accelerate.big_modeling import init_empty_weights
+from accelerate.utils.modeling import set_module_tensor_to_device
 from transformers.generation.utils import GenerationMixin
 from transformers.generation.utils import GenerationConfig
+from transformers.utils import ContextManagers
+from transformers.deepspeed import is_deepspeed_zero3_enabled
 from collie.module import PipelineModel, GPTLMLoss
 from collie.config import CollieConfig, load_config
 from collie.log import logger
 from collie.utils import setup_distribution, is_zero3_enabled, env, \
-    initization_mapping, dict_as_params, is_static_method
+    dict_as_params, get_keys_to_not_convert
 
 class CollieModelForCausalLM(nn.Module, GenerationMixin):
     """
@@ -40,11 +45,13 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
 
     """
     main_input_name = "input_ids"
+    
     def __init__(self, config: CollieConfig) -> None:
         super().__init__()
         self.device = torch.device("cuda")
+        self.dtype = config.model_config.torch_dtype
         self.generation_config = GenerationConfig()
-        self.config = config
+        self.config = config.model_config
         # transformers 的 GenerateMixin 要求 config 必须为 PretrainedConfig，备份一下 collie 的配置
         self.collie_config = config
             
@@ -114,14 +121,21 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
             config = CollieConfig.from_pretrained(config, **kwargs)
         setup_distribution(config)
         model_cls = cls._get_model_cls(config)
+        model = None
+        contexts = []
+        if (config.low_cpu_mem_usage or \
+            config.quantization_config.load_in_4bit or \
+                config.quantization_config.load_in_8bit) and \
+                    not is_zero3_enabled(config):
+            contexts.append(init_empty_weights())
         if config.pp_size == 1:
-            with deepspeed.zero.Init(data_parallel_group=parallel_state.get_data_parallel_group(), enabled=is_zero3_enabled(config)):
+            if is_zero3_enabled(config):
+                contexts.append(deepspeed.zero.Init(data_parallel_group=parallel_state.get_data_parallel_group()))
+            with ContextManagers(contexts):
                 model = super().__new__(model_cls)
                 model.__init__(config)
-                dist.barrier()
-                return model
         else:
-            pipeline_model = PipelineModel(
+            model = PipelineModel(
                 config=config,
                 layers=model_cls.pipeline_layers(config),
                 base_seed=config.seed,
@@ -132,13 +146,31 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                     num_mp=config.tp_size
                 ), loss_fn=GPTLMLoss()
             )
-            setattr(pipeline_model, "config", config)
-            setattr(pipeline_model, "collie_config", config)
-            setattr(pipeline_model, "save_parallel_state_dict", cls.save_parallel_state_dict)
-            setattr(pipeline_model, "load_parallel_state_dict", cls.load_parallel_state_dict)
-            for method in cls.overwrite_pipeline_methods() + [cls.resize_token_embeddings, cls.prepare_inputs]:
-                object.__setattr__(pipeline_model, method.__name__, types.MethodType(method, pipeline_model))
-            return pipeline_model
+            setattr(model, "config", config)
+            setattr(model, "collie_config", config)
+            setattr(model, "save_parallel_state_dict", cls.save_parallel_state_dict)
+            setattr(model, "load_parallel_state_dict", cls.load_parallel_state_dict)
+            for method in cls.overwrite_pipeline_methods() + [cls.resize_token_embeddings, cls.prepare_inputs, cls.enable_input_require_grads]:
+                object.__setattr__(model, method.__name__, types.MethodType(method, model))
+        if kwargs.get("init_params", True):
+            for name, param in model.named_parameters():
+                contexts = []
+                if is_zero3_enabled(config):
+                    contexts.append(deepspeed.zero.GatheredParameters(param, modifier_rank=0))
+                with ContextManagers(contexts):
+                    if not is_zero3_enabled(config) or env.dp_rank == 0:
+                        if param.device == torch.device("meta"):
+                            set_module_tensor_to_device(
+                                module=model, tensor_name=name, device="cpu" if param.device == torch.device("meta") else param.device, 
+                                value=config.initization_method(torch.zeros_like(param.data).to(config.model_config.torch_dtype)), 
+                                dtype=config.model_config.torch_dtype
+                            )
+                        else:
+                            param.data = torch.zeros_like(param.data).to(config.model_config.torch_dtype).to(param.device)
+        if kwargs.get("get_peft", True) and config.peft_config.peft_type is not None:
+            model = get_peft_model(model, config.peft_config)
+            model.print_trainable_parameters()
+        return model
             
     def __new__(cls, config: CollieConfig, **kwargs):
         return cls.from_config(config, **kwargs)
@@ -184,6 +216,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
 
             其余 ``kwargs`` 的内容会用于设置 :class:`.CollieConfig` 的内容。
         """
+        
         process_exclusion = kwargs.pop("process_exclusion", False)
         if dist.is_initialized() and process_exclusion:
             logger.warning(
@@ -197,22 +230,61 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         if isinstance(config, str):
             # prevent duplicate ``from_pretrained`` in load_parallel
             config = CollieConfig.from_pretrained(config, **kwargs)
-        model = cls.from_config(config)
-        for key, _ in model.named_parameters():
-            print(key)
+        if config.model_config.torch_dtype is None and \
+            (config.quantization_config.load_in_4bit or config.quantization_config.load_in_8bit):
+                config.model_config.torch_dtype = torch.float16
+        # Actually build the model and do not init the params
+        model = cls.from_config(config, init_params=False, get_peft=False)
+        model = model.to(config.model_config.torch_dtype)
+        # quantization
+        if config.quantization_config.load_in_4bit or config.quantization_config.load_in_8bit:
+            from transformers.utils.bitsandbytes import replace_with_bnb_linear, \
+                set_module_quantized_tensor_to_device
+            llm_int8_skip_modules = config.quantization_config.llm_int8_skip_modules
+            # We keep some modules such as the lm_head in their original dtype for numerical stability reasons
+            modules_to_not_convert = []
+            if llm_int8_skip_modules is None:
+                modules_to_not_convert = get_keys_to_not_convert(model)
+            else:
+                modules_to_not_convert = llm_int8_skip_modules
+
+            if not isinstance(modules_to_not_convert, list):
+                modules_to_not_convert = [modules_to_not_convert]
+
+            modules_to_not_convert.extend(getattr(model, "_keep_in_fp32_modules", []))
+            model = replace_with_bnb_linear(
+                model, modules_to_not_convert=modules_to_not_convert, quantization_config=config.quantization_config
+            )
+        # load state dict
         state_dict = {}
         if not is_zero3_enabled(config) or env.dp_rank == 0:
             state_dict = cls.load_parallel_state_dict(
                 path=model_path_or_name, config=config,
                 process_exclusion=process_exclusion, **kwargs
             )
-        if is_zero3_enabled(config):
-            for name, param in model.named_parameters():
-                with deepspeed.zero.GatheredParameters(param, modifier_rank=0):
-                    if env.dp_rank == 0:
-                        param.data.copy_(state_dict[name].data)
-        else:
-            model.load_state_dict(state_dict)
+        # load checkpoint and dispatch
+        for name, param in model.named_parameters():
+            contexts = []
+            if is_zero3_enabled(config):
+                contexts.append(deepspeed.zero.GatheredParameters(param, modifier_rank=0))
+            with ContextManagers(contexts):
+                if not is_zero3_enabled(config) or env.dp_rank == 0:
+                    if config.quantization_config.load_in_4bit or config.quantization_config.load_in_8bit:
+                        set_module_quantized_tensor_to_device(
+                            module=model, tensor_name=name, device="cpu" if param.device == torch.device("meta") else param.device, 
+                            value=state_dict[name].data
+                        )
+                    else:
+                        if param.device == torch.device("meta"):
+                            set_module_tensor_to_device(
+                                module=model, tensor_name=name, device="cpu" if param.device == torch.device("meta") else param.device, 
+                                value=state_dict[name].data, dtype=config.model_config.torch_dtype
+                            )
+                        else:
+                            param.data = state_dict[name].data.to(config.model_config.torch_dtype).to(param.device)
+        if config.peft_config.peft_type is not None:
+            model = get_peft_model(model, config.peft_config)
+            model.print_trainable_parameters()
         return model
 
     @classmethod
@@ -227,6 +299,9 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
             "To use pipeline parallelism, you need to implement "
             "`pipeline_layers` for your model."
         )
+        
+    def tie_weights(self):
+        pass
     
     @abstractmethod
     def prepare_inputs(self, 
@@ -398,7 +473,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                         new_embedding.weight.data[start_pos_new:end_pos_new, :] \
                             = embedding.weight.data[start_pos_old:end_pos_old, :]
                         if end_pos_new < (new_num_tokens // env.tp_size):
-                            initization_method = initization_mapping.get(self.collie_config.initization_method, torch.nn.init.normal_)
+                            initization_method = self.collie_config.initization_method
                             if self.collie_config.initization_method_params is not None:
                                 initization_method = initization_method(new_embedding.weight[end_pos_new:new_num_tokens // env.tp_size, :], 
                                                                         **self.collie_config.initization_method_params)
@@ -412,7 +487,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                 new_embedding.weight.data[start_pos_new:end_pos_new, :] \
                     = embedding.weight.data[start_pos_old:end_pos_old, :]
                 if end_pos_new < (new_num_tokens // env.tp_size):
-                    initization_method = initization_mapping.get(self.collie_config.initization_method, torch.nn.init.normal_)
+                    initization_method = self.collie_config.initization_method
                     if self.collie_config.initization_method_params is not None:
                         initization_method = initization_method(new_embedding.weight[end_pos_new:new_num_tokens // env.tp_size, :], 
                                                                 **self.collie_config.initization_method_params)
@@ -472,7 +547,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                             new_lm_head.bias.data[start_pos_new:end_pos_new] \
                                 = lm_head.bias.data[start_pos_old:end_pos_old]
                         if end_pos_new < (new_num_tokens // env.tp_size):
-                            initization_method = initization_mapping.get(self.collie_config.initization_method, torch.nn.init.normal_)
+                            initization_method = self.collie_config.initization_method
                             if self.collie_config.initization_method_params is not None:
                                 initization_method = initization_method(new_lm_head.weight[end_pos_new:new_num_tokens // env.tp_size, :], 
                                                                         **self.collie_config.initization_method_params)
@@ -498,7 +573,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                     new_lm_head.bias.data[start_pos_new:end_pos_new] \
                         = lm_head.bias.data[start_pos_old:end_pos_old]
                 if end_pos_new < (new_num_tokens // env.tp_size):
-                    initization_method = initization_mapping.get(self.collie_config.initization_method, torch.nn.init.normal_)
+                    initization_method = self.collie_config.initization_method
                     if self.collie_config.initization_method_params is not None:
                         initization_method = initization_method(new_lm_head.weight[end_pos_new:new_num_tokens // env.tp_size, :], 
                                                                 **self.collie_config.initization_method_params)
@@ -532,3 +607,18 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         
     def set_lm_head(self, name, lm_head):
         self.add_module(name, lm_head)
+
+    def enable_input_require_grads(self):
+        """
+        Enables the gradients for the input embeddings. This is useful for fine-tuning adapter weights while keeping
+        the model weights fixed.
+        """
+
+        def make_inputs_require_grads(module, input, output):
+            if isinstance(output, torch.Tensor):
+                output.requires_grad_(True)
+            elif isinstance(output, dict):
+                output["hidden_states"].requires_grad_(True)
+        input_embedding = self.get_input_embedding()[1]
+        if input_embedding is not None:
+            self._require_grads_hook = input_embedding.register_forward_hook(make_inputs_require_grads)

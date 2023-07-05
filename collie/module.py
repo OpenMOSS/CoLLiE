@@ -37,6 +37,7 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from collie.log import logger
 from collie.utils import env, broadcast_tensor, setup_ds_engine
+from collie.utils.peft_utils import skip_input_embedding
 
 class ColumnParallelLinearWithoutBias(ColumnParallelLinear):
     """重写 ``megatron`` 提供的列并行全连接层以去掉结果中的 ``bias``。
@@ -130,26 +131,6 @@ class GPTLMLoss(torch.nn.Module):
         super().__init__()
         self.ignore_index = ignore_index
         self.loss = torch.nn.CrossEntropyLoss(ignore_index=ignore_index)  # ignore <pad> when compute loss
-
-    # def forward(self, outputs: Dict[str, torch.Tensor], labels: Dict[str, torch.Tensor], *args):
-    #     """ 计算损失
-    #     :param logits: 模型的输出
-    #     :param labels: 真实标签
-    #     """
-    #     labels_mask = None
-    #     if isinstance(labels, dict):
-    #         if "labels_mask" in labels.keys():
-    #             labels_mask = labels["labels_mask"]
-    #         labels = labels["labels"]
-    #     # TODO key
-    #     if isinstance(outputs, dict):
-    #         logits = outputs["logits"]
-    #     if labels_mask is not None:
-    #         labels = labels.masked_fill(labels_mask==1, value=self.ignore_index)
-    #     shift_logits = logits[..., :-1, :].contiguous()
-    #     shift_labels = labels[..., 1:].contiguous().to(logits.device)
-    #     # Flatten the tokens
-    #     return self.loss(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
     
     def forward(self, logits: torch.Tensor, labels: torch.Tensor):
         """ 计算损失
@@ -179,27 +160,25 @@ class PipelineGenerationMixin(GenerationMixin):
         self.layers = None
         self._find_layers()
         self.is_contrastive_search = False
-        self.inner_forward = True
         
     def set_engine(self, engine: DeepSpeedEngine):
         """设置DeepSpeed Engine
         """
-        self.engine_container[0] = engine
+        self.engine_container.append(engine)
 
     def generate(self, *args, **kwargs):
         """开始迭代的生成过程
         """
         if len(self.engine_container) == 0:
             self.engine_container.append(setup_ds_engine(config=self.collie_config, model=self)[0])
-        self.engine_container[0].eval()
-        self.inner_forward = False
+        self.engine_container[-1].eval()
+        self.forward_type = "generate"
         res = super().generate(*args, **kwargs)
-        self.inner_forward = True
         self._clean_past_key_values()
         self._clean_hidden_states()
         # contrastive learning
         if self.is_contrastive_search:
-            src = self.engine_container[0].grid.stage_to_global(self.engine_container[0].num_stages - 1)
+            src = self.engine_container[-1].grid.stage_to_global(self.engine_container[-1].num_stages - 1)
             res = broadcast_tensor(res, dtype=res.dtype, src=src,
                                    ndim=len(res.shape), group=env.pp_group)
             self.is_contrastive_search = False
@@ -209,12 +188,13 @@ class PipelineGenerationMixin(GenerationMixin):
         self.is_contrastive_search = True
         return super().contrastive_search(*args, **kwargs)
         
-    def generation_forward(self,
+    def generate_forward(self,
                 input_ids: torch.Tensor,
                 attention_mask: Optional[torch.Tensor] = None,
+                inputs_embeds: Optional[torch.Tensor] = None,
                 position_ids: Optional[torch.Tensor] = None,
                 use_cache: bool = True, **kwargs) -> torch.Tensor:
-        """ 进行一次流水线模型的前向传播
+        """ 进行迭代的流水线模型的前向传播（生成）
         """
         if use_cache:
             logger.rank_zero_warning(
@@ -226,15 +206,80 @@ class PipelineGenerationMixin(GenerationMixin):
             inputs["attention_mask"] = attention_mask
         if position_ids is not None:
             inputs["position_ids"] = position_ids
+        if inputs_embeds is not None:
+            inputs["inputs_embeds"] = inputs_embeds
         inputs["labels"] = inputs["input_ids"]
-        self.inner_forward = True
-        outputs = self.engine_container[0].generate_batch(inputs, use_cache)
-        self.inner_forward = False
+        outputs = self.engine_container[-1].generate_batch(inputs, use_cache)
         hidden_states = self._get_hidden_states()
         if self.is_contrastive_search:
             # contrastive search 时每个 stage 拿到的 last_hidden_states
             # 不一样，所以广播出去
-            src = self.engine_container[0].grid.stage_to_global(self.engine_container[0].num_stages - 1)
+            src = self.engine_container[-1].grid.stage_to_global(self.engine_container[-1].num_stages - 1)
+            if hidden_states is not None:
+                last_hidden_states = hidden_states[-1]
+            else:
+                # 防止流水线段数过多时某些 stage 没有分到 block
+                hidden_states = []
+                last_hidden_states = None
+            last_hidden_states = broadcast_tensor(
+                last_hidden_states, src=src, group=env.pp_group
+            )
+            hidden_states.append(last_hidden_states)
+        return CausalLMOutputWithPast(
+            loss=None,
+            logits=outputs["logits"],
+            past_key_values=self._get_past_key_values(),
+            hidden_states=hidden_states,
+            attentions=None
+        )
+        
+    def train_forward(self,
+                input_ids: torch.Tensor,
+                labels: torch.Tensor,
+                attention_mask: Optional[torch.Tensor] = None,
+                inputs_embeds: Optional[torch.Tensor] = None,
+                position_ids: Optional[torch.Tensor] = None, **kwargs) -> torch.Tensor:
+        """ 进行一次流水线模型的正反向传播
+        """
+        inputs = {"input_ids": input_ids}
+        if attention_mask is not None:
+            inputs["attention_mask"] = attention_mask
+        if position_ids is not None:
+            inputs["position_ids"] = position_ids
+        if inputs_embeds is not None:
+            inputs["inputs_embeds"] = inputs_embeds
+        inputs["labels"] = labels
+        loss = self.engine_container[-1].train_batch(inputs)
+        return CausalLMOutputWithPast(
+            loss=loss,
+            logits=None,
+            past_key_values=self._get_past_key_values(),
+            hidden_states=None,
+            attentions=None
+        )
+        
+    def eval_forward(self,
+                input_ids: torch.Tensor,
+                labels: torch.Tensor,
+                attention_mask: Optional[torch.Tensor] = None,
+                inputs_embeds: Optional[torch.Tensor] = None,
+                position_ids: Optional[torch.Tensor] = None, **kwargs) -> torch.Tensor:
+        """ 进行一次流水线模型的正反向传播
+        """
+        inputs = {"input_ids": input_ids}
+        if attention_mask is not None:
+            inputs["attention_mask"] = attention_mask
+        if position_ids is not None:
+            inputs["position_ids"] = position_ids
+        if inputs_embeds is not None:
+            inputs["inputs_embeds"] = inputs_embeds
+        inputs["labels"] = labels
+        outputs = self.engine_container[-1].eval_batch(inputs)
+        hidden_states = self._get_hidden_states()
+        if self.is_contrastive_search:
+            # contrastive search 时每个 stage 拿到的 last_hidden_states
+            # 不一样，所以广播出去
+            src = self.engine_container[-1].grid.stage_to_global(self.engine_container[-1].num_stages - 1)
             if hidden_states is not None:
                 last_hidden_states = hidden_states[-1]
             else:
@@ -264,7 +309,7 @@ class PipelineGenerationMixin(GenerationMixin):
             self._clean_past_key_values()
         else:
             self._set_past_key_values(past_key_values)
-        return self.engine_container[0].module.prepare_inputs(
+        return self.engine_container[-1].module.prepare_inputs(
             input_ids=input_ids, past_key_values=past_key_values,
             attention_mask=attention_mask, use_cache=use_cache, **kwargs
         )
@@ -427,7 +472,6 @@ class PipelineModel(PipelineModule, PipelineGenerationMixin):
         self.tied_weight_attrs = {}
 
         self._build()
-        self.to(get_accelerator().device_name(self.local_rank))
 
         self.tied_comms = self._index_tied_modules()
         self._synchronize_tied_weights()
@@ -441,11 +485,23 @@ class PipelineModel(PipelineModule, PipelineGenerationMixin):
         
         PipelineGenerationMixin.__init__(self)
         
+        self.inner_forward = False
+        self.forward_type = "train" # train, eval, generate
+        
     def forward(self, *args, **kwargs):
         if not self.inner_forward:
-            return self.generation_forward(*args, **kwargs)
+            if self.forward_type == "generate":
+                return self.generate_forward(*args, **kwargs)
+            elif self.forward_type == "train":
+                return self.train_forward(*args, **kwargs)
+            elif self.forward_type == "eval":
+                return self.eval_forward(*args, **kwargs)
         else:
-            return super(PipelineModel, self).forward(*args, **kwargs)
+            # hack: super(PipelineModel, self).forward 只能接收一个参数，这个参数的类型是 dict
+            if "input_ids" in kwargs.keys() and isinstance(kwargs["input_ids"], dict):
+                return super(PipelineModel, self).forward(kwargs["input_ids"])
+            else:
+                return super(PipelineModel, self).forward(*args, **kwargs)
         
     def get_input_embedding(self):
         if env.pp_rank != 0:
@@ -474,6 +530,9 @@ class PipelineModel(PipelineModule, PipelineGenerationMixin):
             key = list(self.tied_modules.keys())[list(self.tied_modules.values()).index(self.get_lm_head()[1])]
             self.tied_modules[key] = lm_head
         self.forward_funcs[name] = lm_head
+        
+    def tie_weights(self):
+        pass
         
         
 class MultiParallelGrid(PipelineParallelGrid):

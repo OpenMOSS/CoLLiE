@@ -102,8 +102,6 @@ class Adan(Optimizer):
 
     @torch.no_grad()
     def step(self, closure=None):
-        """Performs a single optimization step."""
-
         loss = None
         if closure is not None:
             with torch.enable_grad():

@@ -2,6 +2,7 @@ import os
 import functools
 import inspect
 from inspect import Parameter
+from accelerate.utils.modeling import find_tied_parameters
 import dataclasses
 from types import MethodType
 from typing import (Callable, Any, Dict, Union, Mapping, Sequence, Tuple,
@@ -17,7 +18,7 @@ from .rich_progress import f_rich_progress
 
 __all__ = ["find_tensors", "progress", "dictToObj", "apply_to_collection", 
            "dict_as_params", "initization_mapping", "is_static_method", 
-           "auto_param_call"]
+           "auto_param_call", "get_keys_to_not_convert"]
 
 def find_tensors():
     """
@@ -192,11 +193,6 @@ def _split_batch(batch, micro_batch_size, micro_batch_num):
     :param micro_batch_num:
     :return: tuple
     """
-    # Assume batch first.
-    # assert len(batch) == 2, len(batch)
-    # inputs = batch[0]
-    # labels = batch[1]
-    # micro_batch_num = inputs.shape[0] // micro_batch_size
     if isinstance(batch, torch.Tensor):
         batch_split = torch.split(batch, micro_batch_size)
     elif isinstance(batch, dict):
@@ -205,18 +201,6 @@ def _split_batch(batch, micro_batch_size, micro_batch_num):
         raise NotImplementedError(f"Invalid type of batch: {type(batch)}"
                                   "Must be Tensor or dict.")
     assert len(batch_split) == micro_batch_num, len(batch_split)
-    # if isinstance(inputs, torch.Tensor):
-    #     inputs_split = torch.split(inputs, micro_batch_size)
-    # elif isinstance(inputs, dict):
-    #     inputs_split = _split_dict(inputs, micro_batch_size, micro_batch_num)
-    # else:
-    #     raise NotImplementedError(f"Invalid type of inputs: {type(inputs)}. "
-    #                               "Must be Tensor or dict.")
-    # assert len(inputs_split) == micro_batch_num, len(inputs_split)
-    
-    # batch_split = ()
-    # for input_split, label_split in zip(inputs_split, labels_split):
-    #     batch_split += ((input_split, label_split), )
 
     return batch_split
 
@@ -467,24 +451,6 @@ def is_static_method(func):
             return isinstance(func, staticmethod)
     return False
 
-initization_mapping = {
-    """ 模型参数常用初始化方法
-    """
-    "normal": torch.nn.init.normal_,
-    "uniform": torch.nn.init.uniform_,
-    "xavier_normal": torch.nn.init.xavier_normal_,
-    "xavier_uniform": torch.nn.init.xavier_uniform_,
-    "kaiming_normal": torch.nn.init.kaiming_normal_,
-    "kaiming_uniform": torch.nn.init.kaiming_uniform_,
-    "orthogonal": torch.nn.init.orthogonal_,
-    "sparse": torch.nn.init.sparse_,
-    "eye": torch.nn.init.eye_,
-    "dirac": torch.nn.init.dirac_,
-    "constant": torch.nn.init.constant_,
-    "ones": torch.nn.init.ones_,
-    "zeros": torch.nn.init.zeros_
-}
-
 def auto_param_call(fn: Callable, *args, signature_fn: Optional[Callable] = None,
                     mapping: Optional[Dict] = None) -> Any:
     r"""
@@ -595,3 +561,40 @@ def _get_keys(args:List[Dict]) -> List[List[str]]:
     for arg in args:
         _provided_keys.append(list(arg.keys()))
     return _provided_keys
+
+def get_keys_to_not_convert(model):
+    r"""
+    An utility function to get the key of the module to keep in full precision if any For example for CausalLM modules
+    we may want to keep the lm_head in full precision for numerical stability reasons. For other architectures, we want
+    to keep the tied weights of the model. The function will return a list of the keys of the modules to not convert in
+    int8.
+
+    :param model: Input model
+    """
+
+    tied_params = find_tied_parameters(model)
+    # For compatibility with Accelerate < 0.18
+    if isinstance(tied_params, dict):
+        tied_keys = list(tied_params.values())
+    else:
+        tied_keys = sum([x[1:] for x in tied_params], [])
+    has_tied_params = len(tied_keys) > 0
+
+    # otherwise they have an attached head
+    list_modules = list(model.named_parameters())
+    list_last_module = [list_modules[-1][0]]
+
+    # add last module together with tied weights
+    intersection = set(list_last_module) - set(tied_keys)
+    list_untouched = tied_keys + list(intersection)
+
+    # remove ".weight" from the keys
+    names_to_remove = [".weight", ".bias"]
+    filtered_module_names = []
+    for name in list_untouched:
+        for name_to_remove in names_to_remove:
+            if name_to_remove in name:
+                name = name.replace(name_to_remove, "")
+        filtered_module_names.append(name)
+
+    return filtered_module_names
