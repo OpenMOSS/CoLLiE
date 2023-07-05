@@ -24,7 +24,7 @@ from deepspeed.runtime.pipe.engine import PipelineEngine
 from deepspeed.runtime.engine import DeepSpeedSchedulerCallable
 from transformers.generation.utils import GenerationConfig
 from transformers.modeling_utils import PreTrainedModel, load_state_dict
-from peft import PeftModel, get_peft_model_state_dict, set_peft_model_state_dict
+from peft import PeftModel, PeftConfig, get_peft_model_state_dict, set_peft_model_state_dict
 from transformers import PreTrainedTokenizerBase
 from transformers.utils import ContextManagers
 
@@ -446,17 +446,25 @@ class Trainer(TrainerEventTrigger):
         
         :param path: 模型保存路径
         """
-        io_driver = IODriver.from_protocol(protocol)
+        
         if not isinstance(self.model, PeftModel):
             return self.save_model(path=path, protocol=protocol, **kwargs)
+        io_driver = IODriver.from_protocol(protocol)
+        io_driver.makedirs(path, exist_ok=True)
+        # TODO 支持原 peft 里那样多个 adapter 的保存和加载
         contexts = []
-        state_dict = get_peft_model_state_dict(self.model)
+        state_dict = get_peft_model_state_dict(
+            self.model, adapter_name="default"
+        )
+        if env.pp_size == 1:
+            name = "adapter_model.bin"
+        else:
+            name = f"adapter_model_{env.pp_rank}.bin"
         if is_zero3_enabled(self.config):
             contexts.append(deepspeed.zero.GatheredParameters(list(state_dict.values())))
-        io_driver.makedirs(path, exist_ok=True)
         with ContextManagers(contexts):
             if env.dp_rank == 0 or not is_zero3_enabled(self.config):
-                io_driver.save(state_dict, os.path.join(path, "adapter_model.bin"))
+                io_driver.save(state_dict, os.path.join(path, name))
         if env.rank == 0:
             io_driver.save(json.dumps(self.config.peft_config.__dict__), os.path.join(path, "adapter_config.json"))
         
@@ -471,16 +479,31 @@ class Trainer(TrainerEventTrigger):
         io_driver = IODriver.from_protocol(protocol)
         if not isinstance(self.model, PeftModel):
             return self.load_model(path=path, protocol=protocol, **kwargs)
-        assert io_driver.exists(os.path.join(path, "adapter_model.bin"))
-        state_dict = get_peft_model_state_dict(self.model)
-        loaded_state_dict = io_driver.load(os.path.join(path, "adapter_model.bin"), mode="rb")
+        state_dict = get_peft_model_state_dict(self.model, adapter_name="default")
+        peft_config_dict = json.loads(io_driver.load(os.path.join(path, "adapter_config.json"), mode="j"))
+        loaded_peft_config = PeftConfig()
+        for key, value in peft_config_dict.items():
+            if hasattr(loaded_peft_config, key):
+                setattr(loaded_peft_config, key, value)
+        if loaded_peft_config.task_type != self.config.peft_config.task_type:
+            raise ValueError(
+                f"The task type `{loaded_peft_config.task_type}` from "
+                f"checkpoint `{path}` is not the current task type"
+                f"{self.config.peft_config.task_type}"
+            )
+        if env.pp_size == 1:
+            name = "adapter_model.bin"
+        else:
+            name = f"adapter_model_{env.pp_rank}.bin"
+        assert io_driver.exists(os.path.join(path, name)), f"{name} does not exist."
+        loaded_state_dict = io_driver.load(os.path.join(path, name), mode="rb")
         contexts = []
         if is_zero3_enabled(self.config):
             contexts.append(deepspeed.zero.GatheredParameters(list(state_dict.values()), modifier_rank=0))
         with ContextManagers(contexts):
             if env.dp_rank == 0 or not is_zero3_enabled(self.config):
-                for key, value in state_dict.keys():
-                    loaded_state_dict[key] = value
+                set_peft_model_state_dict(self.model, loaded_state_dict,
+                                          adapter_name="default")
                     
     def save_model(self, path: str, process_exclusion: bool = False, **kwargs):...
     def save_model(self, path: str, process_exclusion: bool = False,
