@@ -289,6 +289,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                                 value=state_dict[name].data, dtype=config.model_config.torch_dtype
                             )
                         else:
+                            assert param.data.shape == state_dict[name].data.shape, f"The shape of the parameter corresponding to the `{name}` does not match!"
                             param.data = state_dict[name].data.to(config.model_config.torch_dtype).to(param.device)
         if config.peft_config.peft_type is not None:
             model = get_peft_model(model, config.peft_config)

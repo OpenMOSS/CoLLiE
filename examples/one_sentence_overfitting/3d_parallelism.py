@@ -4,20 +4,20 @@ from collie.models.llama.model import LlamaForCausalLM
 from collie.controller import Trainer, EvaluatorForGeneration
 from collie.metrics.decode import DecodeMetric
 from collie.config import CollieConfig
-from collie import TGSMonitor, MemoryMonitor, LossMonitor, EvalMonitor
+from collie import TGSMonitor, MemoryMonitor, LossMonitor, EvalMonitor, GradioProvider
 from transformers import LlamaTokenizer
 from transformers.generation.utils import GenerationConfig
 import torch
 
-tokenizer = LlamaTokenizer.from_pretrained("/mnt/petrelfs/xingshuhao.dispatch/.cache/huggingface/hub/models--decapoda-research--llama-7b-hf/snapshots/5f98eefcc80e437ef68d457ad7bf167c2c6a1348", 
+tokenizer = LlamaTokenizer.from_pretrained("/mnt/petrelfs/zhangshuo/model/llama-7b-hf", 
                                            padding_side="left",
                                            add_eos_token=False)
 tokenizer.bos_token_id = 1
 tokenizer.eos_token_id = 2
-config = CollieConfig.from_pretrained("/mnt/petrelfs/xingshuhao.dispatch/.cache/huggingface/hub/models--decapoda-research--llama-7b-hf/snapshots/5f98eefcc80e437ef68d457ad7bf167c2c6a1348")
+config = CollieConfig.from_pretrained("/mnt/petrelfs/zhangshuo/model/llama-7b-hf")
 config.tp_size = 4
 config.dp_size = 1
-config.pp_size = 4
+config.pp_size = 2
 config.train_epochs = 1000
 config.train_micro_batch_size = 2
 config.gradient_accumulation_steps = 1
@@ -25,8 +25,7 @@ config.use_flash = False
 config.eval_batch_size = 1
 config.eval_per_n_steps = 20
 config.ds_config = {
-    "fp16": {"enabled": True},
-    "zero_optimization": {"stage": 1}
+    "fp16": {"enabled": True}
 }
 
 model = LlamaForCausalLM.from_pretrained("/mnt/petrelfs/zhangshuo/model/llama-7b-hf", config=config)
@@ -59,6 +58,13 @@ trainer = Trainer(
     optimizer=optimizer,
     config=config,
     train_dataset=train_dataset,
-    evaluators=[evaluator]
+    evaluators=[evaluator],
+    data_provider=GradioProvider(tokenizer=tokenizer, generation_config=GenerationConfig(
+        max_new_tokens=128, 
+        eos_token_id=2, 
+        pad_token_id=0, 
+        bos_token_id=1,
+        use_cache=False
+    ))
 )
-trainer.train()
+trainer.server.run()
