@@ -162,7 +162,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                         if param.device == torch.device("meta"):
                             set_module_tensor_to_device(
                                 module=model, tensor_name=name, device="cpu" if param.device == torch.device("meta") else param.device, 
-                                value=config.initization_method(torch.zeros_like(param.data).to(config.model_config.torch_dtype)), 
+                                value=config.initization_method(torch.empty((*param.data.size(),),dtype=config.model_config.torch_dtype)), 
                                 dtype=config.model_config.torch_dtype
                             )
                         else:

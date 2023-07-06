@@ -391,8 +391,8 @@ class Trainer(TrainerEventTrigger):
         # concat prompt labels for p-tuning
         if trainer.config.peft_config and trainer.config.peft_config.peft_type in ["PROMPT_TUNING", "P_TUNING"]:
             batch_size = batch["input_ids"].shape[0]
-            prefix_labels = torch.full((batch_size, trainer.config.peft_config.num_virtual_tokens), -100).to(labels.device)
-            labels = torch.cat((prefix_labels, labels), dim=1)
+            prefix_labels = torch.full((batch_size, trainer.config.peft_config.num_virtual_tokens), -100).to(batch['labels'].device)
+            batch['labels'] = torch.cat((prefix_labels, batch['labels']), dim=1)
         if trainer.config.pp_size > 1:
             trainer.engine.module.forward_type = "train"
             loss = trainer.engine.module(**batch)["loss"]
