@@ -453,8 +453,14 @@ class Trainer(TrainerEventTrigger):
         
         state_dict = get_peft_model_state_dict(self.model)
         io_driver.makedirs(path, exist_ok=True)
+        named_parameters = {name: param for name, param in self.engine.module.named_parameters() if name in state_dict.keys()}
+        contexts = []
+        if is_zero3_enabled(self.config):
+            contexts.append(deepspeed.zero.GatheredParameters(named_parameters.values()))
         with ContextManagers(contexts):
             if env.dp_rank == 0 or not is_zero3_enabled(self.config):
+                for key in state_dict.keys():
+                    state_dict[key] = named_parameters[key].data
                 io_driver.save(state_dict, os.path.join(path, "adapter_model.bin"))
         if env.rank == 0:
             io_driver.save(json.dumps(self.config.peft_config.__dict__), os.path.join(path, "adapter_config.json"))
