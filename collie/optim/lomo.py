@@ -24,7 +24,7 @@ class Lomo(Optimizer):
     :param loss_scale_args: 用于初始化 :class:`DynamicLossScaler` 的参数
     """
 
-    def __init__(self, model, lr=1e-3, clip_grad_norm=None, clip_grad_value=None, zero3_enabled=False, loss_scale_args={}):
+    def __init__(self, model, lr=1e-3, clip_grad_norm=None, clip_grad_value=None, loss_scale_args={}):
         self.model = model
         self.lr = lr
         self.clip_grad_norm = clip_grad_norm
@@ -38,8 +38,8 @@ class Lomo(Optimizer):
         self.clip_coef = None
 
         # check if zero3 is enabled
-        self.zero3_enabled = zero3_enabled
-        if zero3_enabled:  # zero3 is enabled
+        self.zero3_enabled = is_deepspeed_zero3_enabled()
+        if self.zero3_enabled:  # zero3 is enabled
             self.grad_func = self.fuse_update_zero3()
         else:
             self.grad_func = self.fuse_update()

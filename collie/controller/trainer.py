@@ -397,7 +397,7 @@ class Trainer(TrainerEventTrigger):
         if trainer.config.pp_size > 1:
             if isinstance(trainer.engine.module, PipelineModel):
                 trainer.engine.module.forward_type = "train"
-            if isinstance(trainer.engine.module, PeftModel) and isinstance(trainer.engine.modul.get_base_model(), PipelineModel):
+            if isinstance(trainer.engine.module, PeftModel) and isinstance(trainer.engine.module.get_base_model(), PipelineModel):
                 trainer.engine.module.get_base_model().forward_type = "train"
             loss = trainer.engine.module(**batch)["loss"]
         else:
@@ -454,10 +454,10 @@ class Trainer(TrainerEventTrigger):
         io_driver.makedirs(path, exist_ok=True)
         # TODO 支持原 peft 里那样多个 adapter 的保存和加载
         contexts = []
-        named_parameters = {name: param for name, param in self.engine.module.named_parameters() if name in state_dict.keys()}
         state_dict = get_peft_model_state_dict(
             self.model, adapter_name="default"
         )
+        named_parameters = {name: param for name, param in self.engine.module.named_parameters() if name in state_dict.keys()}
         if env.pp_size == 1:
             name = "adapter_model.bin"
         else:
