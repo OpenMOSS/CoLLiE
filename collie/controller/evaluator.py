@@ -197,7 +197,6 @@ class EvaluatorForGeneration(Evaluator):
         result = {"pred": [evaluator.tokenizer.decode(sample[prompt_length:], skip_special_tokens=evaluator.skip_special_tokens) for sample in generated_ids]}
         if "target" in batch.keys():
             result["target"] = [evaluator.tokenizer.decode(sample, skip_special_tokens=evaluator.skip_special_tokens) for sample in batch["target"]]
-        print(f"[Debug] eval_fn generate finish")
         return result
         
 class EvaluatorForPerplexity(Evaluator):

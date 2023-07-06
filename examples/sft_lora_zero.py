@@ -17,8 +17,6 @@ config.gradient_accumulation_steps = 1
 config.eval_batch_size = 1
 config.eval_per_n_steps = 10
 config.train_epochs = 100
-# config.pp_size = 8
-# config.pp_partition_method = "uniform"
 config.ds_config = {
     "monitor_config": {
         "enabled": True,
@@ -92,10 +90,10 @@ eval_dataset_bleu = [
         "target": " ".join(f"{sample['output']}</s>".split())
     } for sample in load_dataset("Chinese-Vicuna/guanaco_belle_merge_v1.0", split="train[-100:]")
 ]
-# Prepare model
 model = LlamaForCausalLM.from_pretrained(
     "/mnt/petrelfs/share_data/zhangshuo/model/MOSS_7B_Base", config=config)
 optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5)
+# optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=2e-5)
 tokenizer = LlamaTokenizer.from_pretrained(
     "/mnt/petrelfs/share_data/zhangshuo/model/MOSS_7B_Base", add_bos_token=False)
 # Convert to CoLLie Dataset
@@ -127,7 +125,7 @@ evaluator_bleu = EvaluatorForGeneration(
     ],
     metrics={
         # "bleu": BleuMetric(gather_result=True, ngram=1),
-        "decode": DecodeMetric(gather_result=False)
+        "decode": DecodeMetric(gather_result=True)
     },
     generation_config=GenerationConfig(
         eos_token_id=tokenizer.eos_token_id,

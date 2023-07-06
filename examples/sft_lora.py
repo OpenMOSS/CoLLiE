@@ -17,8 +17,10 @@ config.gradient_accumulation_steps = 1
 config.eval_batch_size = 1
 config.eval_per_n_steps = 10
 config.train_epochs = 100
+# pipeline 配置 8 卡， 划分方法采用 uniform
 config.pp_size = 8
 config.pp_partition_method = "uniform"
+
 config.ds_config = {
     "monitor_config": {
         "enabled": True,
@@ -35,12 +37,11 @@ config.ds_config = {
     #     "stage": 3,
     # }
 }
-# ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "down_proj", "up_proj"]
 config.seed = 1024
 config.peft_config = LoraConfig(
     r=8,
     lora_alpha=32,
-    target_modules=["q_proj"],
+    target_modules=["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "down_proj", "up_proj"],
     lora_dropout=0.1,
     bias="none",
     task_type=TaskType.CAUSAL_LM
@@ -97,6 +98,7 @@ eval_dataset_bleu = [
 model = LlamaForCausalLM.from_pretrained(
     "/mnt/petrelfs/share_data/zhangshuo/model/MOSS_7B_Base", config=config)
 # optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5)
+# 这里 filter 掉不需要的划分的参数，防止开始 fp16 时候显存暴增的问题
 optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=2e-5)
 tokenizer = LlamaTokenizer.from_pretrained(
     "/mnt/petrelfs/share_data/zhangshuo/model/MOSS_7B_Base", add_bos_token=False)
@@ -160,7 +162,7 @@ trainer = Trainer(
     evaluators=[evaluator_bleu],
     callbacks=[
         CheckpointCallback(
-            folder="/mnt/petrelfs/hongjiawei/collie/example/tmp", 
+            folder="/mnt/petrelfs/hongjiawei/collie/examples/tmp", 
             every_n_epochs=1, last=True, every_n_batches=20)
     ]
 )
