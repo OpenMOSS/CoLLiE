@@ -128,6 +128,8 @@ class Evaluator:
                     self.server.data_provider_handler()
                 self.engine.eval()
                 with torch.no_grad():
+                    # 修改
+                    batch['past_key_values'] = None
                     result = self.eval_fn(self, batch)
                 self.metric_wrapper.update(result)
         with self.monitor as item:
