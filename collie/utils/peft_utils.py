@@ -2,12 +2,15 @@ import os
 import math
 
 import torch
+from types import MethodType
+from typing import Optional
 from transformers import PreTrainedModel
 from peft import TaskType, PeftType, PromptEmbedding, PromptEncoder, PrefixEncoder, PeftModel, PromptTuningInit
 
 
 def patch_peft_model():
     def _setup_prompt_encoder(self, adapter_name):
+        from collie.models.base import CollieModelForCausalLM
         config = self.peft_config[adapter_name]
         self.prompt_encoder = torch.nn.ModuleDict({})
         self.prompt_tokens = {}
@@ -15,7 +18,7 @@ def patch_peft_model():
         for name, module in self.base_model.named_children():
             for param in module.parameters():
                 param.requires_grad = False
-            if isinstance(module, PreTrainedModel):
+            if isinstance(module, PreTrainedModel) or isinstance(module, torch.nn.modules.container.ModuleList):
                 # Make sure to freeze Tranformers model
                 if transformer_backbone is None:
                     transformer_backbone = module
@@ -27,7 +30,7 @@ def patch_peft_model():
         for named_param, value in list(transformer_backbone.named_parameters()):
             # patched for zero3
             if hasattr(value, "ds_shape"):
-                if value.ds_shape[0] == self.base_model.config.vocab_size:
+                if value.ds_shape[0] == self.base_model.collie_config.model_config.vocab_size:
                     self.word_embeddings = transformer_backbone.get_submodule(named_param.replace(".weight", ""))
 
                     # all gather word_embeddings weights
@@ -43,7 +46,7 @@ def patch_peft_model():
                     self.word_embeddings.weight.requires_grad = False
                     break
             else:
-                if value.shape[0] == self.base_model.config.vocab_size:
+                if value.shape[0] == self.base_model.collie_config.model_config.vocab_size:
                     self.word_embeddings = transformer_backbone.get_submodule(named_param.replace(".weight", ""))
                     break
 
@@ -100,3 +103,15 @@ def patch_peft():
     """
     patch_peft_model()
     patch_prompt_tuning()
+
+
+def skip_input_embedding(input_embedding: Optional[torch.nn.Module]):
+    if input_embedding is not None:
+        raw_foward = input_embedding.forward
+        def _forward(self, inputs: dict):
+            if "inputs_embeds" in inputs.keys():
+                inputs["hidden_states"] = inputs["inputs_embeds"]
+                return inputs
+            else:
+                return raw_foward(inputs)
+        input_embedding.forward = MethodType(_forward, input_embedding)

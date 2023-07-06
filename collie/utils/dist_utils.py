@@ -19,6 +19,8 @@ from deepspeed.runtime import zero
 from deepspeed.runtime.hybrid_engine import DeepSpeedHybridEngine
 from deepspeed.runtime.config import DeepSpeedConfig
 from deepspeed.runtime.pipe import PipelineModule, LayerSpec
+from transformers.deepspeed import _hf_deepspeed_config_weak_ref, HfDeepSpeedConfig, is_deepspeed_zero3_enabled
+from weakref import ref
 
 from megatron.core import parallel_state, tensor_parallel
 
@@ -26,6 +28,7 @@ from typing import Union, Optional
 
 from collie.config import load_config, CollieConfig
 from .peft_utils import patch_peft
+from peft import PeftModel
 
 __all__ = [
     "env", "setup_distribution", "set_seed", "setup_ds_engine",
@@ -80,8 +83,11 @@ def setup_ds_engine(
     if config.pp_size != 1 or config.tp_size != 1:
         from collie.models import CollieModelForCausalLM
         from collie.module import PipelineModel
-        assert isinstance(model, CollieModelForCausalLM) or isinstance(model, PipelineModel), "Currently pipeline or tensor parallelism only supports Collie models."
-    model = model.cuda()
+        from peft import PeftModel
+        if isinstance(model, PeftModel):
+            assert isinstance(model.get_base_model(), (CollieModelForCausalLM, PipelineModel)), "Currently pipeline or tensor parallelism only supports Collie models."
+        else:
+            assert isinstance(model, (CollieModelForCausalLM, PipelineModel)), "Currently pipeline or tensor parallelism only supports Collie models."
     engine, optimizer, _, lr_scheduler = initialize(
         model=model,
         optimizer=optimizer,
@@ -136,6 +142,7 @@ def setup_distribution(config) -> None:
     if isinstance(config.ds_config, str):
         config.ds_config = load_config(config.ds_config)
     patch_bitesandbytes(config)
+    patch_transformers(config)
     patch_deepspeed(config)
     patch_megatron()
     patch_peft()
@@ -161,7 +168,6 @@ def setup_distribution(config) -> None:
             #     node_list = list(map(lambda x: re.sub(r"\[(.*?)\]", x, node_list_str), node_list))
             node_list = sorted(node_list)
             master_addr = node_list[0]
-            
             os.environ["MASTER_ADDR"] = f"{master_addr}"
             result = subprocess.run(["scontrol", "show", "node", master_addr], capture_output=True)
             result = re.search(r"NodeAddr=(.*?)\s", result.stdout.decode())
@@ -245,6 +251,7 @@ def patch_deepspeed(config):
         raw_wandb_init(self, wandb_config)
         import wandb
         wandb.run.name = wandb_config.job_name
+        wandb.config.update(wandb_config.config, allow_val_change=True)
     WandbMonitor.__init__ = collie_wandb_init
 
     # LayerSpec
@@ -259,6 +266,11 @@ def patch_deepspeed(config):
             self.global_rank = -1
     LayerSpec.__init__ = layer_spec_init
         
+def patch_transformers(config):
+    global _hf_deepspeed_config_weak_ref
+    ds_config = HfDeepSpeedConfig(config.ds_config)
+    # weak ref -> strong ref
+    _hf_deepspeed_config_weak_ref = lambda: ds_config
 
 def patch_megatron():
     parallel_state.get_model_parallel_world_size = lambda: parallel_state.get_tensor_model_parallel_world_size()
@@ -266,7 +278,9 @@ def patch_megatron():
     parallel_state.get_pipe_parallel_rank = lambda: parallel_state.get_pipeline_model_parallel_rank()
     
 def patch_bitesandbytes(config: CollieConfig):
-    if config.quantization_config.load_in_4bit or config.quantization_config.load_in_8bit:
+    # 较低版本的 transformers 没有 load_in_4bit
+    if getattr(config.quantization_config, "load_in_4bit", False) or \
+        config.quantization_config.load_in_8bit:
         from bitsandbytes.nn import Int8Params, Params4bit
         raw_cuda = copy.deepcopy(Int8Params.cuda)
         def cuda(self, device):
@@ -588,8 +602,7 @@ def initialize(args=None,
         assert config is None, "Not sure how to proceed, we were given deepspeed configs in the deepspeed arguments and deepspeed.initialize() function call"
         config = args.deepspeed_config
     assert config != None, "DeepSpeed requires --deepspeed_config to specify configuration file"
-
-    if not isinstance(model, PipelineModule):
+    if not isinstance(model, PipelineModule) and not (isinstance(model, PeftModel) and isinstance(model.get_base_model(), PipelineModule)):
         config_class = DeepSpeedConfig(config, mpu)
         if config_class.hybrid_engine.enabled:
             engine = DeepSpeedHybridEngine(args=args,

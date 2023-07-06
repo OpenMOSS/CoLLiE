@@ -1,8 +1,9 @@
 """
-一个使用CoLLie训练Moss的实例。
+一个使用CoLLie训练Moss的例子（使用LOMO优化器，开启ZeRO3）
 """
 import sys
 sys.path.append('..')
+sys.path.append("/mnt/petrelfs/gutianle/Megatron-LM/")
 import os
 import json
 import torch
@@ -38,7 +39,7 @@ config.pp_size = 1
 config.train_epochs = 1
 config.eval_per_n_steps = 0
 config.eval_per_n_epochs = 1 
-config.train_micro_batch_size = 2
+config.train_micro_batch_size = 32
 config.eval_batch_size = 1
 config.ds_config = {
         "fp16": {
@@ -61,15 +62,15 @@ tokenizer = AutoTokenizer.from_pretrained(pretrained_model, trust_remote_code=Tr
 # 4. 加载数据集
 train_dataset = [
     {
-        'input': 'Collie is a python package for',
+        'input': 'Collie is a python package for ',
         'output': 'finetuning large language models.'
-    } for _ in range(100)
+    } for _ in range(10000)
 ]
 train_dataset = CollieDatasetForTraining(train_dataset, tokenizer)
 eval_dataset = train_dataset[:32]
 
 # 5. 加载预训练模型
-model = MossForCausalLM.from_pretrained("/mnt/petrelfs/share_data/zhangshuo/model/moss-moon-003-sft/", config=config)
+model = MossForCausalLM.from_pretrained(pretrained_model, config=config)
 
 # 6. 设置优化器
 optimizer = Lomo(
@@ -127,4 +128,4 @@ trainer = Trainer(
 # 10. 训练/验证
 trainer.train()
 
-#  Command CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --rdzv_backend=c10d --rdzv_endpoint=localhost:29402 --nnodes=1 --nproc_per_node=4 train.py
+#  Command CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --rdzv_backend=c10d --rdzv_endpoint=localhost:29402 --nnodes=1 --nproc_per_node=4 finetune_moss_for_training.py

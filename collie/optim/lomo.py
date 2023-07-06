@@ -19,7 +19,7 @@ class Lomo(Optimizer):
         .. note::
 
             clip_grad_norm须为正数
-
+    :param zero3_enabled: 是否开启了 zero3
     :param clip_grad_value: 梯度裁剪的值域阈值
     :param loss_scale_args: 用于初始化 :class:`DynamicLossScaler` 的参数
     """
@@ -38,9 +38,8 @@ class Lomo(Optimizer):
         self.clip_coef = None
 
         # check if zero3 is enabled
-        zero3_enabled = is_deepspeed_zero3_enabled()
-        self.zero3_enabled = zero3_enabled
-        if zero3_enabled:  # zero3 is enabled
+        self.zero3_enabled = is_deepspeed_zero3_enabled()
+        if self.zero3_enabled:  # zero3 is enabled
             self.grad_func = self.fuse_update_zero3()
         else:
             self.grad_func = self.fuse_update()

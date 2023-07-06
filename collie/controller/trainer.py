@@ -24,7 +24,9 @@ from deepspeed.runtime.pipe.engine import PipelineEngine
 from deepspeed.runtime.engine import DeepSpeedSchedulerCallable
 from transformers.generation.utils import GenerationConfig
 from transformers.modeling_utils import PreTrainedModel, load_state_dict
+from peft import PeftModel, PeftConfig, get_peft_model_state_dict, set_peft_model_state_dict
 from transformers import PreTrainedTokenizerBase
+from transformers.utils import ContextManagers
 
 from collie.config import CollieConfig
 from collie.module import PipelineGenerationMixin, GPTLMLoss, PipelineModel
@@ -188,11 +190,13 @@ class Trainer(TrainerEventTrigger):
         self.setup_parallel_model()
         if isinstance(self.engine.module, PipelineGenerationMixin):
             self.engine.module.set_engine(self.engine)
+        if isinstance(self.engine.module, PeftModel) and isinstance(self.engine.module.get_base_model(), PipelineGenerationMixin):
+            self.engine.module.get_base_model().set_engine(self.engine)
         self.data_provider = data_provider
         self.monitor = _MultiMonitors(monitors)
         self.server = None
         if self.data_provider is not None:
-            self.server = Server(model=self.model, data_provider=self.data_provider, config=self.config)
+            self.server = Server(model=self.model, data_provider=self.data_provider)
             self.server.start()
         if evaluators is not None and eval_dataset is not None:
             logger.rank_zero_warning(
@@ -214,6 +218,7 @@ class Trainer(TrainerEventTrigger):
                 evaluator.tokenizer = self.tokenizer
             evaluator.engine = self.engine
             evaluator.server = self.server
+            evaluator.model = self.model
         self.evaluators = evaluators
 
         self.checkpoint_file = "collie_dp{}_pp{}_tp{}.pt".format(
@@ -258,7 +263,7 @@ class Trainer(TrainerEventTrigger):
         """
         if dist.get_world_size() != self.config.tp_size * self.config.dp_size * self.config.pp_size:
             logger.rank_zero_warning("The world size is not equal to the product of the parallel sizes set."
-                                     f"{dist.get_world_size()} != {self.config.tp_size} * {self.config.dp_size} * {self.config.dp_size}.")
+                                     f"{dist.get_world_size()} != {self.config.tp_size} * {self.config.dp_size} * {self.config.pp_size}.")
             self.config.dp_size = dist.get_world_size() // (self.config.tp_size * self.config.pp_size)
             logger.rank_zero_warning(f"Set dp_size to {self.config.dp_size}.")
         self.on_setup_parallel_model()
@@ -325,12 +330,16 @@ class Trainer(TrainerEventTrigger):
                 f"Training Batch: {self.batch_idx} / {self.steps_per_epoch}",
                 completed=self.batch_idx,
             )
-            for self.batch_idx, batch in enumerate(tqbar_batch, start=self.batch_idx):
+            for self.batch_idx, batch in enumerate(tqbar_batch, start=self.batch_idx):     
                 tqbar_batch.set_description(f"Training Batch: {self.batch_idx} / {self.steps_per_epoch}")
                 if self.server is not None:
                     self.server.data_provider_handler()
                 self.engine.train()
                 self.on_train_batch_begin(batch)
+                if isinstance(self.engine.module, PipelineModel):
+                    self.engine.module.forward_type = "train"
+                if isinstance(self.engine.module, PeftModel) and isinstance(self.engine.module.get_base_model(), PipelineModel):
+                    self.engine.module.get_base_model().forward_type = "train"
                 with self.monitor as item:
                     loss = self.train_fn(self, batch, self.global_batch_idx)
                     item.update({"loss": round(loss, 4),
@@ -384,25 +393,21 @@ class Trainer(TrainerEventTrigger):
         
         :return: 当前 batch 的 loss
         """
-        
+        # concat prompt labels for p-tuning
+        if trainer.config.peft_config and trainer.config.peft_config.peft_type in ["PROMPT_TUNING", "P_TUNING"]:
+            batch_size = batch["input_ids"].shape[0]
+            prefix_labels = torch.full((batch_size, trainer.config.peft_config.num_virtual_tokens), -100).to(batch['labels'].device)
+            batch['labels'] = torch.cat((prefix_labels, batch['labels']), dim=1)
         if trainer.config.pp_size > 1:
-            loss = trainer.engine.train_batch(batch)
+            loss = trainer.engine.module(**batch)["loss"]
         else:
-            # concat prompt labels for p-tuning
-            if trainer.config.peft_config and trainer.config.peft_config.peft_type in ["PROMPT_TUNING", "P_TUNING"]:
-                batch_size = batch["input_ids"].shape[0]
-                prefix_labels = torch.full((batch_size, trainer.config.peft_config.num_virtual_tokens), -100).to(labels.device)
-                labels = torch.cat((prefix_labels, labels), dim=1)
-            
             outputs = trainer.engine(**batch)
-            
             loss = auto_param_call(trainer.loss_fn, {**batch, **outputs}, 
                                    signature_fn=trainer.loss_fn.forward if isinstance(trainer.loss_fn, nn.Module) else trainer.loss_fn)
             if not isinstance(trainer.optimizer, Lomo):
                 trainer.engine.backward(loss)
                 trainer.engine.step()
             else:
-                
                 # for lomo only
                 if trainer.optimizer.clip_grad_norm is not None:
                     trainer.optimizer.grad_norm(loss)
@@ -433,7 +438,86 @@ class Trainer(TrainerEventTrigger):
         else:
             lr = self.optimizer.param_groups[0]['lr']
         return lr
-
+    
+    def save_peft(self, path: str, process_exclusion: bool = False, adapter_name="default", **kwargs):...
+    def save_peft(self, path: str, process_exclusion: bool = False, adapter_name="default",
+                   protocol: str = "file",  **kwargs):
+        """
+        保存 adapter 部分权重，当未使用 ``peft`` 时，该方法等同于 ``save_model``
+        
+        :param path: 模型保存路径
+        """
+        
+        if not isinstance(self.model, PeftModel):
+            return self.save_model(path=path, protocol=protocol, process_exclusion=process_exclusion, **kwargs)
+        io_driver = IODriver.from_protocol(protocol)
+        io_driver.makedirs(path, exist_ok=True)
+        # TODO 支持原 peft 里那样多个 adapter 的保存和加载
+        contexts = []
+        state_dict = get_peft_model_state_dict(
+            self.model, adapter_name=adapter_name
+        )
+        named_parameters = {name: param for name, param in self.engine.module.named_parameters() if any([name.replace(f"{adapter_name}.", "") == k for k in state_dict.keys()])}
+        if adapter_name == "default":
+            name_prefix = "adapter"
+        else:
+            name_prefix = f"adapter_{adapter_name}"
+        if env.pp_size == 1:
+            name = f"{name_prefix}.bin"
+        else:
+            name = f"{name_prefix}_{env.pp_rank}.bin"
+        if is_zero3_enabled(self.config):
+            contexts.append(deepspeed.zero.GatheredParameters(list(named_parameters.values())))
+        with ContextManagers(contexts):
+            if env.dp_rank == 0 or not is_zero3_enabled(self.config):
+                for key in named_parameters.keys():
+                    state_dict[key.replace(f"{adapter_name}.", "")] = named_parameters[key].data
+                if env.dp_rank == 0 and env.tp_rank == 0:
+                    io_driver.save(state_dict, os.path.join(path, name))
+        if env.rank == 0:
+            io_driver.save(json.dumps(self.config.peft_config.__dict__), os.path.join(path, "adapter_config.json"))
+        
+    def load_peft(self, path: str, process_exclusion: bool = False, adapter_name="default", **kwargs):...
+    def load_peft(self, path: str, process_exclusion: bool = False, adapter_name="default",
+                   protocol: str = "file", **kwargs):
+        """
+        加载 adapter 部分权重，当未使用 ``peft`` 时，该方法等同于 ``load_model``
+        
+        :param path: 模型保存路径
+        """
+        io_driver = IODriver.from_protocol(protocol)
+        if not isinstance(self.model, PeftModel):
+            return self.load_model(path=path, protocol=protocol, process_exclusion=process_exclusion, **kwargs)
+        peft_config_dict = json.loads(io_driver.load(os.path.join(path, "adapter_config.json"), mode="j"))
+        loaded_peft_config = PeftConfig()
+        for key, value in peft_config_dict.items():
+            if hasattr(loaded_peft_config, key):
+                setattr(loaded_peft_config, key, value)
+        if loaded_peft_config.task_type != self.config.peft_config.task_type:
+            raise ValueError(
+                f"The task type `{loaded_peft_config.task_type}` from "
+                f"checkpoint `{path}` is not the current task type"
+                f"{self.config.peft_config.task_type}"
+            )
+        if adapter_name == "default":
+            name_prefix = "adapter"
+        else:
+            name_prefix = f"adapter_{adapter_name}"
+        if env.pp_size == 1:
+            name = f"{name_prefix}.bin"
+        else:
+            name = f"{name_prefix}_{env.pp_rank}.bin"
+        assert io_driver.exists(os.path.join(path, name)), f"{name} does not exist."
+        loaded_state_dict = io_driver.load(os.path.join(path, name), mode="rb")
+        named_parameters = {name: param for name, param in self.engine.module.named_parameters() if any([name.replace(f"{adapter_name}.", "") == k for k in loaded_state_dict.keys()])}
+        contexts = []
+        if is_zero3_enabled(self.config):
+            contexts.append(deepspeed.zero.GatheredParameters(list(named_parameters.values()), modifier_rank=0))
+        with ContextManagers(contexts):
+            if env.dp_rank == 0 or not is_zero3_enabled(self.config):
+                set_peft_model_state_dict(self.model, loaded_state_dict,
+                                          adapter_name="default")
+                    
     def save_model(self, path: str, process_exclusion: bool = False, **kwargs):...
     def save_model(self, path: str, process_exclusion: bool = False,
                    protocol: str = "file", **kwargs):

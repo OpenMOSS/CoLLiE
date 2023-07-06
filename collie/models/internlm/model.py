@@ -79,7 +79,7 @@ class RMSNormalize(nn.Module):
             hidden_states = hidden_states.to(self.weight.dtype)
         return hidden_states * self.weight
 
-class LlamaLayer(nn.Module):
+class InternLMLayer(nn.Module):
     def __init__(self, config: CollieConfig) -> None:
         super().__init__()
         self.config = config
@@ -88,28 +88,28 @@ class LlamaLayer(nn.Module):
                 "q_proj": ColumnParallelLinearWithoutBias(
                     config.hidden_size,
                     config.hidden_size,
-                    bias=False,
+                    bias=True,
                     gather_output=False,
                     init_method=lambda x: x
                 ),
                 "k_proj": ColumnParallelLinearWithoutBias(
                     config.hidden_size,
                     config.hidden_size,
-                    bias=False,
+                    bias=True,
                     gather_output=False,
                     init_method=lambda x: x
                 ),
                 "v_proj": ColumnParallelLinearWithoutBias(
                     config.hidden_size,
                     config.hidden_size,
-                    bias=False,
+                    bias=True,
                     gather_output=False,
                     init_method=lambda x: x
                 ),
                 "o_proj": RowParallelLinearWithoutBias(
                     config.hidden_size,
                     config.hidden_size,
-                    bias=False,
+                    bias=True,
                     input_is_parallel=True,
                     init_method=lambda x: x
                 ),
@@ -228,7 +228,7 @@ class LlamaLayer(nn.Module):
         return inputs
 
 
-class LlamaForCausalLM(CollieModelForCausalLM):
+class InternLMForCausalLM(CollieModelForCausalLM):
     
     def __init__(self, config: CollieConfig) -> None:
         super().__init__(config)
@@ -237,7 +237,7 @@ class LlamaForCausalLM(CollieModelForCausalLM):
             self.collie_config.hidden_size
         )
         self.layers = nn.ModuleList(
-            [LlamaLayer(self.collie_config) for _ in range(self.collie_config.num_hidden_layers)])
+            [InternLMLayer(self.collie_config) for _ in range(self.collie_config.num_hidden_layers)])
         self.norm = RMSNormalize(
             dim=self.collie_config.hidden_size,
             eps=self.collie_config.rms_norm_eps
@@ -307,7 +307,7 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                 tensor_parallel.VocabParallelEmbedding,
                 config.vocab_size,
                 config.hidden_size),
-                *[LayerSpec(LlamaLayer, config)
+                *[LayerSpec(InternLMLayer, config)
                 for _ in range(config.num_hidden_layers)],
                 LayerSpec(dict_as_params(input_keys="hidden_states", output_keys="hidden_states"), RMSNormalize,
                         dim=config.hidden_size,
@@ -326,7 +326,7 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                 tensor_parallel.VocabParallelEmbedding,
                 config.vocab_size,
                 config.hidden_size),
-                *[LayerSpec(LlamaLayer, config)
+                *[LayerSpec(InternLMLayer, config)
                 for _ in range(config.num_hidden_layers)],
                 LayerSpec(dict_as_params(input_keys="hidden_states", output_keys="hidden_states"), RMSNormalize,
                         dim=config.hidden_size,
@@ -346,8 +346,7 @@ class LlamaForCausalLM(CollieModelForCausalLM):
     def load_parallel_state_dict(path: str,
                                  config: Union[CollieConfig, str],
                                  process_exclusion: bool = False,
-                                 protocol: str = 'file',
-                                 format: str = 'hf', **kwargs):
+                                 protocol: str = 'file', **kwargs):
         """
         Load state_dict from ``path``.
 
@@ -357,7 +356,6 @@ class LlamaForCausalLM(CollieModelForCausalLM):
         :return: state_dict. Note that the state_dict should be processed
             properly to match the current rank.
         """
-        assert format in ["hf", "meta"], "Only support hf and meta format"
         if isinstance(config, str):
             config = CollieConfig.from_pretrained(config)
         io_driver = IODriver.from_protocol(protocol)
@@ -381,106 +379,44 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                 if env.is_pipeline:
                     # 保存的是 json 格式
                     parts = env.pipeline_parts
-                if format == "hf":
-                    # 如果存在 pytorch_model.bin.index.json 文件的话，此时不同的 pp 进程可以按需加载自己需要的权重
-                    if io_driver.exists(os.path.join(path, "pytorch_model.bin.index.json")) and "COLLIE_PP_PARTS" in os.environ.keys():
-                        weight_map = json.loads(io_driver.load(os.path.join(path, "pytorch_model.bin.index.json"), mode="r"))["weight_map"]
-                        # layers 表示自己需要的层
-                        layers = list(range(parts[int(os.environ["COLLIE_PP_RANK"])], parts[int(os.environ["COLLIE_PP_RANK"]) + 1]))
-                        # 筛选出形似 model.layers.0 这样的层。包含两个条件：1. 有数字的层；2. 数字加一要在 layers 里面（因为最开始还有个 embedding 占一层）
-                        weights.extend([value for key, value in weight_map.items() \
-                            if len(key.split(".")) > 2 \
-                                and key.split(".")[2].isdigit() \
-                                    and (int(key.split(".")[2]) + 1) in layers])
-                        # 去重
-                        weights = list(set(weights))
-                        # 继续筛选，如果有 0 层，那么就要加载 embedding；如果有最后一层，那么就要加载 lm_head；如果有倒数第二层，那么就要加载 norm
-                        if 0 in layers:
-                            weights.append(weight_map["model.embed_tokens.weight"])
-                        if max(parts) - 1 in layers:
-                            weights.append(weight_map["lm_head.weight"])
-                        if max(parts) - 2 in layers:
-                            weights.append(weight_map["model.norm.weight"])
-                    else:
-                        # 如果没有 pytorch_model.bin.index.json 文件的话，那么就加载所有的权重
-                        weights = [weight for weight in io_driver.list(path) if weight.endswith(".bin")]
-                    with progress(weights, desc="Loading state dict", total=len(weights), disable=hide_progress) as pbar:
-                        for weight in pbar:
-                            part_state_dict = io_driver.load(os.path.join(path, weight), mode="rb")
-                            for key in list(part_state_dict.keys()):
-                                # 对 q_proj.weight 和 k_proj.weight 进行 reshape
-                                if key.endswith("q_proj.weight") or key.endswith("k_proj.weight"):
-                                    part_state_dict[key] = rearrange(
-                                        part_state_dict[key],
-                                        "(h two t) d -> h two t d",
-                                        h=config.num_attention_heads,
-                                        two=2).transpose(1, 2).reshape(
-                                            config.hidden_size,
-                                            config.hidden_size)
-                                part_state_dict[key.replace("model.", "")] = part_state_dict.pop(key)
-                            state_dict.update(part_state_dict)
-                            del part_state_dict
-                elif format == "meta":
-                    # meta 权重的格式，需要补充 inv_freq 的权重
-                    inv_freq = 1.0 / (10000.0 ** (torch.arange(0, (config.hidden_size // config.num_attention_heads),
-                                2).float() / (config.hidden_size // config.num_attention_heads)))
-                    # 根据 meta 中的 params.json 更新一下用户配置
-                    if io_driver.exists(os.path.join(path, "params.json")):
-                        params = json.loads(io_driver.load(os.path.join(path, "params.json"), mode="r"))
-                        for key, value in {
-                            "hidden_size": params["dim"],
-                            "intermediate_size": params["multiple_of"] * ((int(2 * 4 * config.hidden_size / 3) + params["multiple_of"] - 1) // params["multiple_of"]),
-                            "num_hidden_layers": params["n_layers"],
-                            "num_attention_heads": params["n_heads"],
-                            "rms_norm_eps": params["norm_eps"]
-                        }.items():
-                            setattr(config, key, value)
-                    # 权重全部加载
-                    weights = [weight for weight in io_driver.list(path) if (weight.endswith(".pt") or weight.endswith(".pth"))]
-                    # 因为 meta 的权重默认 按照张量并行分割，cat 的时候存在顺序问题，所以先排序一下
-                    weights = sorted(weights, key=lambda x: int(x.split(".")[1]))
-                    with progress(weights, desc="Loading state dict", total=len(weights), disable=hide_progress) as pbar:
-                        for weight in pbar:
-                            part_state_dict = io_driver.load(os.path.join(path, weight), mode="rb")
-                            for key in list(part_state_dict.keys()):
-                                # if key.startswith("layers"):
-                                #     layer = int(key.split(".")[1])
-                                #     # meta 权重的格式，需要补充 inv_freq 的权重
-                                #     part_state_dict[f"layers.{layer}.self_attn.rotary_emb.inv_freq"] = inv_freq
-                                raw_key = key
-                                key = key.replace("attention", "self_attn")
-                                key = key.replace("inner_self_attn.rope.freqs", "rotary_emb.inv_freq")
-                                key = key.replace("wo", "o_proj")
-                                key = key.replace("wq", "q_proj")
-                                key = key.replace("wk", "k_proj")
-                                key = key.replace("wv", "v_proj")
-                                key = key.replace("feed_forward", "mlp")
-                                key = key.replace("w1", "gate_proj")
-                                key = key.replace("w2", "down_proj")
-                                key = key.replace("w3", "up_proj")
-                                key = key.replace("self_attn_norm", "input_layernorm")
-                                key = key.replace("ffn_norm", "post_attention_layernorm")
-                                key = key.replace("tok_embeddings", "embed_tokens")
-                                key = key.replace("output", "lm_head")
-                                # 按照 hf 的格式更新字典
-                                part_state_dict[key] = part_state_dict.pop(raw_key)
-                            for key in list(part_state_dict.keys()):
-                                if not key in state_dict.keys():
-                                    state_dict[key] = part_state_dict[key]
-                                else:
-                                    # 组装一下
-                                    if key.endswith("q_proj.weight") \
-                                        or key.endswith("k_proj.weight") \
-                                            or key.endswith("v_proj.weight") \
-                                                or key.endswith("gate_proj.weight") \
-                                                    or key.endswith("up_proj.weight") \
-                                                        or key.endswith("lm_head.weight"):
-                                                            state_dict[key] = torch.cat((state_dict[key], part_state_dict[key]), dim=0)
-                                    if key.endswith("o_proj.weight") \
-                                        or key.endswith("down_proj.weight") \
-                                            or key.endswith("embed_tokens.weight"):
-                                                state_dict[key] = torch.cat((state_dict[key], part_state_dict[key]), dim=1)
-                            del part_state_dict
+                # 如果存在 pytorch_model.bin.index.json 文件的话，此时不同的 pp 进程可以按需加载自己需要的权重
+                if io_driver.exists(os.path.join(path, "pytorch_model.bin.index.json")) and "COLLIE_PP_PARTS" in os.environ.keys():
+                    weight_map = json.loads(io_driver.load(os.path.join(path, "pytorch_model.bin.index.json"), mode="r"))["weight_map"]
+                    # layers 表示自己需要的层
+                    layers = list(range(parts[int(os.environ["COLLIE_PP_RANK"])], parts[int(os.environ["COLLIE_PP_RANK"]) + 1]))
+                    # 筛选出形似 model.layers.0 这样的层。包含两个条件：1. 有数字的层；2. 数字加一要在 layers 里面（因为最开始还有个 embedding 占一层）
+                    weights.extend([value for key, value in weight_map.items() \
+                        if len(key.split(".")) > 2 \
+                            and key.split(".")[2].isdigit() \
+                                and (int(key.split(".")[2]) + 1) in layers])
+                    # 去重
+                    weights = list(set(weights))
+                    # 继续筛选，如果有 0 层，那么就要加载 embedding；如果有最后一层，那么就要加载 lm_head；如果有倒数第二层，那么就要加载 norm
+                    if 0 in layers:
+                        weights.append(weight_map["model.embed_tokens.weight"])
+                    if max(parts) - 1 in layers:
+                        weights.append(weight_map["lm_head.weight"])
+                    if max(parts) - 2 in layers:
+                        weights.append(weight_map["model.norm.weight"])
+                else:
+                    # 如果没有 pytorch_model.bin.index.json 文件的话，那么就加载所有的权重
+                    weights = [weight for weight in io_driver.list(path) if weight.endswith(".bin")]
+                with progress(weights, desc="Loading state dict", total=len(weights), disable=hide_progress) as pbar:
+                    for weight in pbar:
+                        part_state_dict = io_driver.load(os.path.join(path, weight), mode="rb")
+                        for key in list(part_state_dict.keys()):
+                            # 对 q_proj.weight 和 k_proj.weight 进行 reshape
+                            if key.endswith("q_proj.weight") or key.endswith("k_proj.weight"):
+                                part_state_dict[key] = rearrange(
+                                    part_state_dict[key],
+                                    "(h two t) d -> h two t d",
+                                    h=config.num_attention_heads,
+                                    two=2).transpose(1, 2).reshape(
+                                        config.hidden_size,
+                                        config.hidden_size)
+                            part_state_dict[key.replace("model.", "")] = part_state_dict.pop(key)
+                        state_dict.update(part_state_dict)
+                        del part_state_dict
                 if parts is not None:
                     # 这一步是 pp 的复筛
                     layers = list(range(parts[int(os.environ["COLLIE_PP_RANK"])], parts[int(os.environ["COLLIE_PP_RANK"]) + 1]))
@@ -516,18 +452,21 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                 # 根据用户配置的新的 tp size 进行分割
                 for key in list(state_dict.keys()):
                     if key.endswith("q_proj.weight") \
-                        or key.endswith("k_proj.weight") \
-                            or key.endswith("v_proj.weight") \
-                                or key.endswith("gate_proj.weight") \
-                                    or key.endswith("up_proj.weight") \
-                                        or key.endswith("embed_tokens.weight") \
-                                            or key.endswith("lm_head.weight"):
-                                                tensor = list(torch.chunk(state_dict[key], config.tp_size, dim=0))[int(os.environ.get("COLLIE_TP_RANK", "0"))].detach().clone()
-                                                del state_dict[key]
-                                                if process_exclusion:
-                                                    # CPU 内存回收（速度很慢）
-                                                    gc.collect()
-                                                state_dict[key] = tensor
+                        or key.endswith("q_proj.bias") \
+                            or key.endswith("k_proj.weight") \
+                                or key.endswith("k_proj.bias") \
+                                    or key.endswith("v_proj.weight") \
+                                        or key.endswith("v_proj.bias") \
+                                            or key.endswith("gate_proj.weight") \
+                                                or key.endswith("up_proj.weight") \
+                                                    or key.endswith("embed_tokens.weight") \
+                                                        or key.endswith("lm_head.weight"):
+                                                            tensor = list(torch.chunk(state_dict[key], config.tp_size, dim=0))[int(os.environ.get("COLLIE_TP_RANK", "0"))].detach().clone()
+                                                            del state_dict[key]
+                                                            if process_exclusion:
+                                                                # CPU 内存回收（速度很慢）
+                                                                gc.collect()
+                                                            state_dict[key] = tensor
                     elif key.endswith("o_proj.weight") \
                         or key.endswith("down_proj.weight"):
                             tensor = list(torch.chunk(state_dict[key], config.tp_size, dim=1))[int(os.environ.get("COLLIE_TP_RANK", "0"))].detach().clone()
@@ -600,19 +539,22 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                         dist.gather(state_dict[key].cuda(), dst=dst, gather_list=tensor_list, group=env.tp_group)
                         if env.tp_rank == 0:
                             if key.endswith("q_proj.weight") \
-                                or key.endswith("k_proj.weight") \
-                                    or key.endswith("v_proj.weight") \
-                                        or key.endswith("gate_proj.weight") \
-                                            or key.endswith("up_proj.weight") \
-                                                or key.endswith("embed_tokens.weight") \
-                                                    or key.endswith("lm_head.weight"):
-                                                        state_dict[key] = torch.cat(tensor_list, dim=0).detach().clone().to(device)
-                                                        if key.endswith("q_proj.weight")  or key.endswith("k_proj.weight"):
-                                                            state_dict[key] = reshape_wq_wk(state_dict[key])
-                                                        del tensor_list
-                                                        if process_exclusion:
-                                                            # CPU 内存回收（速度很慢）
-                                                            gc.collect()
+                                or key.endswith("q_proj.bias") \
+                                    or key.endswith("k_proj.weight") \
+                                        or key.endswith("k_proj.bias") \
+                                            or key.endswith("v_proj.weight") \
+                                                or key.endswith("v_proj.bias") \
+                                                    or key.endswith("gate_proj.weight") \
+                                                        or key.endswith("up_proj.weight") \
+                                                            or key.endswith("embed_tokens.weight") \
+                                                                or key.endswith("lm_head.weight"):
+                                                                    state_dict[key] = torch.cat(tensor_list, dim=0).detach().clone().to(device)
+                                                                    if key.endswith("q_proj.weight")  or key.endswith("k_proj.weight"):
+                                                                        state_dict[key] = reshape_wq_wk(state_dict[key])
+                                                                    del tensor_list
+                                                                    if process_exclusion:
+                                                                        # CPU 内存回收（速度很慢）
+                                                                        gc.collect()
                             elif key.endswith("o_proj.weight") \
                                 or key.endswith("down_proj.weight"):
                                     state_dict[key] = torch.cat(tensor_list, dim=1).detach().clone().to(device)
