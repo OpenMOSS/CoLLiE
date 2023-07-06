@@ -95,11 +95,13 @@ class CollieDatasetForTraining(Dataset):
                  tokenizer: Optional[PreTrainedTokenizer] = None,
                  add_special_tokens: bool = True,
                  shuffle: bool = False,
-                 seed: int = 1024):
+                 seed: int = 1024,
+                 max_length: int=-1):
         self.dataset = dataset
         self.tokenizer = tokenizer
         self.add_special_tokens = add_special_tokens
         self.indices = list(range(len(self.dataset)))
+        self.max_length = max_length
         if shuffle:
             random.seed(seed)
             random.shuffle(self.indices)
@@ -154,6 +156,10 @@ class CollieDatasetForTraining(Dataset):
                 labels = labels.cpu().tolist()
             else:
                 raise ValueError("Dataset must have one or two fields.")
+        if self.max_length > 0:
+            input_ids = input_ids[:self.max_length]
+            attention_mask = attention_mask[:self.max_length]
+            labels = labels[:self.max_length]
         return {"input_ids": input_ids, "attention_mask": attention_mask, "labels": labels}
     
     def _get_slice(self, s: slice):
@@ -233,6 +239,9 @@ class CollieDatasetForGeneration(CollieDatasetForTraining):
                 elif isinstance(self.dataset[index]["target"], (list, tuple, set)):
                     target = [self.tokenizer(
                         x).input_ids for x in self.dataset[index]["target"]]
+        if self.max_length > 0:
+            input_ids = input_ids[:self.max_length]
+            attention_mask = attention_mask[:self.max_length]
         sample = {"input_ids": input_ids, "attention_mask": attention_mask, "labels": input_ids}
         if target is not None:
             sample["target"] = target
@@ -276,4 +285,7 @@ class CollieDatasetForClassification(CollieDatasetForTraining):
             else:
                 raise ValueError(
                     "CollieDatasetForClassification must have three fields (`input`, `output` and `target`).")
+        if self.max_length > 1:
+            input_ids = [sample[:self.max_length] for sample in input_ids]
+            attention_mask = [sample[:self.max_length] for sample in attention_mask]
         return {"input_ids": input_ids, "attention_mask": attention_mask, "labels": input_ids, "target": target}
