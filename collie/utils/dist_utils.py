@@ -278,7 +278,9 @@ def patch_megatron():
     parallel_state.get_pipe_parallel_rank = lambda: parallel_state.get_pipeline_model_parallel_rank()
     
 def patch_bitesandbytes(config: CollieConfig):
-    if config.quantization_config.load_in_4bit or config.quantization_config.load_in_8bit:
+    # 较低版本的 transformers 没有 load_in_4bit
+    if getattr(config.quantization_config, "load_in_4bit", False) or \
+        config.quantization_config.load_in_8bit:
         from bitsandbytes.nn import Int8Params, Params4bit
         raw_cuda = copy.deepcopy(Int8Params.cuda)
         def cuda(self, device):

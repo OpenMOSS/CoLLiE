@@ -129,7 +129,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         model = None
         contexts = []
         if (config.low_cpu_mem_usage or \
-            config.quantization_config.load_in_4bit or \
+            getattr(config.quantization_config, "load_in_4bit", False) or \
                 config.quantization_config.load_in_8bit) and \
                     not is_zero3_enabled(config):
             contexts.append(init_empty_weights())
@@ -167,7 +167,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                         if param.device == torch.device("meta"):
                             set_module_tensor_to_device(
                                 module=model, tensor_name=name, device="cpu" if param.device == torch.device("meta") else param.device, 
-                                value=config.initization_method(torch.zeros_like(param.data).to(config.model_config.torch_dtype)), 
+                                value=config.initization_method(torch.empty((*param.data.size(),),dtype=config.model_config.torch_dtype)), 
                                 dtype=config.model_config.torch_dtype
                             )
                         else:
@@ -236,13 +236,15 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
             # prevent duplicate ``from_pretrained`` in load_parallel
             config = CollieConfig.from_pretrained(config, **kwargs)
         if config.model_config.torch_dtype is None and \
-            (config.quantization_config.load_in_4bit or config.quantization_config.load_in_8bit):
+            (getattr(config.quantization_config, "load_in_4bit", False) or \
+                config.quantization_config.load_in_8bit):
                 config.model_config.torch_dtype = torch.float16
         # Actually build the model and do not init the params
         model = cls.from_config(config, init_params=False, get_peft=False)
         model = model.to(config.model_config.torch_dtype)
         # quantization
-        if config.quantization_config.load_in_4bit or config.quantization_config.load_in_8bit:
+        if getattr(config.quantization_config, "load_in_4bit", False) or \
+            config.quantization_config.load_in_8bit:
             from transformers.utils.bitsandbytes import replace_with_bnb_linear, \
                 set_module_quantized_tensor_to_device
             llm_int8_skip_modules = config.quantization_config.llm_int8_skip_modules
@@ -274,7 +276,8 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                 contexts.append(deepspeed.zero.GatheredParameters(param, modifier_rank=0))
             with ContextManagers(contexts):
                 if not is_zero3_enabled(config) or env.dp_rank == 0:
-                    if config.quantization_config.load_in_4bit or config.quantization_config.load_in_8bit:
+                    if getattr(config.quantization_config, "load_in_4bit", False) or \
+                        config.quantization_config.load_in_8bit:
                         set_module_quantized_tensor_to_device(
                             module=model, tensor_name=name, device="cpu" if param.device == torch.device("meta") else param.device, 
                             value=state_dict[name].data

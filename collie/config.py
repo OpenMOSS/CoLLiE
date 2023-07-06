@@ -24,7 +24,7 @@ class CollieConfig:
           有 rank 上的计算时间是接近的。
         * ``'uniform'`` - 根据模型的层数进行切分，保证每个 rank 上的模型层数是接近
           的。
-        * ``'type:[regex]'`` - 根据指定的 layer 进行切分，抱枕与 ``[regex]`` 名称
+        * ``'type:[regex]'`` - 根据指定的 layer 进行切分，保证与 ``[regex]`` 名称
           正则匹配的 layer 在每个 rank 上的数目是接近的。比如 ``type:transformer``
           会使得每个 rank 上 Transformer 层的数目接近。该正则匹配不分大小写。 
     :param train_epochs: 训练时的迭代次数。
