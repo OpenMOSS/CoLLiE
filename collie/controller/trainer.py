@@ -24,7 +24,7 @@ from deepspeed.runtime.pipe.engine import PipelineEngine
 from deepspeed.runtime.engine import DeepSpeedSchedulerCallable
 from transformers.generation.utils import GenerationConfig
 from transformers.modeling_utils import PreTrainedModel, load_state_dict
-from peft import PeftModel, get_peft_model_state_dict, set_peft_model_state_dict
+from peft import PeftModel, get_peft_model_state_dict, set_peft_model_state_dict, PeftType
 from transformers import PreTrainedTokenizerBase
 from transformers.utils import ContextManagers
 
@@ -218,6 +218,7 @@ class Trainer(TrainerEventTrigger):
                 evaluator.tokenizer = self.tokenizer
             evaluator.engine = self.engine
             evaluator.server = self.server
+            evaluator.model = self.model
         self.evaluators = evaluators
 
         self.checkpoint_file = "collie_dp{}_pp{}_tp{}.pt".format(
@@ -449,10 +450,8 @@ class Trainer(TrainerEventTrigger):
         io_driver = IODriver.from_protocol(protocol)
         if not isinstance(self.model, PeftModel):
             return self.save_model(path=path, protocol=protocol, **kwargs)
-        contexts = []
+        
         state_dict = get_peft_model_state_dict(self.model)
-        if is_zero3_enabled(self.config):
-            contexts.append(deepspeed.zero.GatheredParameters(list(state_dict.values())))
         io_driver.makedirs(path, exist_ok=True)
         with ContextManagers(contexts):
             if env.dp_rank == 0 or not is_zero3_enabled(self.config):
