@@ -105,9 +105,14 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         """
         生成函数。用法同 ``huggingface``。
         """
+        # if "synced_gpus" not in kwargs.keys():
+        #     kwargs["synced_gpus"] = is_zero3_enabled(self.collie_config)
         res = super().generate(*args, **kwargs)
         self.clean()
         return res
+    
+    def clean():
+        raise NotImplementedError
 
     @classmethod
     def from_config(cls, config: Union[CollieConfig, str], **kwargs):

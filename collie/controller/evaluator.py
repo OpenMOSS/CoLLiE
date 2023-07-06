@@ -7,6 +7,7 @@ from deepspeed.runtime.pipe.engine import PipelineEngine
 from deepspeed.accelerator import get_accelerator
 from transformers.generation.utils import GenerationConfig
 from transformers import PreTrainedTokenizerBase
+from peft import PeftModel
 
 from collie.module import PipelineGenerationMixin, GPTLMLoss, PipelineModel
 from collie.data.dataloader import CollieDataLoader
@@ -98,6 +99,8 @@ class Evaluator:
                            setup_ds_engine(config=self.config, model=self.model)[0])
         if isinstance(self.engine.module, PipelineGenerationMixin):
             self.engine.module.set_engine(self.engine)
+        if isinstance(self.engine.module, PeftModel) and isinstance(self.engine.module.get_base_model(), PipelineGenerationMixin):
+            self.engine.module.get_base_model().set_engine(self.engine)
     
     def eval(self, dataloader: Optional[Iterable] = None):
         """
@@ -120,7 +123,6 @@ class Evaluator:
         eval_dataloader = self.eval_dataloader
         if dataloader is not None:
             eval_dataloader = dataloader
-
         with progress(eval_dataloader, desc="Evaluating Batch: ", disable=env.rank != 0, total=self.eval_steps) as tqbar_batch:
             for batch_idx, batch in enumerate(tqbar_batch):
                 tqbar_batch.set_description(f"Evaluating Batch: {batch_idx} / {self.eval_steps}")
@@ -191,9 +193,7 @@ class EvaluatorForGeneration(Evaluator):
         :return: 一次验证的结果，为 `Dict` 类型，该结果会被传入 `metric` 的 `update` 方法中
         """
         assert evaluator.tokenizer is not None, "You must provide a tokenizer to decode the generated results."
-        generation_model = evaluator.engine.module
-        generated_ids = generation_model.generate(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"], 
-                                              generation_config=evaluator.generation_config)
+        generated_ids = evaluator.engine.module.generate(**{k: v for k, v in batch.items() if k in ("input_ids", "attention_mask")}, generation_config=evaluator.generation_config)
         prompt_length = batch["input_ids"].shape[1]
         result = {"pred": [evaluator.tokenizer.decode(sample[prompt_length:], skip_special_tokens=evaluator.skip_special_tokens) for sample in generated_ids]}
         if "target" in batch.keys():

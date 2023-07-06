@@ -19,6 +19,8 @@ from deepspeed.runtime import zero
 from deepspeed.runtime.hybrid_engine import DeepSpeedHybridEngine
 from deepspeed.runtime.config import DeepSpeedConfig
 from deepspeed.runtime.pipe import PipelineModule, LayerSpec
+from transformers.deepspeed import _hf_deepspeed_config_weak_ref, HfDeepSpeedConfig, is_deepspeed_zero3_enabled
+from weakref import ref
 
 from megatron.core import parallel_state, tensor_parallel
 
@@ -140,6 +142,7 @@ def setup_distribution(config) -> None:
     if isinstance(config.ds_config, str):
         config.ds_config = load_config(config.ds_config)
     patch_bitesandbytes(config)
+    patch_transformers(config)
     patch_deepspeed(config)
     patch_megatron()
     patch_peft()
@@ -263,6 +266,11 @@ def patch_deepspeed(config):
             self.global_rank = -1
     LayerSpec.__init__ = layer_spec_init
         
+def patch_transformers(config):
+    global _hf_deepspeed_config_weak_ref
+    ds_config = HfDeepSpeedConfig(config.ds_config)
+    # weak ref -> strong ref
+    _hf_deepspeed_config_weak_ref = lambda: ds_config
 
 def patch_megatron():
     parallel_state.get_model_parallel_world_size = lambda: parallel_state.get_tensor_model_parallel_world_size()

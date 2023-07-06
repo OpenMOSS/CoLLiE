@@ -218,6 +218,7 @@ class Trainer(TrainerEventTrigger):
                 evaluator.tokenizer = self.tokenizer
             evaluator.engine = self.engine
             evaluator.server = self.server
+            evaluator.model = self.model
         self.evaluators = evaluators
 
         self.checkpoint_file = "collie_dp{}_pp{}_tp{}.pt".format(
@@ -453,6 +454,7 @@ class Trainer(TrainerEventTrigger):
         io_driver.makedirs(path, exist_ok=True)
         # TODO 支持原 peft 里那样多个 adapter 的保存和加载
         contexts = []
+        named_parameters = {name: param for name, param in self.engine.module.named_parameters() if name in state_dict.keys()}
         state_dict = get_peft_model_state_dict(
             self.model, adapter_name="default"
         )
@@ -464,6 +466,8 @@ class Trainer(TrainerEventTrigger):
             contexts.append(deepspeed.zero.GatheredParameters(list(state_dict.values())))
         with ContextManagers(contexts):
             if env.dp_rank == 0 or not is_zero3_enabled(self.config):
+                for key in state_dict.keys():
+                    state_dict[key] = named_parameters[key].data
                 io_driver.save(state_dict, os.path.join(path, name))
         if env.rank == 0:
             io_driver.save(json.dumps(self.config.peft_config.__dict__), os.path.join(path, "adapter_config.json"))
