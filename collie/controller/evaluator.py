@@ -188,7 +188,6 @@ class EvaluatorForGeneration(Evaluator):
     
         :return: 一次验证的结果，为 `Dict` 类型，该结果会被传入 `metric` 的 `update` 方法中
         """
-        print(f"[Debug] eval_fn generate")
         assert evaluator.tokenizer is not None, "You must provide a tokenizer to decode the generated results."
         generation_model = evaluator.engine.module
         generated_ids = generation_model.generate(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"], 
