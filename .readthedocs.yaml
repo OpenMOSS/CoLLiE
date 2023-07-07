@@ -17,7 +17,7 @@ build:
   apt_packages:
     - pandoc
   jobs:
-    install_kernel:
+    pre_build:
       - pip install ipykernel
       - python -m ipykernel install --user --name python3
 
