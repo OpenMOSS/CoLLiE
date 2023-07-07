@@ -25,7 +25,10 @@ config.use_flash = False
 config.eval_batch_size = 1
 config.eval_per_n_steps = 20
 config.ds_config = {
-    "fp16": {"enabled": True}
+    "fp16": {"enabled": True},
+    "data_types": {
+        "grad_accum_dtype": "fp32"
+    }
 }
 
 model = LlamaForCausalLM.from_pretrained("/mnt/petrelfs/zhangshuo/model/llama-7b-hf", config=config)
