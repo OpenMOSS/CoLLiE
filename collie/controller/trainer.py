@@ -336,6 +336,10 @@ class Trainer(TrainerEventTrigger):
                     self.server.data_provider_handler()
                 self.engine.train()
                 self.on_train_batch_begin(batch)
+                if isinstance(self.engine.module, PipelineModel):
+                    self.engine.module.forward_type = "train"
+                if isinstance(self.engine.module, PeftModel) and isinstance(self.engine.module.get_base_model(), PipelineModel):
+                    self.engine.module.get_base_model().forward_type = "train"
                 with self.monitor as item:
                     loss = self.train_fn(self, batch, self.global_batch_idx)
                     item.update({"loss": round(loss, 4),
@@ -439,9 +443,9 @@ class Trainer(TrainerEventTrigger):
             lr = self.optimizer.param_groups[0]['lr']
         return lr
     
-    def save_peft(self, path: str, process_exclusion: bool = False, **kwargs):...
-    def save_peft(self, path: str, process_exclusion: bool = False,
-                   protocol: str = "file", **kwargs):
+    def save_peft(self, path: str, process_exclusion: bool = False, adapter_name="default", **kwargs):...
+    def save_peft(self, path: str, process_exclusion: bool = False, adapter_name="default",
+                   protocol: str = "file",  **kwargs):
         """
         保存 adapter 部分权重，当未使用 ``peft`` 时，该方法等同于 ``save_model``
         
@@ -449,31 +453,36 @@ class Trainer(TrainerEventTrigger):
         """
         
         if not isinstance(self.model, PeftModel):
-            return self.save_model(path=path, protocol=protocol, **kwargs)
+            return self.save_model(path=path, protocol=protocol, process_exclusion=process_exclusion, **kwargs)
         io_driver = IODriver.from_protocol(protocol)
         io_driver.makedirs(path, exist_ok=True)
         # TODO 支持原 peft 里那样多个 adapter 的保存和加载
         contexts = []
-        named_parameters = {name: param for name, param in self.engine.module.named_parameters() if name in state_dict.keys()}
         state_dict = get_peft_model_state_dict(
-            self.model, adapter_name="default"
+            self.model, adapter_name=adapter_name
         )
-        if env.pp_size == 1:
-            name = "adapter_model.bin"
+        named_parameters = {name: param for name, param in self.engine.module.named_parameters() if any([name.replace(f"{adapter_name}.", "") == k for k in state_dict.keys()])}
+        if adapter_name == "default":
+            name_prefix = "adapter"
         else:
-            name = f"adapter_model_{env.pp_rank}.bin"
+            name_prefix = f"adapter_{adapter_name}"
+        if env.pp_size == 1:
+            name = f"{name_prefix}.bin"
+        else:
+            name = f"{name_prefix}_{env.pp_rank}.bin"
         if is_zero3_enabled(self.config):
-            contexts.append(deepspeed.zero.GatheredParameters(list(state_dict.values())))
+            contexts.append(deepspeed.zero.GatheredParameters(list(named_parameters.values())))
         with ContextManagers(contexts):
             if env.dp_rank == 0 or not is_zero3_enabled(self.config):
-                for key in state_dict.keys():
-                    state_dict[key] = named_parameters[key].data
-                io_driver.save(state_dict, os.path.join(path, name))
+                for key in named_parameters.keys():
+                    state_dict[key.replace(f"{adapter_name}.", "")] = named_parameters[key].data
+                if env.dp_rank == 0 and env.tp_rank == 0:
+                    io_driver.save(state_dict, os.path.join(path, name))
         if env.rank == 0:
             io_driver.save(json.dumps(self.config.peft_config.__dict__), os.path.join(path, "adapter_config.json"))
         
-    def load_peft(self, path: str, process_exclusion: bool = False, **kwargs):...
-    def load_peft(self, path: str, process_exclusion: bool = False,
+    def load_peft(self, path: str, process_exclusion: bool = False, adapter_name="default", **kwargs):...
+    def load_peft(self, path: str, process_exclusion: bool = False, adapter_name="default",
                    protocol: str = "file", **kwargs):
         """
         加载 adapter 部分权重，当未使用 ``peft`` 时，该方法等同于 ``load_model``
@@ -482,8 +491,7 @@ class Trainer(TrainerEventTrigger):
         """
         io_driver = IODriver.from_protocol(protocol)
         if not isinstance(self.model, PeftModel):
-            return self.load_model(path=path, protocol=protocol, **kwargs)
-        state_dict = get_peft_model_state_dict(self.model, adapter_name="default")
+            return self.load_model(path=path, protocol=protocol, process_exclusion=process_exclusion, **kwargs)
         peft_config_dict = json.loads(io_driver.load(os.path.join(path, "adapter_config.json"), mode="j"))
         loaded_peft_config = PeftConfig()
         for key, value in peft_config_dict.items():
@@ -495,15 +503,20 @@ class Trainer(TrainerEventTrigger):
                 f"checkpoint `{path}` is not the current task type"
                 f"{self.config.peft_config.task_type}"
             )
-        if env.pp_size == 1:
-            name = "adapter_model.bin"
+        if adapter_name == "default":
+            name_prefix = "adapter"
         else:
-            name = f"adapter_model_{env.pp_rank}.bin"
+            name_prefix = f"adapter_{adapter_name}"
+        if env.pp_size == 1:
+            name = f"{name_prefix}.bin"
+        else:
+            name = f"{name_prefix}_{env.pp_rank}.bin"
         assert io_driver.exists(os.path.join(path, name)), f"{name} does not exist."
         loaded_state_dict = io_driver.load(os.path.join(path, name), mode="rb")
+        named_parameters = {name: param for name, param in self.engine.module.named_parameters() if any([name.replace(f"{adapter_name}.", "") == k for k in loaded_state_dict.keys()])}
         contexts = []
         if is_zero3_enabled(self.config):
-            contexts.append(deepspeed.zero.GatheredParameters(list(state_dict.values()), modifier_rank=0))
+            contexts.append(deepspeed.zero.GatheredParameters(list(named_parameters.values()), modifier_rank=0))
         with ContextManagers(contexts):
             if env.dp_rank == 0 or not is_zero3_enabled(self.config):
                 set_peft_model_state_dict(self.model, loaded_state_dict,

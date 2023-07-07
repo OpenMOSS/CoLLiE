@@ -119,7 +119,6 @@ class Evaluator:
                 collate_fn=self.collate_fn
             )
             self.eval_steps = len(self.eval_dataloader)
-
         eval_dataloader = self.eval_dataloader
         if dataloader is not None:
             eval_dataloader = dataloader
@@ -129,7 +128,12 @@ class Evaluator:
                 if self.server is not None:
                     self.server.data_provider_handler()
                 self.engine.eval()
+                if isinstance(self.engine.module, PipelineModel):
+                    self.engine.module.forward_type = "eval"
+                if isinstance(self.engine.module, PeftModel) and isinstance(self.engine.module.get_base_model(), PipelineModel):
+                    self.engine.module.get_base_model().forward_type = "eval"
                 with torch.no_grad():
+                    batch['past_key_values'] = None
                     result = self.eval_fn(self, batch)
                 self.metric_wrapper.update(result)
         with self.monitor as item:
@@ -190,6 +194,10 @@ class EvaluatorForGeneration(Evaluator):
     
         :return: 一次验证的结果，为 `Dict` 类型，该结果会被传入 `metric` 的 `update` 方法中
         """
+        if isinstance(evaluator.engine.module, PipelineModel):
+            evaluator.engine.module.forward_type = "generate"
+        if isinstance(evaluator.engine.module, PeftModel) and isinstance(evaluator.engine.module.get_base_model(), PipelineModel):
+            evaluator.engine.module.get_base_model().forward_type = "generate"
         assert evaluator.tokenizer is not None, "You must provide a tokenizer to decode the generated results."
         generated_ids = evaluator.engine.module.generate(**{k: v for k, v in batch.items() if k in ("input_ids", "attention_mask")}, generation_config=evaluator.generation_config)
         prompt_length = batch["input_ids"].shape[1]
