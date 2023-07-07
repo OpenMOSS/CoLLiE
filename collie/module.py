@@ -137,6 +137,7 @@ class GPTLMLoss(torch.nn.Module):
         :param logits: 语言模型的输出
         :param labels: 真实标签
         """
+        print(f"[debug] gptlmloss {logits} label: {labels}")
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous().to(logits.device)
         # Flatten the tokens

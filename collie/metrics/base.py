@@ -64,7 +64,6 @@ class BaseMetric(ABC):
         if self.trainer.config.dp_size > 1:
             group = self.trainer.engine.mpu.get_data_parallel_group()
             for key in result.keys():
-                print(f"[Debug] waiting for gather")
                 if isinstance(result[key], torch.Tensor):
                     gather_list = [torch.zeros_like(result[key]).to(result[key].dtype).to(result[key].device) for _ in range(self.trainer.config.dp_size)]
                     dist.all_gather(gather_list, result[key], group=group)
@@ -73,5 +72,4 @@ class BaseMetric(ABC):
                     gather_list = [None for _ in range(self.trainer.config.dp_size)]
                     dist.all_gather_object(gather_list, result[key], group=group)
                     result[key] = reduce(lambda x, y: list(x) + list(y), gather_list)
-            print(f"[Debug] finish gather")
         return result

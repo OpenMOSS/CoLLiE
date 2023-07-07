@@ -22,7 +22,7 @@ from collie import CollieConfig, setup_ds_engine, PipelineGenerationMixin, Serve
 from transformers import AutoTokenizer, AutoModel, GenerationConfig
 
 config = CollieConfig.from_pretrained("THUDM/chatglm2-6b", trust_remote_code=True)
-config.pp_size = 1
+config.pp_size = 2
 config.tp_size = 2
 tokenizer = AutoTokenizer.from_pretrained("THUDM/chatglm2-6b", trust_remote_code=True)
 
@@ -31,7 +31,7 @@ inputs = tokenizer("[Round {}]\n问：你是谁？\n答：", return_tensors="pt"
 print(inputs)
 # engine, _, _, _ = setup_ds_engine(config, model)
 # model = PipelineGenerationMixin(engine)
-config = GenerationConfig(max_new_tokens=2, eos_token_id=2)
+config = GenerationConfig(max_new_tokens=100, eos_token_id=2)
 model.eval()
 gen_inp = model.generate(inputs=inputs.input_ids.cuda(),
                                       attention_mask=inputs.attention_mask.cuda(),

@@ -249,6 +249,9 @@ class CoreAttention(torch.nn.Module):
             context_layer = context_layer.view(*output_size)
             # [b, np, sq, hn] --> [sq, b, np, hn]
             context_layer = context_layer.permute(2, 0, 1, 3).contiguous()
+            if self.layer_number == 1:
+                print(f"context_layer shape {context_layer.shape}")
+                print(context_layer)
             # [sq, b, np, hn] --> [sq, b, hp]
             new_context_layer_shape = context_layer.size()[:-2] + (self.hidden_size_per_partition // self.config.tp_size,)
             context_layer = context_layer.view(*new_context_layer_shape)
@@ -283,7 +286,7 @@ class ChatGLM2Layer(nn.Module):
                 config.hidden_size,
                 gather_output=False,
                 init_method=lambda x: x,
-                bias=config.add_bias_linear or config.add_qkv_bias
+                bias=config.add_bias_linear or config.add_qkv_bias,
             ),
             "key_layer": ColumnParallelLinearWithoutBias(
                 config.hidden_size,
@@ -299,13 +302,6 @@ class ChatGLM2Layer(nn.Module):
                 init_method=lambda x: x,
                 bias=config.add_bias_linear or config.add_qkv_bias
             ),
-            # "query_key_value": ColumnParallelLinearWithoutBias(
-            #     config.hidden_size,
-            #     self.qkv_hidden_size,
-            #     gather_output=False,
-            #     init_method=lambda x: x,
-            #     bias=config.add_bias_linear or config.add_qkv_bias
-            # ),
             "dense": RowParallelLinearWithoutBias(
                 config.hidden_size,
                 config.hidden_size,
@@ -316,9 +312,16 @@ class ChatGLM2Layer(nn.Module):
         })
         # Project to 4h. If using swiglu double the output width, see https://arxiv.org/pdf/2002.05202.pdf
         self.mlp = nn.ModuleDict({
-            "dense_h_to_4h": ColumnParallelLinearWithoutBias(
+            "dense_h_to_4h_up_proj": ColumnParallelLinearWithoutBias(
                 config.hidden_size,
-                config.ffn_hidden_size * 2,
+                config.ffn_hidden_size,
+                gather_output=False,
+                init_method=lambda x: x,
+                bias=config.add_bias_linear
+            ),
+            "dense_h_to_4h_down_proj": ColumnParallelLinearWithoutBias(
+                config.hidden_size,
+                config.ffn_hidden_size,
                 gather_output=False,
                 init_method=lambda x: x,
                 bias=config.add_bias_linear
@@ -372,7 +375,7 @@ class ChatGLM2Layer(nn.Module):
     
     def _forward(self, hidden_states: torch.Tensor, attention_mask, rotary_pos_emb):
         if self.layer_id == 1:
-            print("Debug: attention_mask", attention_mask)
+            print("Debug: attention_mask", attention_mask, rotary_pos_emb.shape)
         # hidden_states: [s, b, h]
         assert hidden_states.ndim == 3, f"hidden_states.shape must be (S, B, H), but got {hidden_states.shape}"
 
@@ -381,41 +384,13 @@ class ChatGLM2Layer(nn.Module):
         
         # Attention heads [sq, b, h] --> [sq, b, (np * 3 * hn)]
         if self.multi_query_attention:
-            # import pdb
-            # pdb.set_trace()
             query_layer = self.attention["query_layer"](layernorm_output)
             key_layer = self.attention["key_layer"](layernorm_output)
             value_layer = self.attention["value_layer"](layernorm_output)
-            # if self.layer_id == 1:
-            #     print("query weight", self.attention["query_layer"].weight.shape, self.attention["query_layer"].weight)
-            #     print("query .bias", self.attention["query_layer"].bias.shape, self.attention["query_layer"].bias)
-            #     print("cal", hidden_states.matmul(self.attention["query_layer"].weight.t()) + self.attention["query_layer"].bias)
-            #     print("hidden_state", hidden_states.shape, hidden_states)
-            #     print("query_layer shape", query_layer, query_layer.shape)
-            #     print(key_layer)
-            #     print(value_layer)
-            # (query_layer, key_layer, value_layer) = mixed_x_layer.split(
-            #     [
-            #         self.num_attention_heads_per_partition * self.hidden_size_per_attention_head,
-            #         self.num_multi_query_groups_per_partition * self.hidden_size_per_attention_head,
-            #         self.num_multi_query_groups_per_partition * self.hidden_size_per_attention_head,
-            #     ],
-            #     dim=-1,
-            # )
             head_dim = self.config.hidden_size // self.config.num_attention_heads
             query_layer, key_layer, value_layer = rearrange(query_layer, "b n (h d) -> b n h d", d=head_dim), \
             rearrange(key_layer, "b n (h d) -> b n h d", d=head_dim), \
             rearrange(value_layer, "b n (h d) -> b n h d", d=head_dim)
-            # query_layer = query_layer.view(
-            #     query_layer.size()[:-1] + (self.num_attention_heads_per_partition // self.config.tp_size, self.hidden_size_per_attention_head)
-            # )
-            # key_layer = key_layer.view(
-            #     key_layer.size()[:-1] + (self.num_multi_query_groups_per_partition // self.config.tp_size, self.hidden_size_per_attention_head)
-            # )
-            # value_layer = value_layer.view(
-            #     value_layer.size()[:-1]
-            #     + (self.num_multi_query_groups_per_partition// self.config.tp_size, self.hidden_size_per_attention_head)
-            # )
         else:
             new_tensor_shape = mixed_x_layer.size()[:-1] + \
                                (self.num_attention_heads_per_partition,
@@ -424,8 +399,8 @@ class ChatGLM2Layer(nn.Module):
 
             # [sq, b, np, 3 * hn] --> 3 [sq, b, np, hn]
             (query_layer, key_layer, value_layer) = split_tensor_along_last_dim(mixed_x_layer, 3)
-        # if self.layer_id == 1:
-        #     print("query_layer shape", query_layer, query_layer.shape)
+        
+           
         # apply relative positional encoding (rotary embedding)
         if rotary_pos_emb is not None:
             rotary_pos_emb = rotary_pos_emb.to(query_layer.device)
@@ -444,8 +419,6 @@ class ChatGLM2Layer(nn.Module):
             self.past_key_values = (key_layer, value_layer)
         else:
             self.past_key_values = None
-        #print(query_layer.shape, rotary_pos_emb.shape)  
-        
 
         # Multi query attention
         if self.multi_query_attention:
@@ -473,6 +446,9 @@ class ChatGLM2Layer(nn.Module):
         #print("Debug context_layer shape {}".format(context_layer.shape))
         # context_layer = context_layer[:, start_pos:, :]
         attention_output = self.attention["dense"](context_layer)
+        if self.layer_id == 1:
+            print(f"attention output shape {attention_output.shape}")
+            print(attention_output)
         # Residual connection.
         if self.apply_residual_connection_post_layernorm:
             residual = layernorm_output
@@ -484,9 +460,20 @@ class ChatGLM2Layer(nn.Module):
         # Layer norm post the self attention.
         layernorm_output = self.post_attention_layernorm(layernorm_input)
         # MLP.
-        intermediate_parallel = self.mlp["dense_h_to_4h"](layernorm_output)
-        intermediate_parallel = self.activation_func(intermediate_parallel)
-        mlp_output = self.mlp["dense_4h_to_h"](intermediate_parallel)
+        # if self.layer_id == 1:
+        #     # import pdb; pdb.set_trace()
+        #     from collie import env
+        #     if env.rank == 1:
+        #         import pdb; pdb.set_trace()
+        up_proj = self.mlp["dense_h_to_4h_up_proj"](layernorm_output)
+        down_proj = self.mlp["dense_h_to_4h_down_proj"](layernorm_output)
+        activation_proj = F.silu(up_proj) * down_proj
+        
+        # intermediate_parallel = self.activation_func(intermediate_parallel)
+        print("dense_h_to_4h", up_proj.shape)
+        print("dense_4h_to_h", down_proj.shape)
+        # print(intermediate_parallel.shape)
+        mlp_output = self.mlp["dense_4h_to_h"](activation_proj)
         #print("Debug: mlp_output", mlp_output.shape)
         # Second residual connection.
         if self.apply_residual_connection_post_layernorm:
@@ -621,12 +608,11 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
         rotary_dim = (
             config.hidden_size // config.num_attention_heads if config.kv_channels is None else config.kv_channels
         )
-        rotary_dim = rotary_dim // config.tp_size
+        # rotary_dim = rotary_dim // config.tp_size
         print("Debug rotary_dim", rotary_dim, config.hidden_size)
         rotary_pos_emb = RotaryEmbedding(rotary_dim // 2, original_impl=config.original_rope,
                                               dtype=config.torch_dtype)
         rotary_pos_emb = rotary_pos_emb(seq_length)
-        print("rotary", rotary_pos_emb.shape)
         #print("rotary_pos", rotary_pos_emb.shape)
         if position_ids is not None:
             rotary_pos_emb = rotary_pos_emb[position_ids]
@@ -854,6 +840,17 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
                                     part_state_dict[query_layer_name] = query_layer_bias
                                     part_state_dict[key_layer_name] = key_layer_bias
                                     part_state_dict[value_layer_name] = value_layer_bias
+                                # 这里手动将 mlp 的 dense_h_to_4h.weight 解开
+                                elif 'mlp.dense_h_to_4h.weight' in key:
+                                    (dense_h_to_4h_up_proj, dense_h_to_4h_down_proj) = key_weights.split([
+                                        config.ffn_hidden_size,
+                                        config.ffn_hidden_size
+                                    ], dim=0)
+                                    key = key.replace("transformer.encoder.", "")
+                                    dense_h_to_4h_up_proj_name = key.replace("dense_h_to_4h", "dense_h_to_4h_up_proj")
+                                    dense_h_to_4h_down_proj_name = key.replace("dense_h_to_4h", "dense_h_to_4h_down_proj")
+                                    part_state_dict[dense_h_to_4h_down_proj_name] = dense_h_to_4h_down_proj
+                                    part_state_dict[dense_h_to_4h_up_proj_name] = dense_h_to_4h_up_proj
                                 else:
                                     part_state_dict[key.replace("transformer.encoder.", "").replace("self_attention", "attention")] = key_weights
                             else:
@@ -897,32 +894,25 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
                             state_dict[f"lm_head.weight"] = state_dict.pop(key)
                         if key.endswith("rotary_pos_emb.inv_freq"):
                             state_dict.pop(key)
-                print(state_dict.keys())      
                 # 根据用户配置的新的 tp size 进行分割
                 for key in list(state_dict.keys()):
-                    if key.endswith("query_layer.weight") \
-                        or key.endswith("query_layer.bias") \
-                        or key.endswith("key_layer.weight") \
-                        or key.endswith("key_layer.bias") \
-                        or key.endswith("value_layer.weight") \
-                        or key.endswith("value_layer.bias") \
-                            or key.endswith("dense_h_to_4h.weight") \
-                                    or key.endswith("word_embeddings.weight") \
-                                        or key.endswith("lm_head.weight"):
-                                            tensor = list(torch.chunk(state_dict[key], config.tp_size, dim=0))[int(os.environ.get("COLLIE_TP_RANK", "0"))].detach().clone()
-                                            del state_dict[key]
-                                            if process_exclusion:
-                                                # CPU 内存回收（速度很慢）
-                                                gc.collect()
-                                            state_dict[key] = tensor
-                    elif key.endswith("dense.weight") \
-                        or key.endswith("dense_4h_to_h.weight"):
-                            tensor = list(torch.chunk(state_dict[key], config.tp_size, dim=1))[int(os.environ.get("COLLIE_TP_RANK", "0"))].detach().clone()
-                            del state_dict[key]
-                            if process_exclusion:
-                                # CPU 内存回收（速度很慢）
-                                gc.collect()
-                            state_dict[key] = tensor
+                    need_coloumn_cut = ["query_layer.weight", "query_layer.bias", "key_layer.weight", "key_layer.bias", "value_layer.weight", "value_layer.bias", "word_embeddings.weight",
+                                        "lm_head.weight", "dense_h_to_4h_up_proj.weight", "dense_h_to_4h_down_proj.weight"]
+                    need_row_cut = ["dense.weight", "dense_4h_to_h.weight"]
+                    if any([key.endswith(need_key) for need_key in need_coloumn_cut]):
+                        tensor = list(torch.chunk(state_dict[key], config.tp_size, dim=0))[int(os.environ.get("COLLIE_TP_RANK", "0"))].detach().clone()
+                        del state_dict[key]
+                        if process_exclusion:
+                            # CPU 内存回收（速度很慢）
+                            gc.collect()
+                        state_dict[key] = tensor
+                    elif any([key.endswith(need_key) for need_key in need_row_cut]):
+                        tensor = list(torch.chunk(state_dict[key], config.tp_size, dim=1))[int(os.environ.get("COLLIE_TP_RANK", "0"))].detach().clone()
+                        del state_dict[key]
+                        if process_exclusion:
+                            # CPU 内存回收（速度很慢）
+                            gc.collect()
+                        state_dict[key] = tensor
             if dist.is_initialized() and process_exclusion:
                 # 如果选择了进程互斥，那么本次循环中不需要加载权重的进程需等待
                 dist.barrier()
