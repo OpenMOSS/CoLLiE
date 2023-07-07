@@ -119,7 +119,6 @@ class Evaluator:
                 collate_fn=self.collate_fn
             )
             self.eval_steps = len(self.eval_dataloader)
-
         eval_dataloader = self.eval_dataloader
         if dataloader is not None:
             eval_dataloader = dataloader

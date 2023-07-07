@@ -253,11 +253,14 @@ class LlamaForCausalLM(CollieModelForCausalLM):
             self.lm_head.weight = self.embed_tokens.weight
         self.main_input_name = "input_ids"
 
-    def forward(self, input_ids: torch.Tensor, attention_mask: Optional[torch.Tensor] = None, **kwargs):
+    def forward(self, input_ids: Optional[torch.Tensor] = None, attention_mask: Optional[torch.Tensor] = None, **kwargs):
         inputs = {"input_ids": input_ids}
         if attention_mask is not None:
             inputs["attention_mask"] = attention_mask
-        inputs["hidden_states"] = self.embed_tokens(inputs["input_ids"])
+        if input_ids == None:
+            inputs["hidden_states"] = kwargs['inputs_embeds']
+        else:
+            inputs["hidden_states"] = self.embed_tokens(inputs["input_ids"])
         all_hidden_states = ()
         for layer in self.layers:
             all_hidden_states += (inputs["hidden_states"],)
@@ -284,7 +287,7 @@ class LlamaForCausalLM(CollieModelForCausalLM):
         else:
             input_ids = input_ids[:, -1].unsqueeze(-1)
             self._set_past_key_values(self.layers, past_key_values)
-        return {"input_ids": input_ids, "attention_mask": attention_mask}
+        return {"input_ids": input_ids, "attention_mask": attention_mask, "past_key_values": past_key_values}
 
     def clean(self):
         self._clean_hidden_states([*self.layers, self.lm_head])
