@@ -2,6 +2,12 @@ table.colwidths-auto td {
     width: 50%
 }
 
+article.pytorch-article .wy-table-responsive {
+  overflow: auto;
+  font-size: 80%
+  margin-bottom: 0rem;
+}
+
 .header-logo {
     background-image: url("../images/logo.svg");
     background-size: 300px 200px;
