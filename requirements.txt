@@ -14,7 +14,6 @@ google
 peft
 wandb
 pandas
-bullet
 psutil
 accelerate>=0.20.3
 bitsandbytes>=0.39.0

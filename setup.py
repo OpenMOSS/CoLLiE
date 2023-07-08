@@ -14,7 +14,7 @@ setup(
     python_requires=">=3.8",
     entry_points={
         "console_scripts": [
-            "collie = collie.commands.collie_cli:main",
+            "collie = collie_cli.collie_cli:main",
         ],
     },
 )
