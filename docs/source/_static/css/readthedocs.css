@@ -5,13 +5,14 @@ table.colwidths-auto td {
 article.pytorch-article .wy-table-responsive {
   overflow: auto;
   font-size: 80%
-  margin-bottom: 0rem;
+  margin-bottom: 0rem !important;
 }
 article.pytorch-article .wy-table-responsive table thead tr {
   border-bottom: 2px solid #6c6c6d;
 }
 article.pytorch-article .wy-table-responsive table thead th {
   /* text-align: center; */
+  line-height: auto !important;
   padding-left: 0.9375rem;
   padding-right: 0.9375rem;
 }
@@ -23,6 +24,7 @@ article.pytorch-article .wy-table-responsive table tbody td {
   white-space: normal;
   padding: 0.9375rem;
   font-size: 1rem;
+  line-height: 1.375rem;
   border-bottom: #e4e4e4 1px solid;
 }
 article.pytorch-article .wy-table-responsive table tbody td .pre {
