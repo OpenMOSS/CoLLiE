@@ -7,6 +7,32 @@ article.pytorch-article .wy-table-responsive {
   font-size: 80%
   margin-bottom: 0rem;
 }
+article.pytorch-article .wy-table-responsive table thead tr {
+  border-bottom: 2px solid #6c6c6d;
+}
+article.pytorch-article .wy-table-responsive table thead th {
+  /* text-align: center; */
+  padding-left: 0.9375rem;
+  padding-right: 0.9375rem;
+}
+article.pytorch-article .wy-table-responsive table tbody .row-odd {
+  background-color: #f3f4f7;
+}
+article.pytorch-article .wy-table-responsive table tbody td {
+  color: #6c6c6d;
+  white-space: normal;
+  padding: 0.9375rem;
+  font-size: 1rem;
+  border-bottom: #e4e4e4 1px solid;
+}
+article.pytorch-article .wy-table-responsive table tbody td .pre {
+  background: #ffffff;
+  color: #2980b9;
+  font-size: 87.5%;
+}
+article.pytorch-article .wy-table-responsive table tbody td code {
+  font-size: 87.5%;
+}
 
 .header-logo {
     background-image: url("../images/logo.svg");
