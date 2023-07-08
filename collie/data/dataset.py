@@ -1,3 +1,5 @@
+"""CoLLie 中预定义的数据结构
+"""
 from torch.utils.data import Dataset
 import torch
 from torch.utils.data.dataset import Dataset
@@ -14,7 +16,11 @@ import numpy as np
 from functools import reduce
 from typing import Optional, Dict, List, Sequence, Tuple
 
-
+__all__ = [
+    'CollieDatasetForTraining',
+    'CollieDatasetForGeneration',
+    'CollieDatasetForClassification'
+]
 class _ShardContainer(list):
     def __init__(self, path, shuffle: bool = False, seed: int = 1024) -> None:
         list.__init__([])
@@ -216,6 +222,19 @@ class CollieDatasetForTraining(Dataset):
 
 
 class CollieDatasetForGeneration(CollieDatasetForTraining):
+    """ **CoLLie** 中的生成数据集，主要用于数据生成或者与生成相关的检验
+    须搭配 :class:`~collie.controller.evaluator.EvaluatorForGeneration` 使用。需提供的数据格式形似:
+
+        .. code-block::
+
+            [
+                {
+                    "text": "这是prompt部分的文本",
+                    "target": "目标文本" # 需要计算 bleu, rouge 值时需要加上这个字段
+                },
+                ...
+            ]
+    """
     def __getitem__(self, index) -> Tuple:
         if index > len(self):
             raise IndexError("Index out of range.")

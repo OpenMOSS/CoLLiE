@@ -169,18 +169,19 @@ class LlamaLayer(nn.Module):
         query, key, value = rearrange(query, "b n (h d) -> b n h d", d=head_dim), \
             rearrange(key, "b n (h d) -> b n h d", d=head_dim), \
             rearrange(value, "b n (h d) -> b n h d", d=head_dim)
-        if not self.training and self.past_key_values is not None and self.use_cache:
+        if self.past_key_values is not None and self.use_cache:
             start_pos = self.past_key_values[0].shape[1]
         else:
             self.past_key_values = None
             start_pos = 0
         query, key = self.self_attn["rotary_emb"](query, key, seq_len, start_pos)
-        if not self.training and self.use_cache:
+        if self.use_cache:
             if self.past_key_values is not None:
                 query = torch.cat([self.past_key_values[0], query], dim=1)
                 key = torch.cat([self.past_key_values[0], key], dim=1)
                 value = torch.cat([self.past_key_values[1], value], dim=1)
-            self.past_key_values = [key, value]
+            if not self.training:
+                self.past_key_values = [key, value]
         attention_mask = attention_mask if attention_mask is not None else torch.ones((query.shape[0], query.shape[1])).to(hidden_states.device)
         if self.config.use_flash:
             assert FlashAttention is not None, \
@@ -253,11 +254,14 @@ class LlamaForCausalLM(CollieModelForCausalLM):
             self.lm_head.weight = self.embed_tokens.weight
         self.main_input_name = "input_ids"
 
-    def forward(self, input_ids: torch.Tensor, attention_mask: Optional[torch.Tensor] = None, **kwargs):
+    def forward(self, input_ids: Optional[torch.Tensor] = None, attention_mask: Optional[torch.Tensor] = None, **kwargs):
         inputs = {"input_ids": input_ids}
         if attention_mask is not None:
             inputs["attention_mask"] = attention_mask
-        inputs["hidden_states"] = self.embed_tokens(inputs["input_ids"])
+        if input_ids == None:
+            inputs["hidden_states"] = kwargs['inputs_embeds']
+        else:
+            inputs["hidden_states"] = self.embed_tokens(inputs["input_ids"])
         all_hidden_states = ()
         for layer in self.layers:
             all_hidden_states += (inputs["hidden_states"],)
@@ -284,7 +288,7 @@ class LlamaForCausalLM(CollieModelForCausalLM):
         else:
             input_ids = input_ids[:, -1].unsqueeze(-1)
             self._set_past_key_values(self.layers, past_key_values)
-        return {"input_ids": input_ids, "attention_mask": attention_mask}
+        return {"input_ids": input_ids, "attention_mask": attention_mask, "past_key_values": past_key_values}
 
     def clean(self):
         self._clean_hidden_states([*self.layers, self.lm_head])
@@ -515,19 +519,19 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                                 state_dict.pop(key)
                 # 根据用户配置的新的 tp size 进行分割
                 for key in list(state_dict.keys()):
-                    if key.endswith("q_proj.weight") \
-                        or key.endswith("k_proj.weight") \
-                            or key.endswith("v_proj.weight") \
-                                or key.endswith("gate_proj.weight") \
-                                    or key.endswith("up_proj.weight") \
-                                        or key.endswith("embed_tokens.weight") \
-                                            or key.endswith("lm_head.weight"):
-                                                tensor = list(torch.chunk(state_dict[key], config.tp_size, dim=0))[int(os.environ.get("COLLIE_TP_RANK", "0"))].detach().clone()
-                                                del state_dict[key]
-                                                if process_exclusion:
-                                                    # CPU 内存回收（速度很慢）
-                                                    gc.collect()
-                                                state_dict[key] = tensor
+                    filte_list = ["q_proj.weight", "q_proj.weight", "k_proj.weight", "v_proj.weight", "gate_proj.weight", "up_proj.weight", "embed_tokens.weight", "lm_head.weight"]
+                    need_split = any([key.endswith(filte) for filte in filte_list])
+                    if env.pp_size > 1:
+                        # embedding 层和 lm_head 都需要切
+                        need_split = need_split or int(key.split(".")[0]) == max(parts) - 1
+                        need_split = need_split or int(key.split(".")[0]) == min(parts)
+                    if need_split:
+                        tensor = list(torch.chunk(state_dict[key], config.tp_size, dim=0))[int(os.environ.get("COLLIE_TP_RANK", "0"))].detach().clone()
+                        del state_dict[key]
+                        if process_exclusion:
+                            # CPU 内存回收（速度很慢）
+                            gc.collect()
+                        state_dict[key] = tensor
                     elif key.endswith("o_proj.weight") \
                         or key.endswith("down_proj.weight"):
                             tensor = list(torch.chunk(state_dict[key], config.tp_size, dim=1))[int(os.environ.get("COLLIE_TP_RANK", "0"))].detach().clone()
@@ -599,20 +603,21 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                             tensor_list = [torch.zeros_like(state_dict[key]).to(state_dict[key].dtype).cuda() for _ in range(config.tp_size)]
                         dist.gather(state_dict[key].cuda(), dst=dst, gather_list=tensor_list, group=env.tp_group)
                         if env.tp_rank == 0:
-                            if key.endswith("q_proj.weight") \
-                                or key.endswith("k_proj.weight") \
-                                    or key.endswith("v_proj.weight") \
-                                        or key.endswith("gate_proj.weight") \
-                                            or key.endswith("up_proj.weight") \
-                                                or key.endswith("embed_tokens.weight") \
-                                                    or key.endswith("lm_head.weight"):
-                                                        state_dict[key] = torch.cat(tensor_list, dim=0).detach().clone().to(device)
-                                                        if key.endswith("q_proj.weight")  or key.endswith("k_proj.weight"):
-                                                            state_dict[key] = reshape_wq_wk(state_dict[key])
-                                                        del tensor_list
-                                                        if process_exclusion:
-                                                            # CPU 内存回收（速度很慢）
-                                                            gc.collect()
+                            filte_list = ["q_proj.weight", "q_proj.weight", "k_proj.weight", "v_proj.weight", "gate_proj.weight", "up_proj.weight", "embed_tokens.weight", "lm_head.weight"]
+                            need_split = any([key.endswith(filte) for filte in filte_list])
+                            if env.pp_size > 1:
+                                # embedding 层和 lm_head 都需要切
+                                need_split = need_split or int(key.split(".")[0]) == max(parts) - 1
+                                need_split = need_split or int(key.split(".")[0]) == min(parts)
+                            if need_split:
+                                state_dict[key] = torch.cat(tensor_list, dim=0).detach().clone().to(device)
+                                if key.endswith("q_proj.weight")  or key.endswith("k_proj.weight"):
+                                    state_dict[key] = reshape_wq_wk(state_dict[key])
+                                del tensor_list
+                                if process_exclusion:
+                                    # CPU 内存回收（速度很慢）
+                                    gc.collect()
+                                                        
                             elif key.endswith("o_proj.weight") \
                                 or key.endswith("down_proj.weight"):
                                     state_dict[key] = torch.cat(tensor_list, dim=1).detach().clone().to(device)
@@ -620,6 +625,8 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                                     if process_exclusion:
                                         # CPU 内存回收（速度很慢）
                                         gc.collect()
+                            if not key.startswith("lm_head.weight"):
+                                state_dict[f"model.{key}"] = state_dict.pop(key)
                     if env.tp_rank == 0:
                         # Save gathered weights
                         if env.is_pipeline:
