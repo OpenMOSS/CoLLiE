@@ -20,6 +20,16 @@ article.pytorch-article .wy-table-responsive table tbody td {
   border-bottom: #e4e4e4 1px solid;
   vertical-align: middle;
 }
+article.pytorch-article .wy-table-responsive table th p{
+  margin-bottom: 0.5rem;
+}
+article.pytorch-article .wy-table-responsive table td p{
+  margin-top: 0.25rem;
+  margin-bottom: 0.25rem;
+}
+article.pytorch-article .wy-table-responsive table{
+  margin-bottom: 1rem;
+}
 
 .header-logo {
     background-image: url("../images/logo.svg");
