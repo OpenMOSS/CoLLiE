@@ -273,7 +273,7 @@ class EvaluatorForClassfication(EvaluatorForPerplexity):
         for idx, input_ids in enumerate(batch["input_ids"]):
             assert isinstance(input_ids, torch.Tensor), "input_ids must be a list of torch.Tensor for classification task."
             inputs = {"input_ids": input_ids.cuda(), "labels": batch["labels"][idx].cuda(), "attention_mask": batch["attention_mask"][idx].cuda(), 
-                      **{key: value.cuda() for key, value in batch.items() if key not in ("input_ids", "attention_mask", "labels")}}
+                      **{key: value.cuda() for key, value in batch.items() if key not in ("input_ids", "attention_mask", "labels") and torch.is_tensor(value)}}
             # concat prompt labels for p-tuning
             if evaluator.config.peft_config and evaluator.config.peft_config.peft_type in ["PROMPT_TUNING", "P_TUNING"]:
                 batch_size = input_ids.shape[0]

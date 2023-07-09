@@ -4,6 +4,7 @@ import torch
 import inspect
 import importlib
 from abc import abstractmethod
+from types import MethodType
 from typing import Union, Optional, Sequence, List
 from huggingface_hub import snapshot_download
 
