@@ -790,7 +790,10 @@ class ColliePipelineEngine(PipelineEngine):
             self.timers('pipe_recv_input').start()
 
         recvd = None
-
+        import os
+        import pdb
+        if os.environ.get("Rank", 0) == 0:
+            pdb.set_trace()
         # Allocate the buffer if necessary
         if self.pipe_recv_buf is None:
             self.pipe_recv_buf = self._recv_tensor_meta(self.prev_stage)
@@ -823,6 +826,7 @@ class ColliePipelineEngine(PipelineEngine):
                     buffer = self.meta_buffer
                 # TODO 是否有必要？
                 recv_key = self._recv_string(self.prev_stage)
+                print(f"[Debug] {self.pipe_recv_buf.keys()} {recv_key} {key}")
                 assert key == recv_key, f"{key}, {recv_key}"
                 p2p.recv(tensor, self.prev_stage)
                 recvd[key] = tensor.clone().detach()

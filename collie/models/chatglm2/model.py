@@ -14,7 +14,7 @@ from torch.nn import LayerNorm
 from einops import rearrange
 from megatron.core import tensor_parallel
 from megatron.core import parallel_state
-from deepspeed.pipe import LayerSpec, TiedLayerSpec
+from deepspeed.pipe import LayerSpec
 try:
     from flash_attn.flash_attention import FlashAttention
 except ModuleNotFoundError:
@@ -190,8 +190,6 @@ class CoreAttention(torch.nn.Module):
                 output_size[0] * output_size[1], output_size[2], output_size[3], dtype=query_layer.dtype,
                 device=query_layer.device
             )
-            # #print("Debug: query_layer ", query_layer.shape, query_layer)
-            #print("Debug: key_query ", key_layer.shape)
             # Raw attention scores. [b * np, sq, sk]
             matmul_result = torch.baddbmm(
                 matmul_input_buffer,
@@ -200,29 +198,23 @@ class CoreAttention(torch.nn.Module):
                 beta=0.0,
                 alpha=(1.0 / self.norm_factor),
             )
-            #print("Debug: matmul_result ", matmul_result.shape)
             # change view to [b, np, sq, sk]
             attention_scores = matmul_result.view(*output_size)
 
             # ===========================
             # Attention probs and dropout
             # ===========================
-            # if self.layer_number == 1:
-            #     print("Debug core attention_mask", attention_mask)
             # attention scores and attention mask [b, np, sq, sk]
             if self.attention_softmax_in_fp32:
                 attention_scores = attention_scores.float()
             if self.coeff is not None:
                 attention_scores = attention_scores * self.coeff
-            # #print("Debug: attention_scores ",attention_scores)
             if attention_mask is None and attention_scores.shape[2] == attention_scores.shape[3]:
                 attention_mask = torch.ones(output_size[0], 1, output_size[2], output_size[3],
                                             device=attention_scores.device, dtype=torch.bool)
                 attention_mask.tril_()
                 attention_mask = ~attention_mask
-            # if self.layer_number == 1:
-            #     print("Debug core attention_mask1", attention_mask)
-            #     print("Debug core attention_scores", attention_scores.shape)
+
             if attention_mask is not None:
                 attention_scores = attention_scores.masked_fill(attention_mask, float("-inf"))
             attention_probs = F.softmax(attention_scores, dim=-1)
@@ -249,9 +241,6 @@ class CoreAttention(torch.nn.Module):
             context_layer = context_layer.view(*output_size)
             # [b, np, sq, hn] --> [sq, b, np, hn]
             context_layer = context_layer.permute(2, 0, 1, 3).contiguous()
-            if self.layer_number == 1:
-                print(f"context_layer shape {context_layer.shape}")
-                print(context_layer)
             # [sq, b, np, hn] --> [sq, b, hp]
             new_context_layer_shape = context_layer.size()[:-2] + (self.hidden_size_per_partition // self.config.tp_size,)
             context_layer = context_layer.view(*new_context_layer_shape)
@@ -374,8 +363,6 @@ class ChatGLM2Layer(nn.Module):
         return full_attention_mask
     
     def _forward(self, hidden_states: torch.Tensor, attention_mask, rotary_pos_emb):
-        if self.layer_id == 1:
-            print("Debug: attention_mask", attention_mask, rotary_pos_emb.shape)
         # hidden_states: [s, b, h]
         assert hidden_states.ndim == 3, f"hidden_states.shape must be (S, B, H), but got {hidden_states.shape}"
 
@@ -409,10 +396,8 @@ class ChatGLM2Layer(nn.Module):
         
         # adjust key and value for inference
         if not self.training and self.use_cache:
-            #print("Debug: past_key_values", key_layer.shape, value_layer.shape, query_layer.shape)
             if self.past_key_values is not None:
                 cache_k, cache_v = self.past_key_values
-                #print("past_key_values shape", cache_k.shape, cache_v.shape, query_layer.shape, key_layer.shape, value_layer.shape)
                 # query_layer = torch.cat([cache_k, query_layer], dim=0)
                 key_layer = torch.cat((cache_k, key_layer), dim=0)
                 value_layer = torch.cat((cache_v, value_layer), dim=0)
@@ -443,12 +428,8 @@ class ChatGLM2Layer(nn.Module):
         # =================
         # Output. [sq, b, h]
         # =================
-        #print("Debug context_layer shape {}".format(context_layer.shape))
         # context_layer = context_layer[:, start_pos:, :]
         attention_output = self.attention["dense"](context_layer)
-        if self.layer_id == 1:
-            print(f"attention output shape {attention_output.shape}")
-            print(attention_output)
         # Residual connection.
         if self.apply_residual_connection_post_layernorm:
             residual = layernorm_output
@@ -460,21 +441,12 @@ class ChatGLM2Layer(nn.Module):
         # Layer norm post the self attention.
         layernorm_output = self.post_attention_layernorm(layernorm_input)
         # MLP.
-        # if self.layer_id == 1:
-        #     # import pdb; pdb.set_trace()
-        #     from collie import env
-        #     if env.rank == 1:
-        #         import pdb; pdb.set_trace()
         up_proj = self.mlp["dense_h_to_4h_up_proj"](layernorm_output)
         down_proj = self.mlp["dense_h_to_4h_down_proj"](layernorm_output)
         activation_proj = F.silu(up_proj) * down_proj
         
         # intermediate_parallel = self.activation_func(intermediate_parallel)
-        print("dense_h_to_4h", up_proj.shape)
-        print("dense_4h_to_h", down_proj.shape)
-        # print(intermediate_parallel.shape)
         mlp_output = self.mlp["dense_4h_to_h"](activation_proj)
-        #print("Debug: mlp_output", mlp_output.shape)
         # Second residual connection.
         if self.apply_residual_connection_post_layernorm:
             residual = layernorm_output
@@ -487,11 +459,7 @@ class ChatGLM2Layer(nn.Module):
         return output
     
     def forward(self, inputs: dict):
-        # if self.layer_id < 2:
-        #     print("Debug: hidden states ", inputs["hidden_states"])
-        #     print("attention_mask", inputs.get("attention_mask"))
-        if self.layer_id == 1:
-            print("ChatGLM2Layer.past", self.use_cache, self.training)
+        print(f"[Debug] {inputs.keys()}")
         inputs["rotary_pos_emb"] = inputs["rotary_pos_emb"].to(inputs["hidden_states"].device)
         # 在第一层输入改变 attention_mask
         if self.layer_id == 1:
@@ -502,7 +470,7 @@ class ChatGLM2Layer(nn.Module):
                 else:
                     inputs.pop("attention_mask")
             else:
-                inputs["attention_mask"] = inputs["full_attention_mask"]
+                attention_mask = inputs["full_attention_mask"]
                 inputs.pop("full_attention_mask")
         # Data format change to avoid explicit tranposes : [b s h] --> [s b h].
         inputs["hidden_states"] = inputs["hidden_states"].transpose(0, 1).contiguous()
@@ -566,9 +534,9 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
             if (attention_mask is not None and not attention_mask.all()) or (past_key_values and seq_length != 1):
                 full_attention_mask = self.get_masks(input_ids, past_key_values, padding_mask=attention_mask)
         
-        inputs["attention_mask"] = full_attention_mask
-        
-        
+        if full_attention_mask is not None:
+            inputs["attention_mask"] = full_attention_mask
+
         all_hidden_states = ()
         for layer in self.layers:
             all_hidden_states += (inputs["hidden_states"],)
@@ -609,11 +577,9 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
             config.hidden_size // config.num_attention_heads if config.kv_channels is None else config.kv_channels
         )
         # rotary_dim = rotary_dim // config.tp_size
-        print("Debug rotary_dim", rotary_dim, config.hidden_size)
         rotary_pos_emb = RotaryEmbedding(rotary_dim // 2, original_impl=config.original_rope,
                                               dtype=config.torch_dtype)
         rotary_pos_emb = rotary_pos_emb(seq_length)
-        #print("rotary_pos", rotary_pos_emb.shape)
         if position_ids is not None:
             rotary_pos_emb = rotary_pos_emb[position_ids]
         else:
@@ -623,9 +589,9 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
         return rotary_pos_emb
     
     @staticmethod
-    def _get_position_ids(input_ids: torch.Tensor, past_position_id):
+    def _get_position_ids(input_ids: torch.Tensor, past_position_id):  
         if past_position_id is not None:
-            pre_seq_len = past_position_id.shape[1]
+            pre_seq_len = past_position_id[0][-1] + 1
         else:
             pre_seq_len = 0
         batch_size, seq_length = input_ids.shape
@@ -680,7 +646,7 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
     def clean(self):
         self._clean_hidden_states([*self.layers, self.lm_head])
         # 别忘了清理 word_embeddings 里的 past_position_ids
-        self._clean_past_key_values([*self.layers, self.word_embeddings])
+        self._clean_past_key_values(self.layers)
         self._set_use_cache(self.layers, False)
         
     @classmethod
@@ -813,9 +779,6 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
                                         ],
                                         dim=0,
                                     )
-                                    # print(key_weights)
-                                    # print(query_layer)
-                                    # print(value_layer)
                                     key = key.replace("transformer.encoder.", "").replace("self_attention", "attention")
                                     query_layer_name = key.replace("query_key_value", "query_layer")
                                     key_layer_name = key.replace("query_key_value", "key_layer")
@@ -894,19 +857,27 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
                             state_dict[f"lm_head.weight"] = state_dict.pop(key)
                         if key.endswith("rotary_pos_emb.inv_freq"):
                             state_dict.pop(key)
+                
+                need_column_list = ["query_layer.weight", "query_layer.bias", "key_layer.weight", "key_layer.bias", "value_layer.weight", "value_layer.bias", "word_embeddings.weight",
+                                    "lm_head.weight", "dense_h_to_4h_up_proj.weight", "dense_h_to_4h_down_proj.weight"]
+                    
+                need_row_list = ["dense.weight", "dense_4h_to_h.weight"]
                 # 根据用户配置的新的 tp size 进行分割
                 for key in list(state_dict.keys()):
-                    need_coloumn_cut = ["query_layer.weight", "query_layer.bias", "key_layer.weight", "key_layer.bias", "value_layer.weight", "value_layer.bias", "word_embeddings.weight",
-                                        "lm_head.weight", "dense_h_to_4h_up_proj.weight", "dense_h_to_4h_down_proj.weight"]
-                    need_row_cut = ["dense.weight", "dense_4h_to_h.weight"]
-                    if any([key.endswith(need_key) for need_key in need_coloumn_cut]):
+                    need_column_split = any([key.endswith(need_key) for need_key in need_column_list])
+                    need_row_split = any([key.endswith(need_key) for need_key in need_row_list])
+                    if env.pp_size > 1:
+                         # embedding 层和 lm_head 都需要切
+                         need_column_split = need_column_split or int(key.split(".")[0]) == max(parts) - 1 or int(key.split(".")[0]) == min(parts)
+                    
+                    if need_column_split:
                         tensor = list(torch.chunk(state_dict[key], config.tp_size, dim=0))[int(os.environ.get("COLLIE_TP_RANK", "0"))].detach().clone()
                         del state_dict[key]
                         if process_exclusion:
                             # CPU 内存回收（速度很慢）
                             gc.collect()
                         state_dict[key] = tensor
-                    elif any([key.endswith(need_key) for need_key in need_row_cut]):
+                    elif need_row_split:
                         tensor = list(torch.chunk(state_dict[key], config.tp_size, dim=1))[int(os.environ.get("COLLIE_TP_RANK", "0"))].detach().clone()
                         del state_dict[key]
                         if process_exclusion:
@@ -946,11 +917,10 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
             layers = env.pipeline_layers_idx
             parts = env.pipeline_parts
             for key in list(state_dict.keys()):
-                if key == "tied_modules.word_embeddings.word_embeddings.weight":
-                    if 0 in layers:
-                        state_dict["transformer.word_embeddings.weight"] = state_dict.pop(key)
-                    elif max(layers) - 1 in layers:
-                        state_dict["lm_head.weight"] = state_dict.pop(key)
+                if 0 in layers:
+                    state_dict["transformer.word_embeddings.weight"] = state_dict.pop(key)
+                elif max(layers) - 1 in layers:
+                    state_dict["lm_head.weight"] = state_dict.pop(key)
                 else:
                     layer = int(key.split(".")[0])
                     if layer == max(parts) - 2:
@@ -976,24 +946,29 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
                             tensor_list = [torch.zeros_like(state_dict[key]).to(state_dict[key].dtype).cuda() for _ in range(config.tp_size)]
                         dist.gather(state_dict[key].cuda(), dst=dst, gather_list=tensor_list, group=env.tp_group)
                         if env.tp_rank == 0:
-                            if key.endswith("query_key_value.weight") \
-                                or key.endswith("query_key_value.bias") \
-                                    or key.endswith("dense_h_to_4h.weight") \
-                                        or key.endswith("dense_h_to_4h.bias") \
-                                            or key.endswith("word_embeddings.weight") \
-                                                or key.endswith("lm_head.weight"):
-                                                    state_dict[key] = torch.cat(tensor_list, dim=0).detach().clone().to(device)
-                                                    del tensor_list
-                                                    if process_exclusion:
-                                                        # CPU 内存回收（速度很慢）
-                                                        gc.collect()
-                            elif key.endswith("dense.weight") \
-                                or key.endswith("dense_4h_to_4.weight.weight"):
-                                    state_dict[key] = torch.cat(tensor_list, dim=1).detach().clone().to(device)
-                                    del tensor_list
-                                    if process_exclusion:
-                                        # CPU 内存回收（速度很慢）
-                                        gc.collect()
+                            need_column_list = ["query_layer.weight", "query_layer.bias", "key_layer.weight", "key_layer.bias", "value_layer.weight", "value_layer.bias", "word_embeddings.weight",
+                                    "lm_head.weight", "dense_h_to_4h_up_proj.weight", "dense_h_to_4h_down_proj.weight"]
+                            need_row_list = ["dense.weight", "dense_4h_to_h.weight"]
+                            need_column_split = any([key.endswith(need_key) for need_key in need_column_list])
+                            need_row_split = any([key.endswith(need_key) for need_key in need_row_list])
+                            if env.pp_size > 1:
+                                # embedding 层和 lm_head 都需要切
+                                try:
+                                    need_column_split = need_column_split or int(key.split(".")[0]) == max(parts) - 1 or int(key.split(".")[0]) == min(parts)
+                                except:
+                                    pass
+                            if need_column_split:
+                                state_dict[key] = torch.cat(tensor_list, dim=0).detach().clone().to(device)
+                                del tensor_list
+                                if process_exclusion:
+                                    # CPU 内存回收（速度很慢）
+                                    gc.collect()
+                            elif need_row_split:
+                                state_dict[key] = torch.cat(tensor_list, dim=1).detach().clone().to(device)
+                                del tensor_list
+                                if process_exclusion:
+                                    # CPU 内存回收（速度很慢）
+                                    gc.collect()
                     if env.tp_rank == 0:
                         # Save gathered weights
                         if env.is_pipeline:
