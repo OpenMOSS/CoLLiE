@@ -11,6 +11,13 @@ article.pytorch-article .wy-table-responsive {
 article.pytorch-article .wy-table-responsive table tbody .row-odd {
   background-color: #f3f4f7;
 }
+article.pytorch-article .wy-table-responsive table thead th {
+    /* text-align: center; */
+  line-height: 1.75rem;
+  padding-left: 0.9375rem;
+  padding-right: 0.9375rem;
+  padding-bottom: 0;
+}
 article.pytorch-article .wy-table-responsive table tbody td {
   color: #6c6c6d;
   white-space: normal;
@@ -28,7 +35,7 @@ article.pytorch-article .wy-table-responsive table td p{
   margin-bottom: 0.25rem;
 }
 article.pytorch-article .wy-table-responsive table{
-  margin-bottom: 1rem;
+  margin-bottom: 2rem;
 }
 
 .header-logo {
