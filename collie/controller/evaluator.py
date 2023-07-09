@@ -30,10 +30,8 @@ class Evaluator:
         
         .. note::
 
-            当未提供  ``collate_fn`` 时，``dataset`` 的取值应当为长度为 **2** 的 `Tuple` 类型，例如 `(a, b)`，其中:
-                
-            * `a` 即 ``input_ids``， 为 ``torch.Tensor`` 类型，表示模型的的输入
-            * `b` 可以为 ``torch.Tensor``，也可以是由 ``torch.Tensor`` 组成的任意长度的 `Tuple`，此项会作为 `loss_fn` 的第二个参数传入
+            当未提供  ``collate_fn`` 时，``dataset`` 的取值应当为 `Dict` 类型
+            
     :param tokenizer: 用于训练和验证的分词器，该分词器将用于:
         * 使用 :class:`~collie.controller.evaluator.Evaluator` 进行基于生成的验证时，使用 `tokenizer` 对生成的结果进行解码
         若无上述需求，可不传入 `tokenizer`
@@ -45,10 +43,7 @@ class Evaluator:
         
         .. note::
 
-            ``collate_fn`` 的返回值必须是为长度为 **2** 的 `Tuple` 类型，，例如 `(a, b)`，其中:
-            
-            * `a` 即 ``input_ids``，为 ``torch.Tensor`` 类型，表示模型的的输入
-            * `b` 可以为 ``torch.Tensor``，也可以是由 ``torch.Tensor`` 组成的任意长度的 ``Tuple``，此项会作为 ``loss_fn`` 的第二个参数传入
+            ``collate_fn`` 的返回值必须是为 `Dict` 类型
                 
         例如:
 
@@ -60,7 +55,7 @@ class Evaluator:
                 tokenizer = AutoTokenizer.from_pretrained("fnlp/moss-moon-003-sft", padding_side="left", trust_remote_code=True)
                 input_ids = tokenizer(batch, return_tensors="pt", padding=True)["input_ids"]
                 # 第二个 input_ids 会被用于 loss_fn 的 label
-                return input_ids, input_ids
+                return {"input_ids": input_ids, "labels": input_ids}
     :param data_provider: 额外的数据提供器，可在 ``dataset`` 之外额外注入验证数据，例如通过前端网页或 http 请求等， 详见 :class:`~collie.utils.data_provider.BaseProvider`
     :param monitors: 用于监控训练过程的监控器，详见 :class:`~collie.utils.monitor.BaseMonitor`
     """
@@ -160,11 +155,11 @@ class Evaluator:
         """一次验证的基本单元
 
         :param evaluator: 训练器
-        :param batch: 一个 batch 的数据，类型为长度为 2 的 ``Tuple``，其中第一个元素为 ``input_ids``，第二个元素为 ``labels``
+        :param batch: 一个 batch 的数据，类型为 ``Dict``
 
             .. note::
 
-                根据提供的 ``dataset`` 和 ``collate_fn`` 的不同，``labels`` 的类型也会有所不同。
+                不同的 Evaluator，需求的数据类型也u偶所不同。
     
         :return: 一次验证的结果，为 `Dict` 类型，该结果会被传入 `metric` 的 `update` 方法中
         """
@@ -186,11 +181,13 @@ class EvaluatorForGeneration(Evaluator):
         """一次验证的基本单元
 
         :param evaluator: 训练器
-        :param batch: 一个 batch 的数据，类型为长度为 2 的 ``Tuple``，其中第一个元素为 ``input_ids``，第二个元素为 ``labels``
-
-            .. note::
-
-                根据提供的 ``dataset`` 和 ``collate_fn`` 的不同，``labels`` 的类型也会有所不同。
+        :param batch: 一个 batch 的数据，类型为长度为 ``Dict``，格式为：
+        
+            .. code-block::
+            {
+                "input_ids": torch.tensor([[1, 100, 100, 2]]),
+                "taregt": torch.tensor([[1, 100, 100, 2]]),
+            }
     
         :return: 一次验证的结果，为 `Dict` 类型，该结果会被传入 `metric` 的 `update` 方法中
         """
@@ -221,11 +218,13 @@ class EvaluatorForPerplexity(Evaluator):
         """一次验证的基本单元
 
         :param evaluator: 训练器
-        :param batch: 一个 batch 的数据，类型为长度为 2 的 ``Tuple``，其中第一个元素为 ``input_ids``，第二个元素为 ``labels``
-
-            .. note::
-
-                根据提供的 ``dataset`` 和 ``collate_fn`` 的不同，``labels`` 的类型也会有所不同。
+        :param batch: 一个 batch 的数据，类型为长度为 ``Dict``，格式为：
+        
+            .. code-block::
+            {
+                "input_ids": torch.tensor([[1, 100, 100, 2]]),
+                "labels": torch.tensor([[1, 100, 100, 2]]),
+            }
     
         :return: 一次验证的结果，为 `Dict` 类型，该结果会被传入 `metric` 的 `update` 方法中
         """
@@ -250,15 +249,21 @@ class EvaluatorForPerplexity(Evaluator):
 class EvaluatorForClassfication(EvaluatorForPerplexity):
     @staticmethod
     @torch.no_grad()
-    def eval_fn(evaluator, batch: Tuple) -> Any:
+    def eval_fn(evaluator, batch: Dict) -> Any:
         """一次验证的基本单元
 
         :param evaluator: 训练器
-        :param batch: 一个 batch 的数据，类型为长度为 2 的 ``Tuple``，其中第一个元素为 ``input_ids``，第二个元素为 ``labels``
-
-            .. note::
-
-                根据提供的 ``dataset`` 和 ``collate_fn`` 的不同，``labels`` 的类型也会有所不同。
+        :param batch: 一个 batch 的数据，类型为长度为 ``Dict``，格式为：
+        
+            .. code-block::
+            {
+                "input_ids": [
+                    torch.tensor([[1, 100, 100, 2]]),
+                    torch.tensor([[1, 100, 100, 2]]),
+                    torch.tensor([[1, 100, 100, 2]])    
+                ],
+                "target": torch.tensor([[0]])
+            }
     
         :return: 一次验证的结果，为 `Dict` 类型，该结果会被传入 `metric` 的 `update` 方法中
         """
