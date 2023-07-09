@@ -513,7 +513,7 @@ class Trainer(TrainerEventTrigger):
         self.on_save_model()
         if isinstance(self.engine.module, CollieModelForCausalLM) or isinstance(self.engine.module, PipelineModel):
             if is_zero3_enabled(self.config):
-                self.engine.optimizer.checkpoint_event_prologue()
+                self._checkpoint_prologue()
                 with deepspeed.zero.GatheredParameters(list(self.engine.module.parameters(recurse=True))):
                     self.engine.module.save_parallel_state_dict(
                         state_dict=self.engine.module.state_dict(),
@@ -522,7 +522,7 @@ class Trainer(TrainerEventTrigger):
                         process_exclusion=process_exclusion,
                         protocol=protocol
                     )
-                self.engine.optimizer.checkpoint_event_epilogue()
+                self._checkpoint_epilogue()
             else:
                 self.engine.module.save_parallel_state_dict(
                     state_dict=self.engine.module.state_dict(),
@@ -533,13 +533,13 @@ class Trainer(TrainerEventTrigger):
                 )
         elif isinstance(self.engine.module, PreTrainedModel):
             if is_zero3_enabled(self.config):
-                self.engine.optimizer.checkpoint_event_prologue()
+                self._checkpoint_prologue()
                 with deepspeed.zero.GatheredParameters(list(self.engine.module.parameters(recurse=True))):
                     self.engine.module.save_pretrained(
                         save_directory=path,
                         **kwargs
                     )
-                self.engine.optimizer.checkpoint_event_epilogue()
+                self._checkpoint_epilogue()
             else:
                 self.engine.module.save_pretrained(
                     save_directory=path,
@@ -554,13 +554,13 @@ class Trainer(TrainerEventTrigger):
         self.on_load_model()
         if isinstance(self.engine.module, CollieModelForCausalLM) or isinstance(self.engine.module, PipelineModel):
             if is_zero3_enabled(self.config):
-                self.engine.optimizer.checkpoint_event_prologue()
+                self._checkpoint_prologue()
                 with deepspeed.zero.GatheredParameters(list(self.engine.module.parameters(recurse=True)), modifier_rank=0):
                     if env.rank == 0:
                         self.engine.module.load_state_dict(self.engine.module.load_parallel_state_dict(
                             path=path, config=self.config, process_exclusion=process_exclusion, protocol=protocol
                         ))
-                self.engine.optimizer.checkpoint_event_epilogue()
+                self._checkpoint_epilogue()
             else:
                 self.engine.module.load_state_dict(
                     self.engine.module.load_parallel_state_dict(
@@ -578,7 +578,7 @@ class Trainer(TrainerEventTrigger):
                             index[value] = [key]
                         else:
                             index[value].append(key)
-                self.engine.optimizer.checkpoint_event_prologue()
+                self._checkpoint_prologue()
                 if index is not None:
                     for key, value in index.items():
                         with deepspeed.zero.GatheredParameters([self.engine.module.state_dict()[attr] for attr in value], modifier_rank=0):
@@ -591,7 +591,7 @@ class Trainer(TrainerEventTrigger):
                         if env.dp_rank == 0:
                             state_dict = reduce(lambda x, y: {**x, **y}, [io_driver.load(file, mode="rb") for file in glob.glob(os.path.join(path, "*.bin"))])
                             self.engine.module.load_state_dict(state_dict)
-                self.engine.optimizer.checkpoint_event_epilogue()
+                self._checkpoint_epilogue()
             else:
                 index = None
                 if io_driver.exists(os.path.join(path, "pytorch_model.bin.index.json")):
@@ -635,9 +635,8 @@ class Trainer(TrainerEventTrigger):
 
         self.save_model(path, protocol=protocol)
 
-        if engine.zero_optimization_partition_weights():
-            # Prepare for checkpoint save by ensuring all parameters are partitioned
-            engine.optimizer.checkpoint_event_prologue()
+        # Prepare for checkpoint save by ensuring all parameters are partitioned
+        self._checkpoint_prologue()
         
         ## DeepSpeedEngine._save_checkpoint
         zero_optimizer_state = engine.zero_optimization() or engine.bfloat16_enabled()
@@ -657,8 +656,7 @@ class Trainer(TrainerEventTrigger):
         if engine.save_zero_checkpoint:
             self._save_zero_checkpoint(path, io_driver)
 
-        if engine.zero_optimization_partition_weights():
-            engine.optimizer.checkpoint_event_epilogue()
+        self._checkpoint_epilogue()
 
         dist.barrier()
 
@@ -692,9 +690,8 @@ class Trainer(TrainerEventTrigger):
             ckpt_file = "collie_dp0_pp0_tp0.pt"
         checkpoint = io_driver.load(os.path.join(path, ckpt_file), "b")
 
-        if engine.zero_optimization_partition_weights():
-            # Prepare for checkpoint load by ensuring all parameters are partitioned
-            self.optimizer.checkpoint_event_prologue()
+        # Prepare for checkpoint load by ensuring all parameters are partitioned
+        self._checkpoint_prologue()
 
         has_zero_optimizer_state = engine.zero_optimization() or engine.bfloat16_enabled()
 
@@ -721,14 +718,14 @@ class Trainer(TrainerEventTrigger):
         engine.global_samples = checkpoint.get('global_samples', engine.global_steps * engine.train_batch_size())
         engine.skipped_steps = checkpoint['skipped_steps']
 
-        load_zero_checkpoint = engine.zero_optimization() or engine.bfloat16_enabled()
+        # load_zero_checkpoint = engine.zero_optimization() or engine.bfloat16_enabled()
+        load_zero_checkpoint = engine.save_zero_checkpoint
         if load_zero_checkpoint:
             success = self._load_zero_checkpoint(path, io_driver)
             if not success:
                 engine.optimizer._restore_from_bit16_weights()
 
-        if engine.zero_optimization_partition_weights():
-            engine.optimizer.checkpoint_event_epilogue()
+        self._checkpoint_epilogue()
 
         self.on_load_checkpoint(checkpoint["callback_states"])
 
@@ -756,3 +753,27 @@ class Trainer(TrainerEventTrigger):
         )
 
         return True
+
+    def _checkpoint_prologue(self):
+        # Lomo + zero3 时因为没有将 optimizer 传给 engine
+        # engine.optimizer 是 DeepSpeedZeRoOffload 而非 stage 3
+        # 故进行判断
+        if not self.engine.zero_optimization_partition_weights():
+            return
+        if isinstance(self.optimizer, Lomo):
+            param_offload = self.engine.optimizer
+        else:
+            param_offload = self.engine.optimizer.parameter_offload
+        param_offload.partition_all_parameters()
+        
+    def _checkpoint_epilogue(self):
+        if not self.engine.zero_optimization_partition_weights():
+            return
+        if isinstance(self.optimizer, Lomo):
+            persistent_params = self.engine.optimizer.persistent_parameters
+        else:
+            persistent_params = self.engine.optimizer.parameter_offload.persistent_parameters
+        persistent_params[0].all_gather(persistent_params)
+        
+        if len(persistent_params) > 0:
+            persistent_params[0].all_gather(persistent_params)
