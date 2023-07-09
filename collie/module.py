@@ -37,7 +37,6 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from collie.log import logger
 from collie.utils import env, broadcast_tensor, setup_ds_engine
-from collie.utils.peft_utils import skip_input_embedding
 
 class ColumnParallelLinearWithoutBias(ColumnParallelLinear):
     """重写 ``megatron`` 提供的列并行全连接层以去掉结果中的 ``bias``。
@@ -487,6 +486,7 @@ class PipelineModel(PipelineModule, PipelineGenerationMixin):
         
         self.inner_forward = False
         self.forward_type = "train" # train, eval, generate
+        self.skip_input_embedding()
         
     def forward(self, *args, **kwargs):
         if not self.inner_forward:
@@ -533,6 +533,21 @@ class PipelineModel(PipelineModule, PipelineGenerationMixin):
         
     def tie_weights(self):
         pass
+    
+    def skip_input_embedding(self):
+        input_embedding = self.get_input_embedding()[1]
+        if input_embedding is not None and isinstance(input_embedding, nn.Module):
+            raw_foward = input_embedding.forward
+            def _forward(self, inputs):
+                if isinstance(inputs, dict):
+                    if "inputs_embeds" in inputs.keys():
+                        inputs["hidden_states"] = inputs.pop("inputs_embeds")
+                        return inputs
+                    else:
+                        return raw_foward(inputs)
+                else:
+                    return raw_foward(inputs)
+            object.__setattr__(input_embedding, "forward", MethodType(_forward, input_embedding))
         
         
 class MultiParallelGrid(PipelineParallelGrid):

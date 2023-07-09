@@ -158,7 +158,7 @@ class CollieDatasetForTraining(Dataset):
                     self.dataset[index]["input"], add_special_tokens=self.add_special_tokens).input_ids)
                 _, eos_length = self._inspect_special_tokens_length()
                 context_length -= eos_length
-                labels[:context_length - 1] = -100
+                labels[:context_length - 2] = -100
                 labels = labels.cpu().tolist()
             else:
                 raise ValueError("Dataset must have one or two fields.")
@@ -297,7 +297,7 @@ class CollieDatasetForClassification(CollieDatasetForTraining):
                 for output in self.dataset[index]["output"]:
                     inputs = self.tokenizer(self.dataset[index]["input"] + output, add_special_tokens=self.add_special_tokens)
                     input_ids.append(inputs.get("input_ids"))
-                    attention_mask.append(inputs.get("attention_mask", torch.ones_like(torch.tensor((inputs.get("input_ids"))).cpu().tolist())))
+                    attention_mask.append(inputs.get("attention_mask", torch.ones_like(torch.tensor(inputs.get("input_ids")))))
                 input_ids = tuple(input_ids)
                 attention_mask = tuple(attention_mask)
                 target = self.dataset[index]["target"]

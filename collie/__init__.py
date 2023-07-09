@@ -23,7 +23,8 @@ from .module import PipelineGenerationMixin, ColumnParallelLinear, \
 from .controller import Trainer, Evaluator, EvaluatorForPerplexity, \
     EvaluatorForClassfication, EvaluatorForGeneration, Server
 from .config import CollieConfig
-from .metrics import BaseMetric, DecodeMetric, AccuracyMetric, PPLMetric, BleuMetric
+from .metrics import BaseMetric, DecodeMetric, AccuracyMetric, \
+    PPLMetric, BleuMetric, ClassifyFPreRecMetric
 from .data import CollieDatasetForClassification, CollieBatchSampler, \
     CollieDataLoader, CollieDatasetForTraining, CollieDatasetForGeneration
 from .optim import Lomo, Lion, SophiaG, Adan
@@ -100,6 +101,7 @@ __all__ = [
     'AccuracyMetric', 
     'PPLMetric',
     'BleuMetric',
+    'ClassifyFPreRecMetric',
     
     #data
     'CollieDatasetForClassification', 
