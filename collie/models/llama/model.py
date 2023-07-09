@@ -625,6 +625,8 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                                     if process_exclusion:
                                         # CPU 内存回收（速度很慢）
                                         gc.collect()
+                            if not key.startswith("lm_head.weight"):
+                                state_dict[f"model.{key}"] = state_dict.pop(key)
                     if env.tp_rank == 0:
                         # Save gathered weights
                         if env.is_pipeline:
