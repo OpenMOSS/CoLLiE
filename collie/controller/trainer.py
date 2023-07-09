@@ -20,9 +20,7 @@ from torch import nn
 import torch.distributed as dist
 from torch.optim.lr_scheduler import _LRScheduler
 from deepspeed.accelerator import get_accelerator
-from deepspeed.runtime.pipe.engine import PipelineEngine
 from deepspeed.runtime.engine import DeepSpeedSchedulerCallable
-from transformers.generation.utils import GenerationConfig
 from transformers.modeling_utils import PreTrainedModel, load_state_dict
 from peft import PeftModel, PeftConfig, get_peft_model_state_dict, set_peft_model_state_dict
 from transformers import PreTrainedTokenizerBase
@@ -32,7 +30,7 @@ from collie.config import CollieConfig
 from collie.module import PipelineGenerationMixin, GPTLMLoss, PipelineModel
 from collie.driver.io import IODriver
 from collie.log import logger
-from collie.utils import progress, env, setup_ds_engine, BaseProvider, _GenerationStreamer, is_zero3_enabled, \
+from collie.utils import progress, env, setup_ds_engine, BaseProvider, is_zero3_enabled, \
     BaseMonitor, _MultiMonitors, broadcast_tensor, ColliePadder, auto_param_call
 from collie.optim import Lomo
 from collie.models.base import CollieModelForCausalLM
@@ -77,16 +75,7 @@ class Trainer(TrainerEventTrigger):
         .. note::
 
             当未提供 ``train_dataset_collate_fn`` 或 ``eval_dataset_collate_fn`` 时，``train_dataset`` 和 ``eval_dataset`` 
-            的取值应当为由 `Dict` 组成的长度为 **2** 的 `Tuple` 类型，例如 `(a, b)`，其中:
-                
-            * `a` 为 ``Dict`` 类型，可能包含的字段包括:
-            
-                ** ``input_ids``, 为 ``torch.Tensor`` 类型，形状为 ``(B, S)``, 表示模型的的输入
-                ** ``attention_mask``, 为 ``torch.Tensor`` 类型，形状为 ``(B, S)``, 表示 padding mask
-                
-            * `b` 为 ``Dict`` 类型，可能包含的字段包括:
-
-                ** ``labels``, 为 ``torch.Tensor`` 类型，形状为 ``(B, S)``, 表示模型的的标签, 自回归地训练时应当与 ``input_ids`` 相同
+            的取值应当为 `Dict` 类型
                 
             注意: 上述数据格式为训练所需的格式, 同时 **CoLLie** 提供了多种验证器, 所要求的格式各有不同, 详见 :class:`~collie.controller.evaluator.Evaluator`
     
@@ -97,16 +86,7 @@ class Trainer(TrainerEventTrigger):
         
         .. note::
 
-            ``train_dataset_collate_fn`` 和 ``eval_dataset_collate_fn`` 的返回值必须是由 `Dict` 组成的长度为 **2** 的 `Tuple` 类型，例如 `(a, b)`，其中:
-            
-            * `a` 为 ``Dict`` 类型，可能包含的字段包括:
-            
-                ** ``input_ids``, 为 ``torch.Tensor`` 类型，形状为 ``(B, S)``, 表示模型的的输入
-                ** ``attention_mask``, 为 ``torch.Tensor`` 类型，形状为 ``(B, S)``, 表示 padding mask
-                
-            * `b` 为 ``Dict`` 类型，可能包含的字段包括:
-
-                ** ``labels``, 为 ``torch.Tensor`` 类型，形状为 ``(B, S)``, 表示模型的的标签, 自回归地训练时应当与 ``input_ids`` 相同
+            ``train_dataset_collate_fn`` 和 ``eval_dataset_collate_fn`` 的返回值必须是 `Dict` 类型
                 
             注意: 上述数据格式为训练所需的格式, 同时 **CoLLie** 提供了多种验证器, 所要求的格式各有不同, 详见 :class:`~collie.controller.evaluator.Evaluator`
                 
@@ -119,7 +99,7 @@ class Trainer(TrainerEventTrigger):
                 # batch = ["样本1", "样本2", ...]
                 tokenizer = AutoTokenizer.from_pretrained("fnlp/moss-moon-003-sft", padding_side="left", trust_remote_code=True)
                 input_ids = tokenizer(batch, return_tensors="pt", padding=True)["input_ids"]
-                return {"input_ids": input_ids}, {"labels": input_ids}
+                return {"input_ids": input_ids, "labels": input_ids}
             
     :param data_provider: 额外的数据提供器，可在 ``eval_dataset`` 之外额外注入验证数据，例如通过前端网页或 http 请求等， 详见 :class:`~collie.utils.data_provider.BaseProvider`
     :param monitors: 用于监控训练过程的监控器，详见 :class:`~collie.utils.monitor.BaseMonitor`
@@ -459,9 +439,9 @@ class Trainer(TrainerEventTrigger):
         )
         named_parameters = {name: param for name, param in self.engine.module.named_parameters() if any([name.replace(f"{adapter_name}.", "") == k for k in state_dict.keys()])}
         if adapter_name == "default":
-            name_prefix = "adapter"
+            name_prefix = "adapter_model"
         else:
-            name_prefix = f"adapter_{adapter_name}"
+            name_prefix = f"adapter_model_{adapter_name}"
         if env.pp_size == 1:
             name = f"{name_prefix}.bin"
         else:
@@ -500,9 +480,9 @@ class Trainer(TrainerEventTrigger):
                 f"{self.config.peft_config.task_type}"
             )
         if adapter_name == "default":
-            name_prefix = "adapter"
+            name_prefix = "adapter_model"
         else:
-            name_prefix = f"adapter_{adapter_name}"
+            name_prefix = f"adapter_model_{adapter_name}"
         if env.pp_size == 1:
             name = f"{name_prefix}.bin"
         else:
