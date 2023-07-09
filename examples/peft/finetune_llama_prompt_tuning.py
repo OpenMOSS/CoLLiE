@@ -4,7 +4,6 @@
 import os
 import sys
 sys.path.append('../../')
-sys.path.append("/mnt/petrelfs/gutianle/Megatron-LM/")
 import json
 import torch
 
@@ -41,7 +40,7 @@ from peft import (
 
 # 1. 设置路径
 # 1.1 预训练模型路径
-pretrained_model = 'decapoda-research/llama-7b-hf'
+pretrained_model = "/mnt/petrelfs/zhangshuo/model/llama-7b-hf"
 # 1.2 Eval的decode结果保存路径
 save_path = './result'
 
@@ -50,9 +49,9 @@ save_path = './result'
 config = CollieConfig.from_pretrained(pretrained_model)
 
 # 2.2 添加配置
-config.tp_size = 2
-config.dp_size = 2
-config.pp_size = 1
+# config.tp_size = 2
+# config.dp_size = 2
+config.pp_size = 8
 config.train_epochs = 1
 config.train_micro_batch_size = 1
 config.eval_batch_size = 32
@@ -72,14 +71,14 @@ config.peft_config = PromptTuningConfig(
 )
 config.ds_config = {
     "fp16": {"enabled": True},
-    "monitor_config": {
-        "enabled": True,
-        "tag": "sophia_alpaca",
-        "csv_monitor": {
-            "enabled": True,
-            "output_path": "./ds_logs/"
-        }
-    }
+    # "monitor_config": {
+    #     "enabled": True,
+    #     "tag": "sophia_alpaca",
+    #     "csv_monitor": {
+    #         "enabled": True,
+    #         "output_path": "./ds_logs/"
+    #     }
+    # }
 }
 
 # 3. 设置tokenizer
