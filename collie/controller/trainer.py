@@ -210,6 +210,7 @@ class Trainer(TrainerEventTrigger):
 
         self.init_state_dict()
         self.on_after_trainer_initialized()
+        torch.cuda.empty_cache()
 
     def init_state_dict(self):
         """初始化优化器的自身状态字典
