@@ -13,10 +13,13 @@ import copy
 import types
 import json
 import torch
+import warnings
+import inspect
 from types import MethodType
-from typing import Optional, List, Sequence, Dict
+from typing import Optional, List, Sequence, Dict, Any
 
 from torch import nn
+from peft import PeftModel
 from torch import distributed as dist
 from transformers.generation.configuration_utils import GenerationConfig
 from megatron.core.tensor_parallel import (ColumnParallelLinear,
@@ -319,6 +322,31 @@ class PipelineGenerationMixin(GenerationMixin):
             input_ids=input_ids, inputs_embeds=inputs_embeds, past_key_values=past_key_values,
             attention_mask=attention_mask, use_cache=use_cache, **kwargs
         )
+        
+    def _validate_model_kwargs(self, model_kwargs: Dict[str, Any]):
+        """Validates model kwargs for generation. Generate argument typos will also be caught here."""
+        # Excludes arguments that are handled before calling any model function
+        if self.config.is_encoder_decoder:
+            for key in ["decoder_input_ids"]:
+                model_kwargs.pop(key, None)
+
+        unused_model_args = []
+        model_args = set(inspect.signature(self.prepare_inputs_for_generation).parameters)
+        # `kwargs`/`model_kwargs` is often used to handle optional forward pass inputs like `attention_mask`. If
+        # `prepare_inputs_for_generation` doesn't accept them, then a stricter check can be made ;)
+        if "kwargs" in model_args or "model_kwargs" in model_args:
+            model_args |= set(inspect.signature(self.forward).parameters)
+        for key, value in model_kwargs.items():
+            if value is not None and key not in model_args:
+                unused_model_args.append(key)
+
+        if unused_model_args:
+            warnings.warn(f"The following `model_kwargs` are not used by the model: {unused_model_args} (note: typos in the"
+                " generate arguments will also show up in this list)")
+            # raise ValueError(
+            #     f"The following `model_kwargs` are not used by the model: {unused_model_args} (note: typos in the"
+            #     " generate arguments will also show up in this list)"
+            # )
     
     def can_generate(self) -> bool:
         """ 判断当前流水线模型是否可以进行生成

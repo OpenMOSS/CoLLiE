@@ -374,14 +374,14 @@ class Trainer(TrainerEventTrigger):
         
         :return: 当前 batch 的 loss
         """
-        # concat prompt labels for p-tuning
-        if trainer.config.peft_config and trainer.config.peft_config.peft_type in ["PROMPT_TUNING", "P_TUNING"]:
-            batch_size = batch["input_ids"].shape[0]
-            prefix_labels = torch.full((batch_size, trainer.config.peft_config.num_virtual_tokens), -100).to(batch['labels'].device)
-            batch['labels'] = torch.cat((prefix_labels, batch['labels']), dim=1)
         if trainer.config.pp_size > 1:
             loss = trainer.engine.module(**batch)["loss"]
         else:
+            # concat prompt labels for p-tuning
+            if trainer.config.peft_config and trainer.config.peft_config.peft_type in ["PROMPT_TUNING", "P_TUNING"]:
+                batch_size = batch["input_ids"].shape[0]
+                prefix_labels = torch.full((batch_size, trainer.config.peft_config.num_virtual_tokens), -100).to(batch['labels'].device)
+                batch['labels'] = torch.cat((prefix_labels, batch['labels']), dim=1)
             outputs = trainer.engine(**batch)
             loss = auto_param_call(trainer.loss_fn, {**batch, **outputs}, 
                                    signature_fn=trainer.loss_fn.forward if isinstance(trainer.loss_fn, nn.Module) else trainer.loss_fn)
