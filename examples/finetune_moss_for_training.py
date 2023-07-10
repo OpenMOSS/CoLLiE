@@ -32,7 +32,7 @@ from collie.utils import env
 
 # 1. 设置路径
 # 1.1 预训练模型路径
-pretrained_model = "/mnt/petrelfs/zhangshuo/model/moss-moon-003-sft"
+pretrained_model = "fnlp/moss-moon-003-sft"
 
 # 2. 设置配置
 # 2.1 加载配置
@@ -43,7 +43,7 @@ config.pp_size = 1
 config.train_epochs = 1
 config.eval_per_n_steps = 0
 config.eval_per_n_epochs = 1 
-config.train_micro_batch_size = 32
+config.train_micro_batch_size = 16
 config.eval_batch_size = 1
 config.ds_config = {
         "fp16": {
