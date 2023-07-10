@@ -1,9 +1,7 @@
 """
 一个使用CoLLie训练Moss的例子（使用LOMO优化器，开启ZeRO3）
 """
-import sys
-sys.path.append('..')
-sys.path.append("/mnt/petrelfs/gutianle/Megatron-LM/")
+
 import os
 import json
 import torch
@@ -26,6 +24,9 @@ from collie.utils.monitor import StepTimeMonitor, TGSMonitor, MemoryMonitor, Los
 from collie.metrics import DecodeMetric, PPLMetric, BleuMetric
 from collie.module import GPTLMLoss
 
+import sys
+sys.path.append('..')
+
 # 1. 设置路径
 # 1.1 预训练模型路径
 pretrained_model = "fnlp/moss-moon-003-sft"
@@ -33,8 +34,8 @@ pretrained_model = "fnlp/moss-moon-003-sft"
 # 2. 设置配置
 # 2.1 加载配置
 config = CollieConfig.from_pretrained(pretrained_model, trust_remote_code=True)
-config.tp_size = 2
-config.dp_size = 2
+config.tp_size = 1
+config.dp_size = 1
 config.pp_size = 1
 config.train_epochs = 1
 config.eval_per_n_steps = 0
