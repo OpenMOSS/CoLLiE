@@ -1,6 +1,8 @@
 """
 一个使用CoLLie训练Moss的例子（使用LOMO优化器，开启ZeRO3）
 """
+import sys
+sys.path.append('..')
 
 import os
 import json
@@ -24,12 +26,13 @@ from collie.utils.monitor import StepTimeMonitor, TGSMonitor, MemoryMonitor, Los
 from collie.metrics import DecodeMetric, PPLMetric, BleuMetric
 from collie.module import GPTLMLoss
 
-import sys
-sys.path.append('..')
+from collie.utils import env
+
+
 
 # 1. 设置路径
 # 1.1 预训练模型路径
-pretrained_model = "fnlp/moss-moon-003-sft"
+pretrained_model = "/mnt/petrelfs/zhangshuo/model/moss-moon-003-sft"
 
 # 2. 设置配置
 # 2.1 加载配置
@@ -58,7 +61,7 @@ config.ds_config = {
 }
 
 # 3. 设置tokenizer
-tokenizer = AutoTokenizer.from_pretrained(pretrained_model, trust_remote_code=True)
+tokenizer = AutoTokenizer.from_pretrained("fnlp/moss-moon-003-sft", trust_remote_code=True)
 
 # 4. 加载数据集
 train_dataset = [
@@ -125,7 +128,6 @@ trainer = Trainer(
     monitors = monitors,
     evaluators = [evaluator_ppl, evaluator_decode]
 )
-
 # 10. 训练/验证
 trainer.train()
 
