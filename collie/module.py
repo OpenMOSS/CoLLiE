@@ -200,7 +200,9 @@ class PipelineGenerationMixin(GenerationMixin):
                 "In Pipeline Parallelism, `use_cache=True` will result in "
                 "slowing down the generate process.", once=True
             )
-        inputs = {"input_ids": input_ids}
+        inputs = {}
+        if input_ids is not None:
+            inputs["input_ids"] = input_ids
         if attention_mask is not None:
             inputs["attention_mask"] = attention_mask
         if position_ids is not None:
@@ -233,14 +235,16 @@ class PipelineGenerationMixin(GenerationMixin):
         )
         
     def train_forward(self,
-                input_ids: torch.Tensor,
                 labels: torch.Tensor,
+                input_ids: Optional[torch.Tensor] = None,
                 attention_mask: Optional[torch.Tensor] = None,
                 inputs_embeds: Optional[torch.Tensor] = None,
                 position_ids: Optional[torch.Tensor] = None, **kwargs) -> torch.Tensor:
         """ 进行一次流水线模型的正反向传播
         """
-        inputs = {"input_ids": input_ids}
+        inputs = {}
+        if input_ids is not None:
+            inputs["input_ids"] = input_ids
         if attention_mask is not None:
             inputs["attention_mask"] = attention_mask
         if position_ids is not None:
@@ -258,14 +262,16 @@ class PipelineGenerationMixin(GenerationMixin):
         )
         
     def eval_forward(self,
-                input_ids: torch.Tensor,
                 labels: torch.Tensor,
+                input_ids: Optional[torch.Tensor] = None,
                 attention_mask: Optional[torch.Tensor] = None,
                 inputs_embeds: Optional[torch.Tensor] = None,
                 position_ids: Optional[torch.Tensor] = None, **kwargs) -> torch.Tensor:
         """ 进行一次流水线模型的正反向传播
         """
-        inputs = {"input_ids": input_ids}
+        inputs = {}
+        if input_ids is not None:
+            inputs["input_ids"] = input_ids
         if attention_mask is not None:
             inputs["attention_mask"] = attention_mask
         if position_ids is not None:
@@ -298,7 +304,8 @@ class PipelineGenerationMixin(GenerationMixin):
         )
     
     def prepare_inputs_for_generation(self, 
-                                      input_ids: torch.Tensor,
+                                      input_ids: Optional[torch.Tensor] = None,
+                                      inputs_embeds: Optional[torch.Tensor] = None,
                                       past_key_values: Optional[list] = None,
                                       attention_mask: Optional[torch.Tensor] = None,
                                       use_cache: bool = False,
@@ -309,7 +316,7 @@ class PipelineGenerationMixin(GenerationMixin):
         else:
             self._set_past_key_values(past_key_values)
         return self.engine_container[-1].module.prepare_inputs(
-            input_ids=input_ids, past_key_values=past_key_values,
+            input_ids=input_ids, inputs_embeds=inputs_embeds, past_key_values=past_key_values,
             attention_mask=attention_mask, use_cache=use_cache, **kwargs
         )
     
@@ -546,6 +553,8 @@ class PipelineModel(PipelineModule, PipelineGenerationMixin):
                     else:
                         return raw_foward(inputs)
                 else:
+                    if hasattr(self, "raw_forward"):
+                        return self.raw_forward(inputs)
                     return raw_foward(inputs)
             object.__setattr__(input_embedding, "forward", MethodType(_forward, input_embedding))
         

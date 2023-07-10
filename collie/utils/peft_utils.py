@@ -5,8 +5,9 @@ import torch
 from types import MethodType
 from typing import Optional
 from transformers import PreTrainedModel
-from peft import TaskType, PeftType, PromptEmbedding, PromptEncoder, PrefixEncoder, PeftModel, PromptTuningInit
-
+from peft import TaskType, PeftType, PromptEmbedding, \
+    PromptEncoder, PrefixEncoder, PeftModel, PromptTuningInit, \
+        PeftModelForCausalLM
 
 def patch_peft_model():
     def _setup_prompt_encoder(self, adapter_name):
@@ -22,7 +23,12 @@ def patch_peft_model():
         if config.num_transformer_submodules is None:
             config.num_transformer_submodules = 2 if config.task_type == TaskType.SEQ_2_SEQ_LM else 1
         self.word_embeddings = self.base_model.get_input_embedding()[1]
-        
+        # 
+        # if env.pp_rank > 0 and self.word_embeddings is None:
+        #     class DummyEmbedding(torch.nn.Module):
+        #         def forward(self, x):
+        #             return torch.tensor([[0.]])
+        #     self.word_embeddings = DummyEmbedding()
         if config.peft_type == PeftType.PROMPT_TUNING:
             prompt_encoder = PromptEmbedding(config, self.word_embeddings)
         elif config.peft_type == PeftType.P_TUNING:
@@ -35,8 +41,19 @@ def patch_peft_model():
         self.prompt_tokens[adapter_name] = torch.arange(
             config.num_virtual_tokens * config.num_transformer_submodules
         ).long()
-
     PeftModel._setup_prompt_encoder = _setup_prompt_encoder
+    
+    raw_forward = PeftModelForCausalLM.forward
+    def _forward(self, *args, **kwargs):
+        from collie.module import PipelineModel
+        from .dist_utils import env
+        if isinstance(self.get_base_model(), PipelineModel) and getattr(self.get_base_model(), "inner_forward"):
+            return self.get_base_model()(*args, **kwargs)
+        elif env.pp_rank > 0:
+            return self.get_base_model()(*args, **kwargs)
+        else:
+            return raw_forward(self, *args, **kwargs)
+    PeftModelForCausalLM.forward = _forward
 
 
 def patch_prompt_tuning():
@@ -63,14 +80,14 @@ def patch_prompt_tuning():
                 init_token_ids = init_token_ids * num_reps
             init_token_ids = init_token_ids[:total_virtual_tokens]
             
-
-            word_embeddings.cuda() # patched here
-            input_ids = torch.LongTensor(init_token_ids).unsqueeze(0).cuda()
-            input_ids = torch.flatten(input_ids, start_dim=1)
-            word_embedding_weights = word_embeddings(input_ids).detach().clone() # patched here
-            word_embedding_weights = word_embedding_weights.to(torch.float32)
-            word_embedding_weights = word_embedding_weights.view(word_embedding_weights.shape[1:])
-            self.embedding.weight = torch.nn.Parameter(word_embedding_weights)
+            if word_embeddings is not None:
+                word_embeddings.cuda() # patched here
+                input_ids = torch.LongTensor(init_token_ids).unsqueeze(0).cuda()
+                input_ids = torch.flatten(input_ids, start_dim=1)
+                word_embedding_weights = word_embeddings(input_ids).detach().clone() # patched here
+                word_embedding_weights = word_embedding_weights.to(torch.float32)
+                word_embedding_weights = word_embedding_weights.view(word_embedding_weights.shape[1:])
+                self.embedding.weight = torch.nn.Parameter(word_embedding_weights)
 
     PromptEmbedding.__init__ = __init__
 
