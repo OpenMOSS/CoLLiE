@@ -623,32 +623,33 @@ class ChatGLMForCausalLM(CollieModelForCausalLM):
                 if env.dp_rank == 0 \
                     and (env.pp_rank == rank
                          or not process_exclusion):
-                    for key in sorted(list(state_dict.keys())):
-                        device = state_dict[key].device
-                        tensor_list = None
-                        if env.tp_rank == 0:
-                            tensor_list = [torch.zeros_like(state_dict[key]).to(state_dict[key].dtype).cuda() for _ in range(config.tp_size)]
-                        dist.gather(state_dict[key].cuda(), dst=dst, gather_list=tensor_list, group=env.tp_group)
-                        if env.tp_rank == 0:
-                            filte_list = ["query_key_value.weight", "query_key_value.bias", "dense_h_to_4h.weight", "dense_h_to_4h.bias", "word_embeddings.weight", "lm_head.weight"]
-                            need_split = any([key.endswith(filte) for filte in filte_list])
-                            if env.pp_size > 1:
-                                # embedding 层和 lm_head 都需要切
-                                need_split = need_split or int(key.split(".")[0]) == max(parts) - 1
-                                need_split = need_split or int(key.split(".")[0]) == min(parts)
-                            if need_split:
-                                state_dict[key] = torch.cat(tensor_list, dim=0).detach().clone().to(device)
-                                del tensor_list
-                                if process_exclusion:
-                                    # CPU 内存回收（速度很慢）
-                                    gc.collect()
-                            elif key.endswith("dense.weight") \
-                                or key.endswith("dense_4h_to_4.weight.weight"):
-                                    state_dict[key] = torch.cat(tensor_list, dim=1).detach().clone().to(device)
+                    if config.tp_size > 1:
+                        for key in sorted(list(state_dict.keys())):
+                            device = state_dict[key].device
+                            tensor_list = None
+                            if env.tp_rank == 0:
+                                tensor_list = [torch.zeros_like(state_dict[key]).to(state_dict[key].dtype).cuda() for _ in range(config.tp_size)]
+                            dist.gather(state_dict[key].cuda(), dst=dst, gather_list=tensor_list, group=env.tp_group)
+                            if env.tp_rank == 0:
+                                filte_list = ["query_key_value.weight", "query_key_value.bias", "dense_h_to_4h.weight", "dense_h_to_4h.bias", "word_embeddings.weight", "lm_head.weight"]
+                                need_split = any([key.endswith(filte) for filte in filte_list])
+                                if env.pp_size > 1:
+                                    # embedding 层和 lm_head 都需要切
+                                    need_split = need_split or int(key.split(".")[0]) == max(parts) - 1
+                                    need_split = need_split or int(key.split(".")[0]) == min(parts)
+                                if need_split:
+                                    state_dict[key] = torch.cat(tensor_list, dim=0).detach().clone().to(device)
                                     del tensor_list
                                     if process_exclusion:
                                         # CPU 内存回收（速度很慢）
                                         gc.collect()
+                                elif key.endswith("dense.weight") \
+                                    or key.endswith("dense_4h_to_4.weight.weight"):
+                                        state_dict[key] = torch.cat(tensor_list, dim=1).detach().clone().to(device)
+                                        del tensor_list
+                                        if process_exclusion:
+                                            # CPU 内存回收（速度很慢）
+                                            gc.collect()
                     if env.tp_rank == 0:
                         # Save gathered weights
                         if env.is_pipeline:
