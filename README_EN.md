@@ -45,8 +45,8 @@ All you need to do is provide the config and dataset to conduct your custom trai
 
 ## Usage
 
-### Examples
-More examples are available at [examples](examples).
+### Documentation and Examples
+CoLLiE provides [online documentation](https://openlmlab-collie.readthedocs.io/zh_CN/latest/). More examples are available at [examples](examples).
 
 ### Launch Scripts
 CoLLiE offers integration with [torchrun](https://pytorch.org/docs/stable/elastic/run.html) and [slurm](https://github.com/SchedMD/slurm) to enable easy launching of jobs on a single or multiple nodes.
