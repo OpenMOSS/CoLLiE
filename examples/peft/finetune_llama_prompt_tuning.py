@@ -4,6 +4,7 @@
 import os
 import sys
 sys.path.append('../../')
+sys.path.append("/mnt/petrelfs/gutianle/Megatron-LM/")
 import json
 import torch
 
@@ -40,9 +41,9 @@ from peft import (
 
 # 1. 设置路径
 # 1.1 预训练模型路径
-pretrained_model = "/mnt/petrelfs/zhangshuo/model/llama-7b-hf"
+pretrained_model = "decapoda-research/llama-7b-hf"
 # 1.2 Eval的decode结果保存路径
-save_path = './result'
+save_path = './result/'
 
 # 2. 设置配置
 # 2.1 加载配置
@@ -51,7 +52,7 @@ config = CollieConfig.from_pretrained(pretrained_model)
 # 2.2 添加配置
 # config.tp_size = 2
 # config.dp_size = 2
-config.pp_size = 8
+config.pp_size = 4
 config.train_epochs = 1
 config.train_micro_batch_size = 1
 config.eval_batch_size = 32
