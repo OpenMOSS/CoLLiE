@@ -364,7 +364,8 @@ class ChatGLMForCausalLM(CollieModelForCausalLM):
         return position_ids
 
     def prepare_inputs_for_generation(self,
-                                      input_ids: torch.Tensor,
+                                      input_ids: Optional[torch.Tensor] = None,
+                                      inputs_embeds: Optional[torch.Tensor] = None,
                                       past_key_values: Optional[list] = None,
                                       attention_mask: Optional[torch.Tensor] = None,
                                       **kwargs):
@@ -372,9 +373,19 @@ class ChatGLMForCausalLM(CollieModelForCausalLM):
         if past_key_values is None:
             self._clean_past_key_values(self.layers)
         else:
-            input_ids = input_ids[:, -1].unsqueeze(-1)
+            if input_ids is not None:
+                input_ids = input_ids[:, -1].unsqueeze(-1)
+            else:
+                inputs_embeds = inputs_embeds[:, -1, :].unsqueeze(-1)
             self._set_past_key_values(self.layers, past_key_values)
-        return {"input_ids": input_ids, "attention_mask": attention_mask}
+        inputs = {}
+        if input_ids is not None:
+            inputs["input_ids"] = input_ids
+        if attention_mask is not None:
+            inputs["attention_mask"] = attention_mask
+        if inputs_embeds is not None:
+            inputs["inputs_embeds"] = inputs_embeds
+        return inputs
 
     def clean(self):
         self._clean_hidden_states([*self.layers, self.lm_head])
