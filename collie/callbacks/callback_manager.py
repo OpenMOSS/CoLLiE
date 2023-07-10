@@ -135,7 +135,7 @@ class CallbackManager:
         #  那么它们就应该是同一个对象；
         _loaded_callbacks = set()
         _duplicated_callbacks = set()
-        for each_callback in self.all_callbacks:
+        for each_callback in self.callbacks:
             callback_name = each_callback.callback_name
             if callback_name in states and \
                     callback_name not in _loaded_callbacks:
