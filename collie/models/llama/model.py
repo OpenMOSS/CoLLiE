@@ -203,8 +203,6 @@ class LlamaLayer(nn.Module):
                 attention_score = attention_score + mask
             key_padding_mask = (1.0 - attention_mask.unsqueeze(1).unsqueeze(2)) * torch.finfo(
                 attention_score.dtype).min
-            print(f"[DEBUG] key_padding_mask.shape: {key_padding_mask.shape}")
-            print(f"[DEBUG] attention_score.shape: {attention_score.shape}")
             attention_score = F.softmax(
                 attention_score + key_padding_mask, dim=-1).type_as(value)
             output = torch.matmul(attention_score, value)

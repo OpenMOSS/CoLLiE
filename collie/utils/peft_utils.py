@@ -110,10 +110,6 @@ def patch_peft_model():
             prompts = self.get_prompt(batch_size=batch_size)
             prompts = prompts.to(inputs_embeds.dtype)
             inputs_embeds = torch.cat((prompts, inputs_embeds), dim=1)
-            from .dist_utils import env
-            print(f"[DEBUG] Rank: {env.rank} input_ids.shape: {input_ids.shape}")
-            print(f"[DEBUG] Rank: {env.rank} kwargs['labels'].shape: {kwargs['labels'].shape}")
-            print(f"[DEBUG] Rank: {env.rank} inputs_embeds.shape: {inputs_embeds.shape}")
             return self.base_model(inputs_embeds=inputs_embeds, **kwargs)
         
     def outter_forward(self, *args, **kwargs):
