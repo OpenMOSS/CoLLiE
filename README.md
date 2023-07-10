@@ -50,8 +50,8 @@ CoLLiE已使用 *Megatron-LM* 和 *Flash Attention* 重写模型，只需修改 
 
 ## 使用
 
-### 示例
-更多示例可在 [示例](examples) 中查看。
+### 文档及示例
+CoLLiE提供了 [在线文档](https://openlmlab-collie.readthedocs.io/zh_CN/latest/)。 更多示例可在 [示例](examples) 中查看。
 
 ### 启动脚本
 CoLLiE提供了与 [torchrun](https://pytorch.org/docs/stable/elastic/run.html) 和 [slurm](https://github.com/SchedMD/slurm) 的集成，以便在单个或多个节点上轻松启动任务。
