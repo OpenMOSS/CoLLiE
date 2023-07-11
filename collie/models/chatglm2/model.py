@@ -459,32 +459,34 @@ class ChatGLM2Layer(nn.Module):
         return output
     
     def forward(self, inputs: dict):
-        print(f"[Debug] {inputs.keys()}")
         inputs["rotary_pos_emb"] = inputs["rotary_pos_emb"].to(inputs["hidden_states"].device)
         # 在第一层输入改变 attention_mask
-        if self.layer_id == 1:
-            if inputs.get("full_attention_mask", None) is None:
-                if (inputs['attention_mask'] is not None and not inputs['attention_mask'].all()) or (self.past_key_values and inputs["hidden_states"].shape[0] != 1):
-                    attention_mask = self.get_masks(inputs["hidden_states"], self.past_key_values, padding_mask=inputs['attention_mask'])
-                    inputs['attention_mask'] = attention_mask
-                else:
-                    inputs.pop("attention_mask")
-            else:
-                attention_mask = inputs["full_attention_mask"]
-                inputs.pop("full_attention_mask")
+        # if self.layer_id == 1:
+        full_attention_mask = inputs.get("full_attention_mask", None)
+        # if self.layer_id == 1:
+        if full_attention_mask is None:
+            if (inputs['attention_mask'] is not None and not inputs['attention_mask'].all()) or (self.past_key_values and inputs["hidden_states"].shape[1] != 1):
+                full_attention_mask = self.get_masks(inputs["hidden_states"], self.past_key_values, padding_mask=inputs['attention_mask'])
+                    # inputs['full_attention_mask'] = full_attention_mask
+                    # print(f"[Debug] ChatGLM2Lyaer: layer_id: {self.layer_id} full_attention_mask: {full_attention_mask.shape}")
+                # else:
+                #     inputs.pop("attention_mask")
+            # else:
+            #     attention_mask = inputs["full_attention_mask"]
+                # inputs.pop("full_attention_mask")
         # Data format change to avoid explicit tranposes : [b s h] --> [s b h].
         inputs["hidden_states"] = inputs["hidden_states"].transpose(0, 1).contiguous()
         if self.config.checkpointing and self.training:
             inputs["hidden_states"] = torch.utils.checkpoint.checkpoint(
                 self._forward,
                 inputs["hidden_states"],
-                inputs.get("attention_mask", None),
+                full_attention_mask,
                 inputs["rotary_pos_emb"], 
             )
         else:
             inputs["hidden_states"] = self._forward(
                 inputs["hidden_states"],
-                inputs.get("attention_mask", None),
+                full_attention_mask,
                 inputs["rotary_pos_emb"], 
             )
         # 将输入维度转为 [b, s, h]

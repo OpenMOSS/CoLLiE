@@ -11,7 +11,7 @@ from torch import distributed as dst
 from transformers import AutoTokenizer, GenerationConfig
 from rich.progress import track
 
-from collie.metrics import RougeMetric
+from collie.metrics import RougeMetric, DecodeMetric
 from collie.controller import Trainer
 from collie.utils import env
 from collie import CollieConfig, ChatGLM2ForCausalLM, DashProvider, LossMonitor, TGSMonitor, MemoryMonitor, LRMonitor, CollieDatasetForTraining, CollieDatasetForGeneration, EvaluatorForGeneration
@@ -25,10 +25,10 @@ def load_data(path_dict):
         dataset = []
         if 'train' in name:
             for _, row in track(data_df.iterrows(), description=name, total=len(data_df), disable=env.rank != 0):
-                dataset.append({ "input": f"Text: {' '.join(row['text'].split()[:500])} \nSummary: {row['summary']}","output": f"{row['summary']}"})
+                dataset.append({ "input": f"Text: {' '.join(row['text'].split()[:300])} \nSummary: {row['summary']}","output": f"{row['summary']}"})
         else:
             for _, row in track(data_df.iterrows(), description=name, total=len(data_df), disable=env.rank != 0):
-                dataset.append({ "text": f"Text: {' '.join(row['text'].split()[:500])} \nSummary: ","target": f"{row['summary']}"})
+                dataset.append({ "text": f"Text: {' '.join(row['text'].split()[:300])} \nSummary: ","target": f"{row['summary']}"})
         data_bundle[name] = dataset
     return data_bundle
 
@@ -36,13 +36,13 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--train_path", default="/mnt/petrelfs/hongjiawei/datasets/billsum/us_train_data_final_OFFICIAL.jsonl")
 parser.add_argument("--dev_path", default="/mnt/petrelfs/hongjiawei/datasets/billsum/ca_test_data_final_OFFICIAL.jsonl")
 parser.add_argument("--test_path", default="/mnt/petrelfs/hongjiawei/datasets/billsum/us_test_data_final_OFFICIAL.jsonl")
-parser.add_argument("--max_tokens", default=1500)
+parser.add_argument("--max_tokens", default=1800)
 parser.add_argument("--model_path", default="THUDM/chatglm2-6b")
 args = parser.parse_args()
 
 config = CollieConfig.from_pretrained(args.model_path, trust_remote_code=True)
-config.pp_size = 4
-config.tp_size = 2
+config.pp_size = 8
+config.tp_size = 1
 config.train_micro_batch_size = 1
 config.eval_batch_size = 1
 config.gradient_accumulation_steps = 128
@@ -72,8 +72,8 @@ tokenizer = AutoTokenizer.from_pretrained(args.model_path, add_eos_token=False, 
 
 data_bundle = load_data(path_dict)
 
-traine_dataset = CollieDatasetForTraining(data_bundle['train'][:10],
-                                          tokenizer=tokenizer)
+traine_dataset = CollieDatasetForTraining(data_bundle['train'],
+                                          tokenizer=tokenizer, max_length=args.max_tokens)
 eval_dataset = CollieDatasetForGeneration(data_bundle['dev'],
                                                tokenizer=tokenizer)
 
@@ -87,7 +87,7 @@ evaluator_rouge = EvaluatorForGeneration(
     model=model,
     config=config,
     dataset=eval_dataset,
-    metrics={'rouge': RougeMetric()},
+    metrics={'rouge': DecodeMetric()},
     generation_config=GenerationConfig(
         eos_token_id=tokenizer.eos_token_id,
         pad_token_id=tokenizer.pad_token_id,
@@ -108,12 +108,12 @@ trainer = Trainer(
         MemoryMonitor(config),
         LRMonitor(config)
     ],
-    data_provider=DashProvider(tokenizer, port=12888, stream=True,
+    data_provider=DashProvider(tokenizer, port=13888, stream=True,
                                  generation_config=GenerationConfig(
                                      eos_token_id=tokenizer.eos_token_id,
                                      pad_token_id=tokenizer.pad_token_id,
                                      max_new_tokens=100,
                                  )),
-    evaluators=[evaluator_rouge]
+    # evaluators=[evaluator_rouge]
 )
 trainer.train()
