@@ -384,7 +384,6 @@ class ColliePipelineEngine(PipelineEngine):
                 local_part=self.inputs_extra["_local_data"],
                 group=self.grid.get_slice_parallel_group()
             )
-
             inputs[self.inputs_extra["_grad_key"]] = part_input.full()
             inputs[self.inputs_extra["_grad_key"]].requires_grad = True
             # skip mask
@@ -398,9 +397,9 @@ class ColliePipelineEngine(PipelineEngine):
         # Zero out the gradients each time we use the tensor because only the data in
         # tensor changes across batches
         self._zero_grads(inputs)
-
+        # if buffer_id >= 1:
+        #     import pdb; pdb.set_trace()
         outputs = super(PipelineEngine, self).forward(inputs)
-
         # Reset activation checkpointing buffers.
         # Need to call this between evaluation iterations
         if not self.module.training:
@@ -627,7 +626,6 @@ class ColliePipelineEngine(PipelineEngine):
         type_tensor = torch.LongTensor(data=[0]).to(self.device)
         p2p.recv(type_tensor, send_stage)
         recv_type = type_tensor.item()
-
         # A single tensor will be sent.
         if recv_type == 0:
             recv_ndims = torch.LongTensor(data=[0]).to(self.device)
@@ -712,7 +710,6 @@ class ColliePipelineEngine(PipelineEngine):
                                            self.next_stage)
                     self._send_tensor_meta(self.outputs_extra["_local_data"],
                                            self.next_stage)
-
         if isinstance(outputs, torch.Tensor):
             p2p.send(outputs, self.next_stage)
         elif isinstance(outputs, dict):
@@ -793,7 +790,7 @@ class ColliePipelineEngine(PipelineEngine):
             self.timers('pipe_recv_input').start()
 
         recvd = None
-
+        # print(f"Print self.pipe_recv_buf: {self.pipe_recv_buf} Prev stage: {self.prev_stage}")
         # Allocate the buffer if necessary
         if self.pipe_recv_buf is None:
             self.pipe_recv_buf = self._recv_tensor_meta(self.prev_stage)

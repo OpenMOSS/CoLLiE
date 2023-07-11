@@ -76,7 +76,7 @@ class progress:
         self.completed = completed
         self.task_id = self.bar.add_task(
             desc, upgrade_period=upgrade_period, completed=completed,
-            post_desc=post_desc, visible=not disable, total=total
+            post_desc=post_desc, visible=not disable, total=self.total
         )
 
     def __iter__(self):

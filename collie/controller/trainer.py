@@ -39,7 +39,7 @@ from .server import Server
 from collie.data import CollieDataLoader
 from collie.callbacks.callback import Callback
 from collie.callbacks.callback_manager import CallbackManager, prepare_callback
-from .utils import TrainerEventTrigger
+from .utils import TrainerEventTrigger, _merge_peft, _split_peft
 
 class Trainer(TrainerEventTrigger):
     r"""
@@ -375,6 +375,10 @@ class Trainer(TrainerEventTrigger):
         :return: 当前 batch 的 loss
         """
         if trainer.config.pp_size > 1:
+            if isinstance(trainer.engine.module, PipelineModel):
+                trainer.engine.module.forward_type = "train"
+            if isinstance(trainer.engine.module, PeftModel) and isinstance(trainer.engine.module.get_base_model(), PipelineModel):
+                trainer.engine.modulee.get_base_model().forward_type = "train"
             loss = trainer.engine.module(**batch)["loss"]
         else:
             # concat prompt labels for p-tuning
@@ -455,9 +459,11 @@ class Trainer(TrainerEventTrigger):
                     state_dict[key.replace(f"{adapter_name}.", "")] = named_parameters[key].data
                 if env.dp_rank == 0 and env.tp_rank == 0:
                     io_driver.save(state_dict, os.path.join(path, name))
+        env.barrier()
         if env.rank == 0:
             io_driver.save(json.dumps(self.config.peft_config.__dict__), os.path.join(path, "adapter_config.json"))
-        
+            _merge_peft(path, name_prefix, io_driver)
+
     def load_peft(self, path: str, process_exclusion: bool = False, adapter_name="default", **kwargs):...
     def load_peft(self, path: str, process_exclusion: bool = False, adapter_name="default",
                    protocol: str = "file", **kwargs):
@@ -484,12 +490,10 @@ class Trainer(TrainerEventTrigger):
             name_prefix = "adapter_model"
         else:
             name_prefix = f"adapter_model_{adapter_name}"
-        if env.pp_size == 1:
-            name = f"{name_prefix}.bin"
-        else:
-            name = f"{name_prefix}_{env.pp_rank}.bin"
+        name = f"{name_prefix}.bin"
         assert io_driver.exists(os.path.join(path, name)), f"{name} does not exist."
         loaded_state_dict = io_driver.load(os.path.join(path, name), mode="rb")
+        loaded_state_dict = _split_peft(loaded_state_dict)
         named_parameters = {name: param for name, param in self.engine.module.named_parameters() if any([name.replace(f"{adapter_name}.", "") == k for k in loaded_state_dict.keys()])}
         contexts = []
         if is_zero3_enabled(self.config):

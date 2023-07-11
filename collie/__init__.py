@@ -2,7 +2,7 @@
 '''
 from .config import CollieConfig
 from .models import LlamaForCausalLM, MossForCausalLM, CollieModelForCausalLM, \
-    ChatGLMForCausalLM, InternLMForCausalLM
+    ChatGLMForCausalLM, InternLMForCausalLM, ChatGLM2ForCausalLM, Moss003MoonForCausalLM
 from .callbacks import Callback, HasMonitorCallback, CheckpointCallback, \
     LoadBestModelCallback
 from .module import PipelineGenerationMixin, ColumnParallelLinear, \
@@ -47,6 +47,8 @@ __all__ = [
     'CollieModelForCausalLM',
     'ChatGLMForCausalLM',
     'InternLMForCausalLM',
+    'ChatGLM2ForCausalLM',
+    'Moss003MoonForCausalLM'
 
     # modules
     'PipelineGenerationMixin',
