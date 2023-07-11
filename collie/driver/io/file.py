@@ -60,7 +60,10 @@ class FileIODriver(IODriver):
 
     @staticmethod
     def delete(path: str):
-        shutil.rmtree(path)
+        if os.path.isdir(path):
+            shutil.rmtree(path)
+        else:
+            os.remove(path)
 
     @staticmethod
     def makedirs(path: str, exist_ok: bool = False):
