@@ -600,7 +600,7 @@ class MossForCausalLM(CollieModelForCausalLM):
                 _index_dict = json.loads(io_driver.load(_file, mode="r"))
                 total_size += _index_dict["total_size"]
                 weight_map.update(_index_dict["weight_map"])
-                os.remove(_file)
+                io_driver.delete(_file)
             merged_dict = {
                 "metadata": {"total_size": total_size},
                 "weight_map": weight_map
