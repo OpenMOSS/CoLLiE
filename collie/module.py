@@ -191,7 +191,7 @@ class PipelineGenerationMixin(GenerationMixin):
         return super().contrastive_search(*args, **kwargs)
         
     def generate_forward(self,
-                input_ids: torch.Tensor,
+                input_ids: Optional[torch.Tensor] = None,
                 attention_mask: Optional[torch.Tensor] = None,
                 inputs_embeds: Optional[torch.Tensor] = None,
                 position_ids: Optional[torch.Tensor] = None,
@@ -206,13 +206,13 @@ class PipelineGenerationMixin(GenerationMixin):
         inputs = {}
         if input_ids is not None:
             inputs["input_ids"] = input_ids
+            inputs["labels"] = inputs["input_ids"]
         if attention_mask is not None:
             inputs["attention_mask"] = attention_mask
         if position_ids is not None:
             inputs["position_ids"] = position_ids
         if inputs_embeds is not None:
             inputs["inputs_embeds"] = inputs_embeds
-        inputs["labels"] = inputs["input_ids"]
         outputs = self.engine_container[-1].generate_batch(inputs, use_cache)
         hidden_states = self._get_hidden_states()
         if self.is_contrastive_search:
@@ -305,6 +305,9 @@ class PipelineGenerationMixin(GenerationMixin):
             hidden_states=hidden_states,
             attentions=None
         )
+        
+    def peft_forward(self, *args, **kwargs):
+        raise NotImplementedError
     
     def prepare_inputs_for_generation(self, 
                                       input_ids: Optional[torch.Tensor] = None,
@@ -531,6 +534,8 @@ class PipelineModel(PipelineModule, PipelineGenerationMixin):
                 return self.train_forward(*args, **kwargs)
             elif self.forward_type == "eval":
                 return self.eval_forward(*args, **kwargs)
+            else:
+                raise RuntimeError("Wrong forward type!")
         else:
             # hack: super(PipelineModel, self).forward 只能接收一个参数，这个参数的类型是 dict
             if "input_ids" in kwargs.keys() and isinstance(kwargs["input_ids"], dict):
@@ -590,7 +595,7 @@ class PipelineModel(PipelineModule, PipelineGenerationMixin):
 class MultiParallelGrid(PipelineParallelGrid):
     """
     重写以支持 ``megatron`` 中的张量并行进程组
-    """
+    """ 
     def __init__(self, topology):
         self.global_rank = dist.get_rank()
         self.world_size = dist.get_world_size()

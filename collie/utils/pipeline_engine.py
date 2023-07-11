@@ -261,7 +261,12 @@ class ColliePipelineEngine(PipelineEngine):
             total_loss = None
         self.total_loss = None
         # special case for generation
-        gradient_accumulation_steps = batch["input_ids"].shape[0]
+        if "input_ids" in batch.keys():
+            gradient_accumulation_steps = batch["input_ids"].shape[0]
+        elif "inputs_embeds" in batch.keys():
+            gradient_accumulation_steps = batch["inputs_embeds"].shape[0]
+        else:
+            raise ValueError("Batch must have at least one key of `input_ids` or `input_embeds`!")
         if use_cache:
             batch = [batch]
         else:
