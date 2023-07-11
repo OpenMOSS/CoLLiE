@@ -22,7 +22,7 @@ from torch.optim.lr_scheduler import _LRScheduler
 from deepspeed.accelerator import get_accelerator
 from deepspeed.runtime.engine import DeepSpeedSchedulerCallable
 from transformers.modeling_utils import PreTrainedModel, load_state_dict
-from peft import PeftModel, PeftConfig, get_peft_model_state_dict, set_peft_model_state_dict
+from peft import PeftModel, PeftConfig, get_peft_model_state_dict, set_peft_model_state_dict, PeftType
 from transformers import PreTrainedTokenizerBase
 from transformers.utils import ContextManagers
 
@@ -378,7 +378,7 @@ class Trainer(TrainerEventTrigger):
             if isinstance(trainer.engine.module, PipelineModel):
                 trainer.engine.module.forward_type = "train"
             if isinstance(trainer.engine.module, PeftModel) and isinstance(trainer.engine.module.get_base_model(), PipelineModel):
-                trainer.engine.modulee.get_base_model().forward_type = "train"
+                trainer.engine.module.get_base_model().forward_type = "train"
             loss = trainer.engine.module(**batch)["loss"]
         else:
             # concat prompt labels for p-tuning
@@ -443,18 +443,19 @@ class Trainer(TrainerEventTrigger):
             self.model, adapter_name=adapter_name
         )
         named_parameters = {name: param for name, param in self.engine.module.named_parameters() if any([name.replace(f"{adapter_name}.", "") == k for k in state_dict.keys()])}
-        if adapter_name == "default":
-            name_prefix = "adapter_model"
-        else:
-            name_prefix = f"adapter_model_{adapter_name}"
-        if env.pp_size == 1:
+        # 是否需要每个 pp rank 单独保存
+        pp_save = True
+        pp_save = pp_save and env.pp_size > 1
+        pp_save = pp_save and self.config.peft_config.peft_type in (PeftType.LORA, PeftType.ADALORA,  PeftType.PREFIX_TUNING)
+        name_prefix = "adapter_model"
+        if not pp_save:
             name = f"{name_prefix}.bin"
         else:
             name = f"{name_prefix}_{env.pp_rank}.bin"
         if is_zero3_enabled(self.config):
             contexts.append(deepspeed.zero.GatheredParameters(list(named_parameters.values())))
         with ContextManagers(contexts):
-            if env.dp_rank == 0 or not is_zero3_enabled(self.config):
+            if env.dp_rank == 0 or not is_zero3_enabled(self.config) and (pp_save or env.pp_rank == 0):
                 for key in named_parameters.keys():
                     state_dict[key.replace(f"{adapter_name}.", "")] = named_parameters[key].data
                 if env.dp_rank == 0 and env.tp_rank == 0:

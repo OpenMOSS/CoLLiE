@@ -30,7 +30,7 @@ from collie.driver.io import IODriver
 from collie.models.base import CollieModelForCausalLM
 from collie.module import ColumnParallelLinearWithoutBias, RowParallelLinearWithoutBias, ColumnParallelLMHead
 
-from typing import Union, Optional
+from typing import Union, Optional, Tuple
 from collections import OrderedDict
 from transformers.modeling_utils import dtype_byte_size
 from transformers.modeling_utils import PretrainedConfig
@@ -149,7 +149,7 @@ class LlamaLayer(nn.Module):
             eps=config.rms_norm_eps
         )
         # 务必保持变量名一致
-        self.use_cache = False
+        self.use_cache = self.config.model_config.use_cache
         self.past_key_values = None
         self.hidden_states = None
 
@@ -169,19 +169,17 @@ class LlamaLayer(nn.Module):
         query, key, value = rearrange(query, "b n (h d) -> b n h d", d=head_dim), \
             rearrange(key, "b n (h d) -> b n h d", d=head_dim), \
             rearrange(value, "b n (h d) -> b n h d", d=head_dim)
-        if self.past_key_values is not None and self.use_cache:
-            start_pos = self.past_key_values[0].shape[1]
+        if self.past_key_values is not None:
+            start_pos = self.past_key_values.shape[3]
         else:
-            self.past_key_values = None
             start_pos = 0
         query, key = self.self_attn["rotary_emb"](query, key, seq_len, start_pos)
-        if self.use_cache:
-            if self.past_key_values is not None:
-                query = torch.cat([self.past_key_values[0], query], dim=1)
-                key = torch.cat([self.past_key_values[0], key], dim=1)
-                value = torch.cat([self.past_key_values[1], value], dim=1)
-            if not self.training:
-                self.past_key_values = [key, value]
+        if self.past_key_values is not None:
+            query = torch.cat([self.past_key_values[0].permute([0, 2, 1, 3]), query], dim=1)
+            key = torch.cat([self.past_key_values[0].permute([0, 2, 1, 3]), key], dim=1)
+            value = torch.cat([self.past_key_values[1].permute([0, 2, 1, 3]), value], dim=1)
+        if self.use_cache and not self.training:
+            self.past_key_values = torch.stack((key, value), dim=0)
         attention_mask = attention_mask if attention_mask is not None else torch.ones((query.shape[0], query.shape[1])).to(hidden_states.device)
         if self.config.use_flash:
             assert FlashAttention is not None, \
@@ -254,7 +252,11 @@ class LlamaForCausalLM(CollieModelForCausalLM):
             self.lm_head.weight = self.embed_tokens.weight
         self.main_input_name = "input_ids"
 
-    def forward(self, input_ids: Optional[torch.Tensor] = None, attention_mask: Optional[torch.Tensor] = None, **kwargs):
+    def forward(self, 
+                input_ids: Optional[torch.Tensor] = None, 
+                attention_mask: Optional[torch.Tensor] = None, 
+                past_key_values: Optional[Tuple[torch.Tensor]] = None,
+                **kwargs):
         inputs = {"input_ids": input_ids}
         if attention_mask is not None:
             inputs["attention_mask"] = attention_mask
@@ -262,6 +264,10 @@ class LlamaForCausalLM(CollieModelForCausalLM):
             inputs["hidden_states"] = kwargs['inputs_embeds']
         else:
             inputs["hidden_states"] = self.embed_tokens(inputs["input_ids"])
+        if past_key_values is not None:
+            self._set_past_key_values(self.layers, past_key_values)
+        else:
+            self._clean_past_key_values(self.layers)
         all_hidden_states = ()
         for layer in self.layers:
             all_hidden_states += (inputs["hidden_states"],)
@@ -277,23 +283,14 @@ class LlamaForCausalLM(CollieModelForCausalLM):
             attentions=None
         )
 
-    def prepare_inputs_for_generation(self,
-                                      input_ids: torch.Tensor,
-                                      past_key_values: Optional[list] = None,
-                                      attention_mask: Optional[torch.Tensor] = None,
-                                      **kwargs):
-        self._set_use_cache(self.layers, kwargs.get("use_cache", self.generation_config.use_cache))
-        if past_key_values is None:
-            self._clean_past_key_values(self.layers)
-        else:
-            input_ids = input_ids[:, -1].unsqueeze(-1)
-            self._set_past_key_values(self.layers, past_key_values)
-        return {"input_ids": input_ids, "attention_mask": attention_mask, "past_key_values": past_key_values}
-
     def clean(self):
         self._clean_hidden_states([*self.layers, self.lm_head])
         self._clean_past_key_values(self.layers)
         self._set_use_cache(self.layers, False)
+        
+    def set_cache(self, use_cache, past_key_values):
+        self._set_use_cache(self.layers, use_cache)
+        self._set_past_key_values(self.layers, past_key_values)
 
     @classmethod
     def pipeline_layers(cls, config: CollieConfig):
