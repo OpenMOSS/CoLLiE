@@ -63,7 +63,9 @@ def patch_peft_model():
                 return_dict=return_dict,
                 **kwargs,
             )
-
+        from .dist_utils import env
+        if env.rank == 0:
+            import pdb; pdb.set_trace()
         batch_size = input_ids.shape[0]
         if attention_mask is not None:
             # concat prompt attention mask
@@ -120,98 +122,48 @@ def patch_peft_model():
     def prepare_inputs_for_generation(self, *args, **kwargs):
         peft_config = self.active_peft_config
         model_kwargs = self.base_model_prepare_inputs_for_generation(*args, **kwargs)
-        if model_kwargs.get("past_key_values", None) is None and peft_config.peft_type == PeftType.PREFIX_TUNING:
-            batch_size = model_kwargs["decoder_input_ids"].shape[0]
-            past_key_values = self.get_prompt(batch_size)
-            if self.base_model_torch_dtype is not None:
-                # handle the case for Bloom where it outputs tuple of tuples
-                if isinstance(past_key_values[0], tuple):
-                    past_key_values = tuple(
-                        tuple(
-                            past_key_value.to(self.base_model_torch_dtype) for past_key_value in past_key_value_tuple
-                        )
-                        for past_key_value_tuple in past_key_values
-                    )
-                else:
-                    past_key_values = tuple(
-                        past_key_value.to(self.base_model_torch_dtype) for past_key_value in past_key_values
-                    )
-            model_kwargs["past_key_values"] = past_key_values
+        if isinstance(peft_config, PromptLearningConfig):
+            if peft_config.peft_type == PeftType.PREFIX_TUNING:
+                prefix_attention_mask = torch.ones(
+                    model_kwargs["input_ids"].shape[0], peft_config.num_virtual_tokens
+                ).to(model_kwargs["input_ids"].device)
+                model_kwargs["attention_mask"] = torch.cat(
+                    (prefix_attention_mask, model_kwargs["attention_mask"]), dim=1
+                )
 
+            if model_kwargs.get("past_key_values", None) is None and peft_config.peft_type == PeftType.PREFIX_TUNING:
+                past_key_values = self.get_prompt(batch_size=model_kwargs["input_ids"].shape[0])
+
+                if self.base_model_torch_dtype is not None:
+                    # handle the case for Bloom where it outputs tuple of tuples
+                    if isinstance(past_key_values[0], tuple):
+                        past_key_values = tuple(
+                            tuple(
+                                past_key_value.to(self.base_model_torch_dtype)
+                                for past_key_value in past_key_value_tuple
+                            )
+                            for past_key_value_tuple in past_key_values
+                        )
+                    else:
+                        past_key_values = tuple(
+                            past_key_value.to(self.base_model_torch_dtype) for past_key_value in past_key_values
+                        )
+
+                model_kwargs["past_key_values"] = past_key_values
+            else:
+                if model_kwargs.get("past_key_value", None) is None and self.word_embeddings is not None:
+                    inputs_embeds = self.word_embeddings(model_kwargs["input_ids"])
+                    prompts = self.get_prompt(batch_size=model_kwargs["input_ids"].shape[0])
+                    prompts = prompts.to(inputs_embeds.dtype)
+                    model_kwargs["inputs_embeds"] = torch.cat((prompts, inputs_embeds), dim=1)
+                    if model_kwargs.get("attention_mask", None) is not None:
+                        # concat prompt attention mask
+                        prefix_attention_mask = torch.ones(model_kwargs["input_ids"].shape[0], peft_config.num_virtual_tokens).to(self.device).to(model_kwargs["attention_mask"].dtype)
+                        model_kwargs["attention_mask"] = torch.cat((prefix_attention_mask, model_kwargs["attention_mask"]), dim=1)
+                    model_kwargs["input_ids"] = None
+                    
         return model_kwargs
     PeftModelForCausalLM.prepare_inputs_for_generation = prepare_inputs_for_generation
-    
-    # raw_generate = PeftModelForCausalLM.generate
-    # def _generate(self, *args, **kwargs):
-    #     from ..module import PipelineModel
-    #     if isinstance(self.get_base_model(), PipelineModel):
-    #         raw_generate_forward = self.get_base_model().generate_forward
-    #         def _forward(
-    #             input_ids=None,
-    #             attention_mask=None,
-    #             inputs_embeds=None,
-    #             labels=None,
-    #             output_attentions=None,
-    #             output_hidden_states=None,
-    #             return_dict=None,
-    #             **kwargs,
-    #         ):
-    #             from .dist_utils import env
-    #             peft_config = self.active_peft_config
-    #             if not isinstance(peft_config, PromptLearningConfig) or env.pp_rank > 0:
-    #                 return raw_generate_forward(
-    #                     input_ids=input_ids,
-    #                     attention_mask=attention_mask,
-    #                     inputs_embeds=inputs_embeds,
-    #                     labels=labels,
-    #                     output_attentions=output_attentions,
-    #                     output_hidden_states=output_hidden_states,
-    #                     return_dict=return_dict,
-    #                     **kwargs,
-    #                 )
-
-    #             batch_size = input_ids.shape[0]
-    #             # forward 里面已经拼一次了
-    #             # if attention_mask is not None:
-    #             #     # concat prompt attention mask
-    #             #     prefix_attention_mask = torch.ones(batch_size, peft_config.num_virtual_tokens).to(self.device).to(attention_mask.dtype)
-    #             #     attention_mask = torch.cat((prefix_attention_mask, attention_mask), dim=1)
-    #             if kwargs.get("position_ids", None) is not None:
-    #                 warnings.warn("Position ids are not supported for parameter efficient tuning. Ignoring position ids.")
-    #                 kwargs["position_ids"] = None
-    #             if kwargs.get("token_type_ids", None) is not None:
-    #                 warnings.warn("Token type ids are not supported for parameter efficient tuning. Ignoring token type ids")
-    #                 kwargs["token_type_ids"] = None
-    #             kwargs.update(
-    #                 {
-    #                     "attention_mask": attention_mask,
-    #                     "labels": labels,
-    #                     "output_attentions": output_attentions,
-    #                     "output_hidden_states": output_hidden_states,
-    #                     "return_dict": return_dict,
-    #                 }
-    #             )
-
-    #             if peft_config.peft_type == PeftType.PREFIX_TUNING:
-    #                 past_key_values = self.get_prompt(batch_size)
-    #                 return raw_generate_forward(input_ids=input_ids, past_key_values=past_key_values, **kwargs)
-    #             else:
-    #                 if inputs_embeds is None:
-    #                     inputs_embeds = self.word_embeddings(input_ids)
-    #                 # concat prompt labels
-    #                 if labels is not None:
-    #                     prefix_labels = torch.full((batch_size, peft_config.num_virtual_tokens), -100).to(self.device)
-    #                     kwargs["labels"] = torch.cat((prefix_labels, labels), dim=1)
-    #                 prompts = self.get_prompt(batch_size=batch_size)
-    #                 prompts = prompts.to(inputs_embeds.dtype)
-    #                 inputs_embeds = torch.cat((prompts, inputs_embeds), dim=1)
-    #                 return raw_generate_forward(inputs_embeds=inputs_embeds, **kwargs)
-    #         self.get_base_model().generate_forward = _forward
-    #     result = raw_generate(self, *args, **kwargs)
-    #     if isinstance(self.get_base_model(), PipelineModel):
-    #         self.get_base_model().generate_forward = raw_generate_forward
-    #     return result
-    # PeftModelForCausalLM.generate = _generate
     
 def patch_prompt_tuning():
     def __init__(self, config, word_embeddings):
