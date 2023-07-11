@@ -368,7 +368,6 @@ class ColliePipelineEngine(PipelineEngine):
     def _exec_forward_pass(self, buffer_id):
         self.tput_timer.start()
         self.mem_status('BEFORE FWD', reset_max=True)
-
         # buffer['inputs'][buffer_id]: dict
         inputs = {k: v.clone() for k, v in self.pipe_buffers['inputs'][buffer_id].items()}
 
@@ -535,7 +534,6 @@ class ColliePipelineEngine(PipelineEngine):
             self.timers('batch_input').start()
             
         batch = self._next_batch() # {"input_ids": torch.Tensor, "labels": torch.Tensor}
-
         # batch = self._next_batch() # (inputs, labels)
 
         # if self.is_first_stage():

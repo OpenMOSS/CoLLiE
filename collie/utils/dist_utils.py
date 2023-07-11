@@ -251,7 +251,8 @@ def patch_deepspeed(config):
         raw_wandb_init(self, wandb_config)
         import wandb
         wandb.run.name = wandb_config.job_name
-        wandb.config.update(wandb_config.config, allow_val_change=True)
+        # this causes bugs
+        # wandb.config.update(wandb_config.config, allow_val_change=True)
     WandbMonitor.__init__ = collie_wandb_init
 
     # LayerSpec

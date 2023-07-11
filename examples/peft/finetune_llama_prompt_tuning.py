@@ -43,7 +43,7 @@ from peft import (
 # 1.1 预训练模型路径
 pretrained_model = 'decapoda-research/llama-7b-hf'
 # 1.2 Eval的decode结果保存路径
-save_path = './result'
+save_path = './result/'
 
 # 2. 设置配置
 # 2.1 加载配置
