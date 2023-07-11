@@ -8,7 +8,7 @@ from transformers import AutoTokenizer
 from collie import Trainer, CollieConfig
 from collie.module import GPTLMLoss
 from collie.callbacks import CheckpointCallback
-from collie.models import MossForCausalLM
+from collie.models import Moss003MoonForCausalLM
 from collie.utils import env
 from collie.log import logger
 
@@ -59,7 +59,7 @@ def test_checkpoint_callback(pretrained_model, model_only, folder,
         train_sample = tokenizer("Collie is a python package for finetuning large language models.", return_tensors="pt").input_ids.squeeze(0)
         train_dataset = [(train_sample, train_sample) for _ in range(100)]
 
-        model = MossForCausalLM.from_pretrained(pretrained_model, config=config)
+        model = Moss003MoonForCausalLM.from_pretrained(pretrained_model, config=config)
 
         every_n_epochs = 2
         every_n_batches = 10

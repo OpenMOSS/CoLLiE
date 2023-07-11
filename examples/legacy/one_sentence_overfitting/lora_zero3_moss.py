@@ -12,7 +12,7 @@ from collie.utils import setup_distribution
 from collie.config import CollieConfig
 from collie.controller.trainer import Trainer
 from collie.metrics.decode import DecodeMetric
-from collie.models.moss.model import MossForCausalLM
+from collie.models.moss_moon import Moss003MoonForCausalLM
 
 config = CollieConfig.from_pretrained("fnlp/moss-moon-003-sft", trust_remote_code=True)
 print("config loaded")
@@ -41,7 +41,7 @@ config.ds_config = {
     "zero_force_ds_cpu_optimizer": False,
 }
 setup_distribution(config)
-model = MossForCausalLM.from_pretrained("/mnt/lustre/zhangshuo/model/moss-moon-003-sft", config)
+model = Moss003MoonForCausalLM.from_pretrained("/mnt/lustre/zhangshuo/model/moss-moon-003-sft", config)
 peft_config = LoraConfig(
     r=8,
     lora_alpha=32,
