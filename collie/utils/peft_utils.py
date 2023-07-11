@@ -151,15 +151,13 @@ def patch_peft_model():
 
                 model_kwargs["past_key_values"] = past_key_values
             else:
-                if model_kwargs.get("past_key_value", None) is None and self.word_embeddings is not None:
+                if model_kwargs.get("past_key_values", None) is None \
+                    and kwargs.get("past_key_values", None) is None \
+                        and self.word_embeddings is not None:
                     inputs_embeds = self.word_embeddings(model_kwargs["input_ids"])
                     prompts = self.get_prompt(batch_size=model_kwargs["input_ids"].shape[0])
                     prompts = prompts.to(inputs_embeds.dtype)
                     model_kwargs["inputs_embeds"] = torch.cat((prompts, inputs_embeds), dim=1)
-                    if model_kwargs.get("attention_mask", None) is not None:
-                        # concat prompt attention mask
-                        prefix_attention_mask = torch.ones(model_kwargs["input_ids"].shape[0], peft_config.num_virtual_tokens).to(self.device).to(model_kwargs["attention_mask"].dtype)
-                        model_kwargs["attention_mask"] = torch.cat((prefix_attention_mask, model_kwargs["attention_mask"]), dim=1)
                     model_kwargs["input_ids"] = None
                     
         return model_kwargs
