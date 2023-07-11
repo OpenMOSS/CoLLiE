@@ -20,7 +20,7 @@ from collie.optim.lomo import Lomo
 from collie.controller.trainer import Trainer
 from collie.controller.evaluator import EvaluatorForPerplexity, EvaluatorForGeneration
 
-from collie.models.moss import MossForCausalLM
+from collie.models.moss_moon import Moss003MoonForCausalLM
 
 from collie.utils.monitor import StepTimeMonitor, TGSMonitor, MemoryMonitor, LossMonitor, EvalMonitor
 from collie.metrics import DecodeMetric, PPLMetric, BleuMetric
@@ -74,7 +74,7 @@ train_dataset = CollieDatasetForTraining(train_dataset, tokenizer)
 eval_dataset = train_dataset[:32]
 
 # 5. 加载预训练模型
-model = MossForCausalLM.from_pretrained(pretrained_model, config=config)
+model = Moss003MoonForCausalLM.from_pretrained(pretrained_model, config=config)
 
 # 6. 设置优化器
 optimizer = Lomo(

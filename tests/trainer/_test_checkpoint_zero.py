@@ -7,7 +7,7 @@ sys.path.append("../../")
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-from collie.models.moss import MossForCausalLM
+from collie.models.moss_moon import Moss003MoonForCausalLM
 from collie.module import GPTLMLoss
 from collie.config import CollieConfig
 from collie.data import CollieDataLoader
@@ -71,7 +71,7 @@ def init(pretrained_model, format, dp_size, tp_size, pp_size):
     train_dataset = [(train_sample, train_sample) for _ in range(400)]
 
     if format == "collie":
-        model = MossForCausalLM.from_pretrained(pretrained_model, config=config)
+        model = Moss003MoonForCausalLM.from_pretrained(pretrained_model, config=config)
     elif format == "hf":
         setup_distribution(config)
         model = AutoModelForCausalLM.from_pretrained(pretrained_model)
