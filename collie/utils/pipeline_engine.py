@@ -400,6 +400,13 @@ class ColliePipelineEngine(PipelineEngine):
         # if buffer_id >= 1:
         #     import pdb; pdb.set_trace()
         outputs = super(PipelineEngine, self).forward(inputs)
+
+        if self.pipe_recv_buf is None and list(outputs.keys()) != list(self.pipe_recv_buf.keys()):
+            raise RuntimeError(
+                "Output keys of this micro batch are not the same as the "
+                "previous ones. Please check your model or data. {} vs {}"
+                .format(list(outputs.keys()), list(self.pipe_recv_buf.keys()))
+            )
         # Reset activation checkpointing buffers.
         # Need to call this between evaluation iterations
         if not self.module.training:
