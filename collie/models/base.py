@@ -110,8 +110,6 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         """
         生成函数。用法同 ``huggingface``。
         """
-        # if "synced_gpus" not in kwargs.keys():
-        #     kwargs["synced_gpus"] = is_zero3_enabled(self.collie_config)
         res = super().generate(*args, **kwargs)
         self.clean()
         return res
@@ -306,10 +304,12 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                 if not is_zero3_enabled(config) or env.dp_rank == 0:
                     if getattr(config.quantization_config, "load_in_4bit", False) or \
                         config.quantization_config.load_in_8bit:
-                        set_module_quantized_tensor_to_device(
-                            module=model, tensor_name=name, device="cpu" if param.device == torch.device("meta") else param.device,
-                            value=state_dict[name].data
-                        )
+                            set_module_quantized_tensor_to_device(
+                                module=model, 
+                                tensor_name=name, 
+                                device="cpu" if param.device == torch.device("meta") else param.device,
+                                value=state_dict[name].data
+                            )
                     else:
                         if param.device == torch.device("meta"):
                             set_module_tensor_to_device(
@@ -322,6 +322,11 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         if config.peft_config.peft_type is not None:
             model = get_peft_model(model, config.peft_config)
             model.print_trainable_parameters()
+        # if env.rank == 0:
+        #     import pdb; pdb.set_trace()
+        # else:
+        #     while True:
+        #         pass
         return model
 
     @classmethod
