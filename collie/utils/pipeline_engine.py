@@ -401,12 +401,6 @@ class ColliePipelineEngine(PipelineEngine):
         #     import pdb; pdb.set_trace()
         outputs = super(PipelineEngine, self).forward(inputs)
 
-        if self.pipe_recv_buf is not None and list(outputs.keys()) != list(self.pipe_recv_buf.keys()):
-            raise RuntimeError(
-                "Output keys of this micro batch are not the same as the "
-                "previous ones. Please check your model or data. {} vs {}"
-                .format(list(outputs.keys()), list(self.pipe_recv_buf.keys()))
-            )
         # Reset activation checkpointing buffers.
         # Need to call this between evaluation iterations
         if not self.module.training:
@@ -430,6 +424,13 @@ class ColliePipelineEngine(PipelineEngine):
             assert _grad_key is not None, "None of the outputs has grad!"
             self.outputs_extra["_grad_key"] = _grad_key
         if isinstance(outputs, dict):
+            pre_outputs = self.pipe_buffers['outputs'][buffer_id]
+            if pre_outputs is not None and list(outputs.keys()) != list(pre_outputs.keys()):
+                raise RuntimeError(
+                    "Output keys of this micro batch are not the same as the "
+                    "previous ones. Please check your model or data. {} vs {}"
+                    .format(list(outputs.keys()), list(pre_outputs.keys()))
+                )
             self.pipe_buffers['outputs'][buffer_id] = {k:v for k, v in outputs.items()}
         else:
             self.pipe_buffers['outputs'][buffer_id] = outputs
