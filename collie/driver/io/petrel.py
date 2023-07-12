@@ -104,6 +104,12 @@ class PetrelIODriver(IODriver):
         with no_proxy():
             from petrel_client.client import Client
             client = Client()
+            for sub in PetrelIODriver.list(path):
+                sub_path = os.path.join(path, sub)
+                if client.isdir(sub_path):
+                    PetrelIODriver.delete(sub_path)
+                else:
+                    client.delete(sub_pathpath)
             client.delete(path)
 
     @staticmethod
