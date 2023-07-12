@@ -4,7 +4,8 @@ import torch
 import inspect
 import importlib
 from abc import abstractmethod
-from typing import Union, Optional, Sequence, List
+from types import MethodType
+from typing import Union, Optional, Sequence, List, Tuple
 from huggingface_hub import snapshot_download
 
 import deepspeed
@@ -59,29 +60,32 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         past_key_values = []
         for layer in layers:
             assert hasattr(layer, attr_name), f"{layer} does not have {attr_name}"
-            if getattr(layer, attr_name) is not None:
-                past_key_values.append(getattr(layer, attr_name))
-        return past_key_values if len(past_key_values) > 1 else None
-    
+            past_key_values.append(getattr(layer, attr_name))
+        return tuple(past_key_values) if None not in past_key_values else None
+
     def _clean_past_key_values(self, layers: Sequence[nn.Module], attr_name: str="past_key_values"):
         for layer in layers:
             if hasattr(layer, attr_name):
                 object.__setattr__(layer, attr_name, None)
-                
-    def _set_past_key_values(self, layers: Sequence[nn.Module], past_key_values: List[List[torch.Tensor]], attr_name: str="past_key_values"):
+
+    def _set_past_key_values(self, 
+                             layers: Sequence[nn.Module], 
+                             past_key_values: Tuple[torch.Tensor], 
+                             attr_name: str="past_key_values"):
+        if past_key_values is None:
+            return
         past_key_values = iter(past_key_values)
         for layer in layers:
             if hasattr(layer, attr_name):
                 object.__setattr__(layer, attr_name, next(past_key_values))
             
     def _get_hidden_states(self, layers: Sequence[nn.Module], attr_name: str="hidden_states"):
-        past_key_values = []
+        all_hidden_states = []
         for layer in layers:
             assert hasattr(layer, attr_name), f"{layer} does not have {attr_name}"
-            if getattr(layer, attr_name) is not None:
-                past_key_values.append(getattr(layer, attr_name))
-        return past_key_values if len(past_key_values) > 1 else None
-    
+            all_hidden_states.append(getattr(layer, attr_name))
+        return tuple(all_hidden_states) if None not in all_hidden_states else None
+
     def _clean_hidden_states(self, layers: Sequence[nn.Module], attr_name: str="hidden_states"):
         for layer in layers:
             if hasattr(layer, attr_name):
@@ -316,7 +320,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                        input_ids: torch.Tensor,
                        attention_mask: Optional[torch.Tensor] = None,
                        use_cache: bool = None,
-                       past_key_values: Optional[list] = None,
+                       past_key_values: Optional[Tuple[torch.Tensor]] = None,
                        **kwargs):
         """
         在生成过程中更新 ``input_ids``、``attention_mask`` 等输入参数的函数。
@@ -325,20 +329,23 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
             input_ids = input_ids[:, -1:]
         return {
             "input_ids": input_ids, "attention_mask": attention_mask,
-            "use_cache": use_cache
+            "use_cache": use_cache, "past_key_values": past_key_values
         }
     
     def prepare_inputs_for_generation(self, 
                                       input_ids: torch.Tensor,
                                       attention_mask: Optional[torch.Tensor] = None,
                                       use_cache: bool = None,
-                                      past_key_values: Optional[list] = None,
+                                      past_key_values: Optional[Tuple[torch.Tensor]] = None,
                                       **kwargs):
         """
         生成过程中更新输入和 cache 状态的函数，包含设置 use_cache 和 past_key_values
         以及更新输入两个过程。
         """
         self.set_cache(use_cache, past_key_values)
+        if past_key_values is not None:
+            if None in past_key_values:
+                past_key_values = None
         return self.prepare_inputs(
             input_ids=input_ids, attention_mask=attention_mask,
             use_cache=use_cache, past_key_values=past_key_values
@@ -630,4 +637,3 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         input_embedding = self.get_input_embedding()[1]
         if input_embedding is not None:
             self._require_grads_hook = input_embedding.register_forward_hook(make_inputs_require_grads)
-            

@@ -346,7 +346,8 @@ class Moss003MoonForCausalLM(CollieModelForCausalLM):
         self.lm_head = ColumnParallelLinearWithoutBias(config.n_embd,
                                                        config.vocab_size)
 
-    def forward(self, input_ids, attention_mask=None, **kwargs):
+    def forward(self, input_ids, attention_mask=None, input_embeds=None,
+                **kwargs):
         batch_size = input_ids.shape[0]
         if attention_mask is not None:
             if batch_size <= 0:
@@ -356,7 +357,8 @@ class Moss003MoonForCausalLM(CollieModelForCausalLM):
             attention_mask = attention_mask[:, None, None, :]
             attention_mask = attention_mask.to(dtype)
             attention_mask = (1.0 - attention_mask) * torch.finfo(dtype).min
-        inputs_embed = self.wte(input_ids)
+        if input_embeds is not None:
+            inputs_embed = self.wte(input_ids)
         hidden_states = self.drop(inputs_embed)
 
         all_hidden_states = ()
