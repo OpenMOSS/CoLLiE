@@ -282,6 +282,11 @@ class CollieDatasetForClassification(CollieDatasetForTraining):
                 ...
             ]
     """
+    
+    def __init__(self, style: str="harness", *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        assert style.lower() in ("harness", "helm"), "Style can only be one of `harness` or `helm`"
+        self.style = style.lower()
 
     def __getitem__(self, index) -> Tuple:
         if index > len(self):
@@ -291,20 +296,39 @@ class CollieDatasetForClassification(CollieDatasetForTraining):
             input_ids = tuple(self.dataset[index]["tokens"])
             target = self.dataset[index]["target"]
         else:
-            if "input" in self.dataset[0].keys() and "output" in self.dataset[0].keys() and "target" in self.dataset[0].keys():
-                input_ids = []
-                attention_mask = []
-                for output in self.dataset[index]["output"]:
-                    inputs = self.tokenizer(self.dataset[index]["input"] + output, add_special_tokens=self.add_special_tokens)
-                    input_ids.append(inputs.get("input_ids"))
-                    attention_mask.append(inputs.get("attention_mask", torch.ones_like(torch.tensor(inputs.get("input_ids")))))
-                input_ids = tuple(input_ids)
-                attention_mask = tuple(attention_mask)
-                target = self.dataset[index]["target"]
+            if self.style == "harness":
+                if "input" in self.dataset[0].keys() and "output" in self.dataset[0].keys() and "target" in self.dataset[0].keys():
+                    input_ids = []
+                    attention_mask = []
+                    for output in self.dataset[index]["output"]:
+                        inputs = self.tokenizer(self.dataset[index]["input"] + output, add_special_tokens=self.add_special_tokens)
+                        input_ids.append(inputs.get("input_ids"))
+                        attention_mask.append(inputs.get("attention_mask", torch.ones_like(torch.tensor(inputs.get("input_ids")))))
+                    input_ids = tuple(input_ids)
+                    attention_mask = tuple(attention_mask)
+                    target = self.dataset[index]["target"]
+                else:
+                    raise ValueError(
+                        "CollieDatasetForClassification must have three fields (`input`, `output` and `target`).")
+                if self.max_length > 1:
+                    input_ids = [sample[:self.max_length] for sample in input_ids]
+                    attention_mask = [sample[:self.max_length] for sample in attention_mask]
+                return {"input_ids": input_ids, "attention_mask": attention_mask, "labels": input_ids, "target": target}
+            elif self.style == "helm":
+                if "input" in self.dataset[0].keys() and "output" in self.dataset[0].keys() and "target" in self.dataset[0].keys():                    
+                    inputs = self.tokenizer(
+                        self.dataset[index]["input"], add_special_tokens=self.add_special_tokens)
+                    input_ids = inputs["input_ids"]
+                    attention_mask = inputs.get("attention_mask", torch.ones_like(torch.tensor(input_ids)).cpu().tolist())
+                    output = tuple([self.tokenizer(option, add_special_tokens=self.add_special_tokens)["input_ids"] for option in self.dataset[index]["output"]])
+                    target = self.dataset[index]["target"]
+                else:
+                    raise ValueError(
+                        "CollieDatasetForClassification must have three fields (`input`, `output` and `target`).")
+                if self.max_length > 0:
+                    input_ids = input_ids[:self.max_length]
+                    attention_mask = attention_mask[:self.max_length]
+                return {"input_ids": input_ids, "attention_mask": attention_mask, "labels": input_ids, "target": target, "output": output}
             else:
-                raise ValueError(
-                    "CollieDatasetForClassification must have three fields (`input`, `output` and `target`).")
-        if self.max_length > 1:
-            input_ids = [sample[:self.max_length] for sample in input_ids]
-            attention_mask = [sample[:self.max_length] for sample in attention_mask]
-        return {"input_ids": input_ids, "attention_mask": attention_mask, "labels": input_ids, "target": target}
+                raise ValueError("Style can only be one of `harness` or `helm`")
+        
