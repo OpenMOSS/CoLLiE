@@ -8,12 +8,12 @@ from transformers import PreTrainedModel
 from peft import TaskType, PeftType, PromptEmbedding, \
     PromptEncoder, PrefixEncoder, PeftModel, PromptTuningInit, \
     PeftModelForCausalLM, PromptLearningConfig
+from peft.tuners.prefix_tuning import PrefixEncoder
 import warnings
 
 
 def patch_peft_model():
     def _setup_prompt_encoder(self, adapter_name):
-        from collie.models.base import CollieModelForCausalLM
         config = self.peft_config[adapter_name]
         self.prompt_encoder = torch.nn.ModuleDict({})
         self.prompt_tokens = {}
@@ -30,6 +30,9 @@ def patch_peft_model():
         elif config.peft_type == PeftType.P_TUNING:
             prompt_encoder = PromptEncoder(config)
         elif config.peft_type == PeftType.PREFIX_TUNING:
+            from collie.module import PipelineModel
+            if isinstance(self.base_model, PipelineModel):
+                config.num_layers = len([layer for layer in self.base_model.layers if hasattr(layer, "past_key_values")])
             prompt_encoder = PrefixEncoder(config)
         else:
             raise ValueError("Not supported")
@@ -63,9 +66,6 @@ def patch_peft_model():
                 return_dict=return_dict,
                 **kwargs,
             )
-        from .dist_utils import env
-        if env.rank == 0:
-            import pdb; pdb.set_trace()
         batch_size = input_ids.shape[0]
         if attention_mask is not None:
             # concat prompt attention mask
@@ -90,11 +90,11 @@ def patch_peft_model():
                 "return_dict": return_dict,
             }
         )
-
+        from .dist_utils import env
         if peft_config.peft_type == PeftType.PREFIX_TUNING:
             past_key_values = self.get_prompt(batch_size)
             return self.base_model(input_ids=input_ids, past_key_values=past_key_values, **kwargs)
-        else:
+        elif env.pp_rank == 0:
             if inputs_embeds is None:
                 inputs_embeds = self.word_embeddings(input_ids)
             # concat prompt labels
@@ -107,13 +107,12 @@ def patch_peft_model():
             prompts = prompts.to(inputs_embeds.dtype)
             inputs_embeds = torch.cat((prompts, inputs_embeds), dim=1)
             return self.base_model(inputs_embeds=inputs_embeds, **kwargs)
+        else:
+            return self.base_model(input_ids=input_ids, **kwargs)
         
     def outter_forward(self, *args, **kwargs):
         from collie.module import PipelineModel
-        from .dist_utils import env
         if isinstance(self.get_base_model(), PipelineModel) and getattr(self.get_base_model(), "inner_forward"):
-            return self.get_base_model()(*args, **kwargs)
-        elif env.pp_rank > 0:
             return self.get_base_model()(*args, **kwargs)
         else:
             return innter_forward(self, *args, **kwargs)
@@ -131,7 +130,7 @@ def patch_peft_model():
                     (prefix_attention_mask, model_kwargs["attention_mask"]), dim=1
                 )
 
-            if model_kwargs.get("past_key_values", None) is None and peft_config.peft_type == PeftType.PREFIX_TUNING:
+            if model_kwargs.get("past_key_values", None) is None and kwargs.get("past_key_values", None) is None and peft_config.peft_type == PeftType.PREFIX_TUNING:
                 past_key_values = self.get_prompt(batch_size=model_kwargs["input_ids"].shape[0])
 
                 if self.base_model_torch_dtype is not None:
