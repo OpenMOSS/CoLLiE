@@ -48,6 +48,8 @@ class CheckpointCallback(Callback):
     :param topk: 保存 monitor 结果中的 ``topk`` 个。
     :param last: 如果为 ``True``，将在每次 epoch 运行结束都保存一次，会覆盖之前的
         保存。如果为 ``False`` 则不会保存 ``last`` 文件。
+    :param max: 最多保留多少个通过 ``every_n_batches`` 和 ``every_n_epochs`` 保存
+        的权重（如果设置了的话）；如果为 ``None`` 或 0，则会保留所有的权重文件。
     :param kwargs: 传给 :meth:`.Trainer.save_checkpoint` 或者 :meth:`.Trainer.\
         save_model` 的额外参数。
     """
@@ -64,23 +66,30 @@ class CheckpointCallback(Callback):
             larger_better: bool = True,
             topk: int = 0,
             last: bool = False,
+            max: Optional[int] = None,
             **kwargs):
         super().__init__()
         if every_n_epochs is not None:
-            if not isinstance(every_n_epochs, int) or every_n_epochs < 1:
+            if not isinstance(every_n_epochs, int) or every_n_epochs < 0:
                 raise ValueError(
                     'Parameter `every_n_epochs` should be an int and greater '
-                    'than or equal to 1.')
-        else:
-            every_n_epochs = sys.maxsize  # 使得没有数字可以整除
+                    'than or equal to 0.')
+        if every_n_epochs is None or every_n_epochs == 0:
+            every_n_epochs = sys.maxsize # 使得没有数字可以整除
 
         if every_n_batches is not None:
-            if not isinstance(every_n_batches, int) or every_n_batches < 1:
+            if not isinstance(every_n_batches, int) or every_n_batches < 0:
                 raise ValueError(
                     'Parameter `every_n_batches` should be an int and greater '
-                    'than or equal to 1.')
-        else:
-            every_n_batches = sys.maxsize  # 使得没有数字可以整除
+                    'than or equal to 0.')
+        if every_n_batches is None or every_n_batches == 0:
+            every_n_batches = sys.maxsize
+
+        if max is not None:
+            if not isinstance(max, int) and max < 0:
+                raise ValueError(
+                    'Parameter `max` should be an int and greater than or '
+                    'equal to 0.')
 
         self.topk_saver = TopkSaver(
             topk=topk,
@@ -98,6 +107,8 @@ class CheckpointCallback(Callback):
         self.every_n_epochs = every_n_epochs
         self.every_n_batches = every_n_batches
         self.last = last
+        self.max = max if max is not None else 0
+        self.ckpt_queue = []
 
     def on_after_trainer_initialized(self, trainer):
         if self.topk_saver.topk_queue and trainer.evaluators is None:
@@ -112,6 +123,9 @@ class CheckpointCallback(Callback):
         if (trainer.epoch_idx + 1) % self.every_n_epochs == 0:
             folder_name = f'epoch_{trainer.epoch_idx + 1}'
             self.topk_saver.save(trainer, folder_name=folder_name)
+            self.ckpt_queue.append(folder_name)
+            if self.max > 0 and len(self.ckpt_queue) > self.max:
+                self.topk_saver.rm(self.ckpt_queue.pop(0))
         if self.last:
             folder_name = f'last'
             self.topk_saver.save(trainer, folder_name=folder_name)
@@ -121,6 +135,9 @@ class CheckpointCallback(Callback):
             folder_name = f'epoch_{trainer.epoch_idx}' \
                           f'-batch_{trainer.batch_idx + 1}'
             self.topk_saver.save(trainer, folder_name=folder_name)
+            self.ckpt_queue.append(folder_name)
+            if self.max > 0 and len(self.ckpt_queue) > self.max:
+                self.topk_saver.rm(self.ckpt_queue.pop(0))
 
     def on_save_checkpoint(self, trainer) -> Dict:
         states = {}

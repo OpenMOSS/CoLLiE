@@ -57,31 +57,40 @@ def test_checkpoint_callback(pretrained_model, model_only, folder,
         # tokenizer and dataset
         tokenizer = AutoTokenizer.from_pretrained(pretrained_model, trust_remote_code=True)
         train_sample = tokenizer("Collie is a python package for finetuning large language models.", return_tensors="pt").input_ids.squeeze(0)
-        train_dataset = [(train_sample, train_sample) for _ in range(100)]
+        train_dataset = [{"input_ids": train_sample, "labels": train_sample} for _ in range(100)]
 
         model = Moss003MoonForCausalLM.from_pretrained(pretrained_model, config=config)
 
         every_n_epochs = 2
         every_n_batches = 10
         last = True
+        max = 3
         callbacks = [CheckpointCallback(folder, every_n_epochs=every_n_epochs,
                                         every_n_batches=every_n_batches,
-                                        last=last, model_only=model_only)]
+                                        last=last, model_only=model_only,
+                                        max=max)]
         trainer = Trainer(
             model, config, loss_fn=GPTLMLoss(-100),
             train_dataset=train_dataset, callbacks=callbacks
         )
         trainer.train()
         assert os.path.exists(folder)
+        ckpts = []
         for epoch in range(config.train_epochs):
             if (epoch + 1) % every_n_epochs == 0:
-                check_and_load(trainer, folder, f"epoch_{epoch + 1}", model_only)
+                ckpts.append(f"epoch_{epoch + 1}")
             for n in range(trainer.steps_per_epoch // every_n_batches):
-                check_and_load(trainer, folder,
-                            f"epoch_{epoch}-batch_{(n + 1)*every_n_batches}",
-                            model_only)
+                ckpts.append(f"epoch_{epoch}-batch_{(n + 1)*every_n_batches}")
         if last:
             check_and_load(trainer, folder, "last", model_only)
+        if max is not None and max > 0:
+            for folder_name in ckpts[:max]:
+                assert not os.path.exists(os.path.join(folder, folder_name))
+            ckpts = ckpts[-max:]
+            for folder_name in ckpts:
+                assert os.path.exists(os.path.join(folder, folder_name))
+        for folder_name in ckpts:
+            check_and_load(trainer, folder, folder_name, model_only)
     except Exception as e:
         logger.error(traceback.format_exc())
     finally:
