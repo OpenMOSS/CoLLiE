@@ -109,7 +109,7 @@ class PetrelIODriver(IODriver):
                 if client.isdir(sub_path):
                     PetrelIODriver.delete(sub_path)
                 else:
-                    client.delete(sub_pathpath)
+                    client.delete(sub_path)
             client.delete(path)
 
     @staticmethod
