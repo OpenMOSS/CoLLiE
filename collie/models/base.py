@@ -73,6 +73,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                              past_key_values: Tuple[torch.Tensor], 
                              attr_name: str="past_key_values"):
         if past_key_values is None:
+            self._clean_past_key_values(layers, attr_name)
             return
         past_key_values = iter(past_key_values)
         for layer in layers:
