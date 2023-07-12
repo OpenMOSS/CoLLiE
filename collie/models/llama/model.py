@@ -264,6 +264,10 @@ class LlamaForCausalLM(CollieModelForCausalLM):
             inputs["hidden_states"] = kwargs['inputs_embeds']
         else:
             inputs["hidden_states"] = self.embed_tokens(inputs["input_ids"])
+        if past_key_values is not None:
+            self._set_past_key_values(self.layers, past_key_values)
+        else:
+            self._clean_past_key_values(self.layers)
         all_hidden_states = ()
         for layer in self.layers:
             all_hidden_states += (inputs["hidden_states"],)

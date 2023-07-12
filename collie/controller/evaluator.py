@@ -304,7 +304,7 @@ class EvaluatorForClassfication(EvaluatorForPerplexity):
                     logits = evaluator.engine(**inputs)["logits"]
                 for sample_idx in range(input_ids.shape[0]):
                     pred[sample_idx, idx] = evaluator.loss_fn(logits[sample_idx: sample_idx + 1, :], inputs["labels"][sample_idx: sample_idx + 1, :]).detach().cpu().item()
-                pred = pred.argmin(dim=1)
+            pred = pred.argmin(dim=1)
         else:
             assert isinstance(batch["output"], Sequence), f"output must be a list for classification task. But got {type(batch['output'])}."
             assert evaluator.tokenizer is not None, "HELM style evaluator needs tokenizer!"
