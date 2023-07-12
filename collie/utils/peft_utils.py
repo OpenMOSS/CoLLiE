@@ -64,8 +64,6 @@ def patch_peft_model():
                 **kwargs,
             )
         from .dist_utils import env
-        if env.rank == 0:
-            import pdb; pdb.set_trace()
         batch_size = input_ids.shape[0]
         if attention_mask is not None:
             # concat prompt attention mask
