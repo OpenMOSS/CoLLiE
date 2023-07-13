@@ -172,16 +172,19 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                 contexts = []
                 if is_zero3_enabled(config):
                     contexts.append(deepspeed.zero.GatheredParameters(param, modifier_rank=0))
+                    contexts.append(deepspeed.zero.Init(
+                        data_parallel_group=parallel_state.get_data_parallel_group(),
+                        config_dict_or_path=config.ds_config  # config is necessary for bf16
+                    ))
                 with ContextManagers(contexts):
-                    if not is_zero3_enabled(config) or env.dp_rank == 0:
-                        if param.device == torch.device("meta"):
-                            set_module_tensor_to_device(
-                                module=model, tensor_name=name, device="cpu" if param.device == torch.device("meta") else param.device,
-                                value=config.initization_method(torch.empty((*param.data.size(),),dtype=config.model_config.torch_dtype)),
-                                dtype=config.model_config.torch_dtype
-                            )
-                        else:
-                            param.data = torch.zeros_like(param.data).to(config.model_config.torch_dtype).to(param.device)
+                    if param.device == torch.device("meta"):
+                        set_module_tensor_to_device(
+                            module=model, tensor_name=name, device="cpu" if param.device == torch.device("meta") else param.device,
+                            value=config.initization_method(torch.empty((*param.data.size(),),dtype=config.model_config.torch_dtype)),
+                            dtype=config.model_config.torch_dtype
+                        )
+                    else:
+                        param.data = torch.zeros_like(param.data).to(config.model_config.torch_dtype).to(param.device)
         if kwargs.get("get_peft", True) and config.peft_config.peft_type is not None:
             model = get_peft_model(model, config.peft_config)
             model.print_trainable_parameters()
@@ -271,6 +274,8 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         # quantization
         if getattr(config.quantization_config, "load_in_4bit", False) or \
             config.quantization_config.load_in_8bit:
+            setattr(model, "is_loaded_in_4bit", getattr(config.quantization_config, "load_in_4bit", False))
+            setattr(model, "is_loaded_in_8bit", config.quantization_config.load_in_8bit)
             from transformers.utils.bitsandbytes import replace_with_bnb_linear, \
                 set_module_quantized_tensor_to_device
             llm_int8_skip_modules = config.quantization_config.llm_int8_skip_modules
@@ -290,43 +295,46 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
             )
         # load state dict
         state_dict = {}
-        if not is_zero3_enabled(config) or env.dp_rank == 0:
+        if not is_zero3_enabled(config) or env.dp_rank == 0 \
+            or config.low_cpu_mem_usage or config.quantization_config.load_in_8bit \
+                or getattr(config.quantization_config, "load_in_4bit", False):
             state_dict = cls.load_parallel_state_dict(
                 path=model_path_or_name, config=config,
                 process_exclusion=process_exclusion, **kwargs
             )
         # load checkpoint and dispatch
         for name, param in model.named_parameters():
+            if name not in state_dict.keys():
+                logger.rank_zero_warning("Missing key: {name}!")
+                continue
             contexts = []
             if is_zero3_enabled(config):
                 contexts.append(deepspeed.zero.GatheredParameters(param, modifier_rank=0))
+                contexts.append(deepspeed.zero.Init(
+                    data_parallel_group=parallel_state.get_data_parallel_group(),
+                    config_dict_or_path=config.ds_config  # config is necessary for bf16
+                ))
             with ContextManagers(contexts):
-                if not is_zero3_enabled(config) or env.dp_rank == 0:
-                    if getattr(config.quantization_config, "load_in_4bit", False) or \
-                        config.quantization_config.load_in_8bit:
-                            set_module_quantized_tensor_to_device(
-                                module=model, 
-                                tensor_name=name, 
-                                device="cpu" if param.device == torch.device("meta") else param.device,
-                                value=state_dict[name].data
-                            )
+                if getattr(config.quantization_config, "load_in_4bit", False) or \
+                    config.quantization_config.load_in_8bit:
+                        set_module_quantized_tensor_to_device(
+                            module=model, 
+                            tensor_name=name, 
+                            device="cpu" if param.device == torch.device("meta") else param.device,
+                            value=state_dict[name].data
+                        )
+                else:
+                    if param.device == torch.device("meta"):
+                        set_module_tensor_to_device(
+                            module=model, tensor_name=name, device="cpu" if param.device == torch.device("meta") else param.device,
+                            value=state_dict[name].data, dtype=config.model_config.torch_dtype
+                        )
                     else:
-                        if param.device == torch.device("meta"):
-                            set_module_tensor_to_device(
-                                module=model, tensor_name=name, device="cpu" if param.device == torch.device("meta") else param.device,
-                                value=state_dict[name].data, dtype=config.model_config.torch_dtype
-                            )
-                        else:
-                            assert param.data.shape == state_dict[name].data.shape, f"The shape of the parameter corresponding to the `{name}` does not match!"
-                            param.data = state_dict[name].data.to(config.model_config.torch_dtype).to(param.device)
+                        assert param.data.shape == state_dict[name].data.shape, f"The shape of the parameter corresponding to the `{name}` does not match!"
+                        param.data = state_dict[name].data.to(config.model_config.torch_dtype).to(param.device)
         if config.peft_config.peft_type is not None:
             model = get_peft_model(model, config.peft_config)
             model.print_trainable_parameters()
-        # if env.rank == 0:
-        #     import pdb; pdb.set_trace()
-        # else:
-        #     while True:
-        #         pass
         return model
 
     @classmethod

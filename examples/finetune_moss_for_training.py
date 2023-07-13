@@ -28,8 +28,6 @@ from collie.module import GPTLMLoss
 
 from collie.utils import env
 
-
-
 # 1. 设置路径
 # 1.1 预训练模型路径
 pretrained_model = "fnlp/moss-moon-003-sft"

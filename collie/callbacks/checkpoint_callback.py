@@ -21,7 +21,7 @@ class CheckpointCallback(Callback):
             - epoch_{epoch_idx}-batch_{batch_idx}-{monitor}_{monitor_value}/  # 满足topk条件存储文件名
 
     默认情况下，本 checkpoint 只保存了 model 的状态；如还需保存 Trainer 的状态
-    以断点重训的话，请使用 ``model_only=True``。
+    以断点重训的话，请使用 ``model_only=False``。
 
     :param folder: 保存的文件夹，如果为 ``None`` ，默认使用当前文件夹。
     :param every_n_epochs: 多少个 epoch 保存一次。
