@@ -184,7 +184,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                             dtype=config.model_config.torch_dtype
                         )
                     else:
-                        param.data = torch.zeros_like(param.data).to(config.model_config.torch_dtype).to(param.device)
+                        param.data = config.initization_method(torch.zeros_like(param.data)).to(config.model_config.torch_dtype).to(param.device)
         if kwargs.get("get_peft", True) and config.peft_config.peft_type is not None:
             model = get_peft_model(model, config.peft_config)
             model.print_trainable_parameters()
