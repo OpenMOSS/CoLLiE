@@ -79,7 +79,7 @@ def _is_name_in_current_rank(name):
 
 def _split_peft(state: dict):
     if env.pp_size == 1:
-        return
+        return state
     for name in list(state.keys()):
         if not _is_name_in_current_rank(name):
             state.pop(name)
