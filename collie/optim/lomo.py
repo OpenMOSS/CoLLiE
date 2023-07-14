@@ -5,6 +5,8 @@ import torch.distributed as dist
 from transformers.deepspeed import is_deepspeed_zero3_enabled
 
 from ..utils.dist_utils import env
+from collie.log import logger
+
 
 class Lomo(Optimizer):
     """
@@ -48,11 +50,15 @@ class Lomo(Optimizer):
         if p0.dtype == torch.float16:
             self.loss_scaler = DynamicLossScaler(**loss_scale_args)
             if self.clip_grad_norm is None:
-                raise ValueError(
-                    "Loss scale is recommended to be used with grad norm to get better performance."
+                self.clip_grad_norm = 1.0
+                logger.rank_zero_warning(
+                    "Loss scale is recommended to be used with grad norm to get better performance. "
+                    "Set grad norm to 1.0."
                 )
         else:
             self.loss_scaler = None
+        self.loss_scaler = None
+        self.clip_grad_norm = None
 
         # register hook function, which will be called through the backward process
         for n, p in self.model.named_parameters():

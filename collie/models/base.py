@@ -189,21 +189,21 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
             model = get_peft_model(model, config.peft_config)
             model.print_trainable_parameters()
         # set model dtype to deepspeed dtype under zero3, because the model is initialized with deepspeed.zero.Init()
-        if is_zero3_enabled(config):
-            if 'fp16' in config.ds_config and config.ds_config['fp16']['enabled']:
-                ds_dtype = torch.float16
-            elif 'bf16' in config.ds_config and config.ds_config['bf16']['enabled']:
-                ds_dtype = torch.bfloat16
-            else:
-                ds_dtype = torch.float32
-            model = model.to(config.model_config.torch_dtype)
-            if config.model_config.torch_dtype != ds_dtype:
-                logger.warning(f"model dtype {config.model_config.torch_dtype} is not equal to deepspeed dtype {ds_dtype},"
-                               f" set model dtype to {ds_dtype}")
-                config.model_config.torch_dtype = ds_dtype
-                model.dtype = ds_dtype
-                model.config = config.model_config
-                model = model.to(ds_dtype)
+        # if is_zero3_enabled(config):
+        #     if 'fp16' in config.ds_config and config.ds_config['fp16']['enabled']:
+        #         ds_dtype = torch.float16
+        #     elif 'bf16' in config.ds_config and config.ds_config['bf16']['enabled']:
+        #         ds_dtype = torch.bfloat16
+        #     else:
+        #         ds_dtype = torch.float32
+        #     model = model.to(config.model_config.torch_dtype)
+        #     if config.model_config.torch_dtype != ds_dtype:
+        #         logger.warning(f"model dtype {config.model_config.torch_dtype} is not equal to deepspeed dtype {ds_dtype},"
+        #                        f" set model dtype to {ds_dtype}")
+        #         config.model_config.torch_dtype = ds_dtype
+        #         model.dtype = ds_dtype
+        #         model.config = config.model_config
+        #         model = model.to(ds_dtype)
         return model
 
     def __new__(cls, config: CollieConfig, **kwargs):
