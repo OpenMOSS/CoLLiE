@@ -179,7 +179,7 @@ class LlamaLayer(nn.Module):
             key = torch.cat([self.past_key_values[0].permute([0, 2, 1, 3]), key], dim=1)
             value = torch.cat([self.past_key_values[1].permute([0, 2, 1, 3]), value], dim=1)
         if self.use_cache and not self.training:
-            self.past_key_values = torch.stack((key, value), dim=0)
+            self.past_key_values = torch.stack((key.permute([0, 2, 1, 3]), value.permute([0, 2, 1, 3])), dim=0)
         attention_mask = attention_mask if attention_mask is not None else torch.ones((query.shape[0], query.shape[1])).to(hidden_states.device)
         if self.config.use_flash:
             assert FlashAttention is not None, \

@@ -11,7 +11,7 @@ fastapi
 megatron-core
 tensorboard
 google
-peft
+-e git+https://github.com/huggingface/peft.git#egg=peft
 wandb
 pandas
 psutil
