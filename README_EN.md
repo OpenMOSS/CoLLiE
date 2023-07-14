@@ -11,6 +11,7 @@
 - [Benchmark](#benchmark)
 - [Usage](#usage)
 - [Installation](#installation)
+- [Supported Models](#supported-models)
 
 ## Benchmark
 ### Throughput
@@ -57,3 +58,29 @@ git clone https://github.com/OpenLMLab/collie.git
 cd collie
 python setup.py install
 ```
+
+## Supported Models
+
+- [MOSS-MOON](https://github.com/OpenLMLab/MOSS)
+    - [moss-moon-003-base](https://huggingface.co/fnlp/moss-moon-003-base)
+    - [moss-moon-003-sft](https://huggingface.co/fnlp/moss-moon-003-sft)
+    - [moss-moon-003-sft-plugin](https://huggingface.co/fnlp/moss-moon-003-sft-plugin)
+- [InternLM](https://github.com/InternLM/InternLM)
+    - [internlm-7b](https://huggingface.co/internlm/internlm-7b)
+    - [internlm-chat-7b](https://huggingface.co/internlm/internlm-chat-7b)
+    - [internlm-chat-7b-8k](https://huggingface.co/internlm/internlm-chat-7b-8k)
+- [LLaMA](https://github.com/facebookresearch/llama)
+    - [llama-7b-hf](https://huggingface.co/decapoda-research/llama-7b-hf)
+    - [llama-13b-hf](https://huggingface.co/decapoda-research/llama-13b-hf)
+    - [llama-30b-hf](https://huggingface.co/decapoda-research/llama-30b-hf)
+    - [llama-65b-hf](https://huggingface.co/decapoda-research/llama-65b-hf)
+- [OpenLLaMA]
+    - [open_llama_3b](https://huggingface.co/openlm-research/open_llama_3b)
+    - [open_llama_7b](https://huggingface.co/openlm-research/open_llama_7b)
+    - [open_llama_13b](https://huggingface.co/openlm-research/open_llama_13b)
+    - [open_llama_7b_v2](https://huggingface.co/openlm-research/open_llama_7b_v2)
+- [ChatGLM](https://github.com/THUDM/ChatGLM-6B)
+    - [chatglm-6b](https://huggingface.co/THUDM/chatglm-6b)
+- [ChatGLM2](https://github.com/THUDM/ChatGLM2-6B)
+    - [chatglm2-6b](https://huggingface.co/THUDM/chatglm2-6b)
+
