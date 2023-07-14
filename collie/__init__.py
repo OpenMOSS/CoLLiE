@@ -26,7 +26,8 @@ from .config import CollieConfig
 from .metrics import BaseMetric, DecodeMetric, AccuracyMetric, \
     PPLMetric, BleuMetric, ClassifyFPreRecMetric
 from .data import CollieDatasetForClassification, CollieBatchSampler, \
-    CollieDataLoader, CollieDatasetForTraining, CollieDatasetForGeneration
+    CollieDataLoader, CollieDatasetForTraining, CollieDatasetForGeneration, \
+        CollieDatasetForPerplexity
 from .optim import Lomo, Lion, SophiaG, Adan
 
 __all__ = [
@@ -111,6 +112,7 @@ __all__ = [
     'CollieDataLoader', 
     'CollieDatasetForTraining',
     'CollieDatasetForGeneration',
+    'CollieDatasetForPerplexity',
     
     # optim
     "Lomo",
