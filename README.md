@@ -6,7 +6,16 @@
 
 **CoLLiE**: **Co**llaborative Tuning of **L**arge **L**anguage Models **i**n an **E**fficient Way
 
+<h4 align="center">
+  <p>
+    <a>简体中文</a> |
+    <a>English</a>
+  </p>
+</h4>
+
 </div>
+
+## 新闻
 
 ## 目录
 - [特点](#特点)
