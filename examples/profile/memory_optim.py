@@ -1,34 +1,27 @@
 import sys
-
 sys.path.append("../../")
 import os
 import time
 import argparse
 
 import torch
-from transformers import LlamaTokenizer, AutoTokenizer
-from transformers.generation.utils import GenerationConfig
+from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo
 
 from collie.models.llama.model import LlamaForCausalLM
 from collie import Callback
-from collie.utils import env
-from collie.controller import Trainer, EvaluatorForGeneration
-from collie.metrics.decode import DecodeMetric
+from collie.controller import Trainer
 from collie.config import CollieConfig
 from collie.optim import Adan, Lomo, Lion, SophiaG
 from collie.utils import env
-from collie import TGSMonitor, MemoryMonitor, LossMonitor, EvalMonitor, NetworkIOMonitor
-import wandb
-from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo
 
-os.environ['WANDB_MODE'] = 'disabled'
 nvmlInit()
 
 arg_parser = argparse.ArgumentParser()
-arg_parser.add_argument("--model_name", type=str, default="huggyllama/llama-7b")
-arg_parser.add_argument("--optim", type=str, default="adam")
+arg_parser.add_argument("--model_name", type=str, default="huggyllama/llama-65b")
+arg_parser.add_argument("--optim", type=str, default="lomo")
 arg_parser.add_argument("--tp_size", type=int, default=8)
 arg_parser.add_argument("--pp_size", type=int, default=1)
+arg_parser.add_argument("--use_flash", type=int, default=1)
 args = arg_parser.parse_args()
 
 model_name = args.model_name.split("/")[-1]
@@ -62,14 +55,14 @@ config = CollieConfig.from_pretrained(args.model_name)
 config.tp_size = args.tp_size
 config.dp_size = 1
 config.pp_size = args.pp_size
-config.train_epochs = 3
+config.train_epochs = 1
 config.train_micro_batch_size = 1
 config.gradient_accumulation_steps = 2
-config.use_flash = True
+config.use_flash = args.use_flash
 if args.optim == "lomo":
     config.gradient_accumulation_steps = 1
     config.ds_config = {
-        "fp16": {"enabled": True},
+        "bf16": {"enabled": True},
     }
 else:
     config.ds_config = {
