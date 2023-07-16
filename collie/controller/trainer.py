@@ -394,7 +394,8 @@ class Trainer(TrainerEventTrigger):
                 trainer.engine.step()
             else:
                 # for lomo only
-                if trainer.optimizer.clip_grad_norm is not None:
+                if trainer.optimizer.clip_grad_norm is not None or \
+                        ('fp16' in trainer.engine.config and trainer.engine.config['fp16']['enabled']):
                     trainer.optimizer.grad_norm(loss)
                     if trainer.optimizer.loss_scaler and trainer.optimizer.loss_scaler.has_overflow_serial:
                         print(f"Gradient overflow, skipping step {global_step}")

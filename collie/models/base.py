@@ -172,6 +172,10 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                 contexts = []
                 if is_zero3_enabled(config):
                     contexts.append(deepspeed.zero.GatheredParameters(param, modifier_rank=0))
+                    if 'train_micro_batch_size_per_gpu' in config.ds_config:
+                        assert config.ds_config['train_micro_batch_size_per_gpu'] == config.train_micro_batch_size, \
+                            "train_micro_batch_size_per_gpu in ds_config should be the same as train_micro_batch_size"
+                    config.ds_config['train_micro_batch_size_per_gpu'] = config.train_micro_batch_size
                     contexts.append(deepspeed.zero.Init(
                         data_parallel_group=parallel_state.get_data_parallel_group(),
                         config_dict_or_path=config.ds_config  # config is necessary for bf16

@@ -31,6 +31,8 @@ class Lomo(Optimizer):
         self.lr = lr
         self.clip_grad_norm = clip_grad_norm
         self.clip_grad_value = clip_grad_value
+        self.loss_scaler = None
+        self.loss_scale_args = loss_scale_args
 
         # for grad norm
         if self.clip_grad_norm is not None and self.clip_grad_norm <= 0:
@@ -45,20 +47,7 @@ class Lomo(Optimizer):
             self.grad_func = self.fuse_update_zero3()
         else:
             self.grad_func = self.fuse_update()
-        # check if fp16 is enabled
-        p0 = list(self.model.parameters())[0]
-        if p0.dtype == torch.float16:
-            self.loss_scaler = DynamicLossScaler(**loss_scale_args)
-            if self.clip_grad_norm is None:
-                self.clip_grad_norm = 1.0
-                logger.rank_zero_warning(
-                    "Loss scale is recommended to be used with grad norm to get better performance. "
-                    "Set grad norm to 1.0."
-                )
-        else:
-            self.loss_scaler = None
-        self.loss_scaler = None
-        self.clip_grad_norm = None
+        self.first_backward = True  # check bf16 or fp16 in the first backward
 
         # register hook function, which will be called through the backward process
         for n, p in self.model.named_parameters():
@@ -170,6 +159,16 @@ class Lomo(Optimizer):
         :param loss: 模型的loss值
         :param lr: 学习率
         """
+        if self.first_backward:
+            self.first_backward = False
+            if loss.dtype == torch.float16:
+                self.loss_scaler = DynamicLossScaler(self.loss_scale_args)
+                if self.clip_grad_norm is None:
+                    self.clip_grad_norm = 1.0
+                    logger.rank_zero_warning(
+                        "Loss scale is recommended to be used with grad norm to get better performance. "
+                        "Set grad norm to 1.0."
+                    )
         self.lr = lr
         # Users need call grad_norm themselves and then call backward_step
         if self.clip_grad_norm is not None and self.clip_grad_norm > 0 and self.clip_coef is None:
@@ -190,6 +189,11 @@ class Lomo(Optimizer):
 
         :param loss: 模型的loss值
         """
+        if self.first_backward:
+            self.first_backward = False
+            if loss.dtype == torch.float16:
+                self.loss_scaler = DynamicLossScaler(**self.loss_scale_args)
+
         self.gather_norm = True
         self.grad_norms = []
         if self.loss_scaler:
