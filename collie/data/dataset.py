@@ -220,6 +220,8 @@ class CollieDatasetForTraining(Dataset):
                 meta = np.empty((0, 2), int)
                 shard_idx += 1
 
+class CollieDatasetForPerplexity(CollieDatasetForTraining):
+    ...
 
 class CollieDatasetForGeneration(CollieDatasetForTraining):
     """ **CoLLie** 中的生成数据集，主要用于数据生成或者与生成相关的检验

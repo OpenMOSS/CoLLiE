@@ -172,6 +172,10 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                 contexts = []
                 if is_zero3_enabled(config):
                     contexts.append(deepspeed.zero.GatheredParameters(param, modifier_rank=0))
+                    if 'train_micro_batch_size_per_gpu' in config.ds_config:
+                        assert config.ds_config['train_micro_batch_size_per_gpu'] == config.train_micro_batch_size, \
+                            "train_micro_batch_size_per_gpu in ds_config should be the same as train_micro_batch_size"
+                    config.ds_config['train_micro_batch_size_per_gpu'] = config.train_micro_batch_size
                     contexts.append(deepspeed.zero.Init(
                         data_parallel_group=parallel_state.get_data_parallel_group(),
                         config_dict_or_path=config.ds_config  # config is necessary for bf16
@@ -189,21 +193,21 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
             model = get_peft_model(model, config.peft_config)
             model.print_trainable_parameters()
         # set model dtype to deepspeed dtype under zero3, because the model is initialized with deepspeed.zero.Init()
-        if is_zero3_enabled(config):
-            if 'fp16' in config.ds_config and config.ds_config['fp16']['enabled']:
-                ds_dtype = torch.float16
-            elif 'bf16' in config.ds_config and config.ds_config['bf16']['enabled']:
-                ds_dtype = torch.bfloat16
-            else:
-                ds_dtype = torch.float32
-            model = model.to(config.model_config.torch_dtype)
-            if config.model_config.torch_dtype != ds_dtype:
-                logger.warning(f"model dtype {config.model_config.torch_dtype} is not equal to deepspeed dtype {ds_dtype},"
-                               f" set model dtype to {ds_dtype}")
-                config.model_config.torch_dtype = ds_dtype
-                model.dtype = ds_dtype
-                model.config = config.model_config
-                model = model.to(ds_dtype)
+        # if is_zero3_enabled(config):
+        #     if 'fp16' in config.ds_config and config.ds_config['fp16']['enabled']:
+        #         ds_dtype = torch.float16
+        #     elif 'bf16' in config.ds_config and config.ds_config['bf16']['enabled']:
+        #         ds_dtype = torch.bfloat16
+        #     else:
+        #         ds_dtype = torch.float32
+        #     model = model.to(config.model_config.torch_dtype)
+        #     if config.model_config.torch_dtype != ds_dtype:
+        #         logger.warning(f"model dtype {config.model_config.torch_dtype} is not equal to deepspeed dtype {ds_dtype},"
+        #                        f" set model dtype to {ds_dtype}")
+        #         config.model_config.torch_dtype = ds_dtype
+        #         model.dtype = ds_dtype
+        #         model.config = config.model_config
+        #         model = model.to(ds_dtype)
         return model
 
     def __new__(cls, config: CollieConfig, **kwargs):

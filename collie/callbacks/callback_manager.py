@@ -133,6 +133,8 @@ class CallbackManager:
         # 每一个我们自己提供的类 callback，都需要重写其特定的 `callback_name`
         # 方法，保证如果两个 callback 的 callback_name 一样，
         #  那么它们就应该是同一个对象；
+        if states is None:
+            return
         _loaded_callbacks = set()
         _duplicated_callbacks = set()
         for each_callback in self.callbacks:

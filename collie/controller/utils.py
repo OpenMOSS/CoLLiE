@@ -37,7 +37,7 @@ class TrainerEventTrigger:
         self.callback_manager.on_load_model(self)
 
     def on_save_checkpoint(self):
-        self.callback_manager.on_save_checkpoint(self)
+        return self.callback_manager.on_save_checkpoint(self)
 
     def on_load_checkpoint(self, states):
         self.callback_manager.on_load_checkpoint(self, states)

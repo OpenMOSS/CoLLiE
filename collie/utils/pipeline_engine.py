@@ -425,7 +425,7 @@ class ColliePipelineEngine(PipelineEngine):
             self.outputs_extra["_grad_key"] = _grad_key
         if isinstance(outputs, dict):
             pre_outputs = self.pipe_buffers['outputs'][buffer_id]
-            if pre_outputs is not None and list(outputs.keys()) != list(pre_outputs.keys()):
+            if pre_outputs is not None and set(outputs.keys()) != set(pre_outputs.keys()):
                 raise RuntimeError(
                     "Output keys of this micro batch are not the same as the "
                     "previous ones. Please check your model or data. {} vs {}"
@@ -822,18 +822,20 @@ class ColliePipelineEngine(PipelineEngine):
                 self.inputs_extra["_meta"] = self.meta_buffer
                 p2p.recv(self.inputs_extra["_meta"], self.prev_stage)
                 p2p.recv(self.inputs_extra["_local_data"], self.prev_stage)
+            recv_keys = []
             for key, tensor in self.pipe_recv_buf.items():
                 assert torch.is_tensor(tensor)
+                recv_key = self._recv_string(self.prev_stage)
                 # XXX hardcode meta type
-                if self.is_pipe_partitioned and key == "_meta" and buffer.dtype != torch.long:
+                assert recv_key in self.pipe_recv_buf.keys()
+                if self.is_pipe_partitioned and recv_key == "_meta" and buffer.dtype != torch.long:
                     if self.meta_buffer is None:
                         self.meta_buffer = torch.zeros(tensor.size(), dtype=torch.long, device=self.device)
                     buffer = self.meta_buffer
-                # TODO 是否有必要？
-                recv_key = self._recv_string(self.prev_stage)
-                assert key == recv_key, f"{key}, {recv_key}"
                 p2p.recv(tensor, self.prev_stage)
-                recvd[key] = tensor.clone().detach()
+                recvd[recv_key] = tensor.clone().detach()
+                recv_keys.append(recv_key)
+            assert len(self.pipe_recv_buf.keys()) == len(recv_keys)
 
             # NCCL does not like to send torch.BoolTensor types, so un-cast the
             # attention mask
