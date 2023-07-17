@@ -22,16 +22,24 @@ CoLLiE (Collaborative Tuning of Large Language Models in an Efficient Way)，一
 ## 新闻
 
 ## 目录
-- [为什么选择CoLLie](#为什么选择CoLLie)
-- [特点](#特点)
-- [CoLLie支持的模型](#CoLLie支持的模型)
-- [评测](#评测)
-- [安装](#安装)
-- [Docker安装](#Docker安装)
-- [使用](#使用)
-- [社区](#社区)
-- [贡献者](#贡献者)
-- [引用我们](#引用我们)
+<ul>
+    <li><a href="#为什么选择CoLLiE">为什么选择CoLLiE</a></li>
+    <li><a href="#特性">特性</a></li>
+    <li><a href="#CoLLiE支持的模型">CoLLiE支持的模型</a></li>
+    <li><a href="#评测">评测</a></li>
+    <li><a href="#安装">安装</a></li>
+    <li><a href="#Docker安装">Docker安装</a></li>
+    <li><a href="#使用">使用</a>
+        <ul>
+            <li><a href="#快速开始">快速开始</a></li>
+            <li><a href="#有趣的插件">有趣的插件</a></li>
+            <li><a href="#更多成功样例和完整教程">更多成功样例和完整教程</a></li>
+        </ul>
+    </li>
+    <li><a href="#社区">社区</a></li>
+    <li><a href="#贡献者">贡献者</a></li>
+    <li><a href="#引用我们">引用我们</a></li>
+</ul>
 
 ## 为什么选择CoLLiE
 CoLLiE是一个可以帮助您从零开始训练大模型的完整工具箱，它提供了数据预处理、模型微调、模型保存以及训练过程各项指标监测等功能。CoLLiE集成了现有的并行策略、高效参数微调方法和高效优化器，以加快训练的速度，提高训练的质量，降低训练的开销。CoLLiE支持主流的多种模型（如MOSS, InternLM, LLaMA, ChatGLM等），您可以轻松在不同的模型之间切换。此外，CoLLiE提供了丰富的文档，使初学者可以快速入门。同时，CoLLiE还提供了高度可定制化的功能和灵活的配置选项，使有经验的用户能够根据自己的需求进行个性化定制。无论您是初学者还是有经验的专业人士，CoLLiE都可以为您提供满足需求的解决方案。

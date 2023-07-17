@@ -28,7 +28,13 @@ CoLLiE (Collaborative Tuning of Large Language Models in an Efficient Way) is a 
     <li><a href="#Evaluation">Evaluation</a></li>
     <li><a href="#Installation">Installation</a></li>
     <li><a href="#Use Docker">Use Docker</a></li>
-    <li><a href="#Usage">Usage</a></li>
+    <li><a href="#Usage">Usage</a>
+        <ul>
+            <li><a href="#Quick-Start">Quick Start</a></li>
+            <li><a href="#Fun-Plugins">Fun Plugins</a></li>
+            <li><a href="#More-successful-examples-and-complete-tutorials">More successful examples and complete tutorials</a></li>
+        </ul>
+    </li>
     <li><a href="#Community">Community</a></li>
     <li><a href="#Contributors">Contributors</a></li>
     <li><a href="#Citation">Citation</a></li>
