@@ -6,6 +6,20 @@
 
 CoLLiE (Collaborative Tuning of Large Language Models in an Efficient Way) is a comprehensive toolbox that helps you train large language models from scratch.
 
+
+[![Github Repo Stars](https://img.shields.io/github/stars/openlmlab/collie?style=social)](https://github.com/openlmlab/collie/stargazers)
+[![Doc](https://img.shields.io/badge/Website-Doc-blue)](https://openlmlab-collie.readthedocs.io/zh_CN/latest/)
+[![HuggingFace badge](https://img.shields.io/badge/%F0%9F%A4%97HuggingFace-Join-yellow)](https://huggingface.co/openlmlab)
+
+<h4 align="center">
+  <p>
+     [ <a href="https://github.com/OpenLMLab/collie/blob/dev/README.md">简体中文</a> ] |
+     [ <a href="https://github.com/OpenLMLab/collie/blob/dev/README_EN.md">English</a> ]
+  </p>
+</h4>
+
+## Latest News
+
 ## Table of Contents
 <ul>
     <li><a href="#Why-CoLLiE">Why CoLLiE</a></li>
@@ -269,7 +283,7 @@ CoLLiE provides [online documentation](https://openlmlab-collie.readthedocs.io/z
  <img src="docs/assets/images/progress.png">
 </div>
 
-You can find complete codes at <a href="https://github.com/OpenLMLab/collie/blob/dev/examples/finetune_moss_for_training.py">examples/finetune_moss_for_training.py</a>.
+You can find complete codes at <a href="https://github.com/OpenLMLab/collie/blob/main/examples/finetune_moss_for_training.py">examples/finetune_moss_for_training.py</a>.
 
 ### Fun Plugins
 CoLLiE provides a number of plug-and-play plugins, the following will introduce the "Monitor" and "Asynchronous DataProvider", more plugins are waiting to be explored and developed...

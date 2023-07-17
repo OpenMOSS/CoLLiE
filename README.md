@@ -6,14 +6,17 @@
 
 CoLLiE (Collaborative Tuning of Large Language Models in an Efficient Way)，一个帮助您从零开始训练大模型的完整工具箱。
 
+
+[![Github Repo Stars](https://img.shields.io/github/stars/openlmlab/collie?style=social)](https://github.com/openlmlab/collie/stargazers)
+[![Doc](https://img.shields.io/badge/Website-Doc-blue)](https://openlmlab-collie.readthedocs.io/zh_CN/latest/)
+[![HuggingFace badge](https://img.shields.io/badge/%F0%9F%A4%97HuggingFace-Join-yellow)](https://huggingface.co/openlmlab)
+
 <h4 align="center">
   <p>
-    <a href="https://github.com/OpenLMLab/collie/blob/dev/README.md">简体中文</a> |
-    <a href="https://github.com/OpenLMLab/collie/blob/dev/README_EN.md">English</a>
+     [ <a href="https://github.com/OpenLMLab/collie/blob/dev/README.md">简体中文</a> ] |
+     [ <a href="https://github.com/OpenLMLab/collie/blob/dev/README_EN.md">English</a> ]
   </p>
 </h4>
-
-[![Doc](https://img.shields.io/badge/Website-Doc-blue)](https://openlmlab-collie.readthedocs.io/zh_CN/latest/)
 
 
 ## 新闻
