@@ -357,9 +357,9 @@ class Moss003MoonForCausalLM(CollieModelForCausalLM):
             attention_mask = attention_mask[:, None, None, :]
             attention_mask = attention_mask.to(dtype)
             attention_mask = (1.0 - attention_mask) * torch.finfo(dtype).min
-        if input_embeds is not None:
-            inputs_embed = self.wte(input_ids)
-        hidden_states = self.drop(inputs_embed)
+        if input_embeds is None:
+            inputs_embeds = self.wte(input_ids)
+        hidden_states = self.drop(inputs_embeds)
 
         all_hidden_states = ()
         for i, l in enumerate(self.h):

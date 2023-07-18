@@ -403,7 +403,7 @@ class Trainer(TrainerEventTrigger):
                             trainer.engine.optimizer.get_param_coordinator(training=True).reset_step()
                         return loss.detach().cpu().item()
                     if trainer.optimizer.zero3_enabled or True:
-                        if trainer.engine.config.fp16:
+                        if trainer.engine.config['fp16']:
                             trainer.engine.optimizer.get_param_coordinator(training=True).reset_step()
                         # zero-3 doesn't support backward twice, so need an additional forward here
                         outputs = trainer.engine(**batch)
