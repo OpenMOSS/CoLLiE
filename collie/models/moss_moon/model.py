@@ -16,7 +16,7 @@ from collie.module import (ColumnParallelLinearWithoutBias,
                            VocabParallelEmbedding,
                            ColumnParallelLMHead)
 from collie.driver.io import IODriver
-from collie.models.base import CollieModelForCausalLM
+from collie.models.base import ColliePretrainedModel
 from collie.utils import env, progress
 from collie.utils.utils import dict_as_params
 from collie.config import CollieConfig
@@ -327,7 +327,7 @@ class MossBlock(nn.Module):
         return output
 
 
-class Moss003MoonForCausalLM(CollieModelForCausalLM):
+class Moss003MoonForCausalLM(ColliePretrainedModel):
     """
     支持 3D 并行的 Moss-moon 模型。
 

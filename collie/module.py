@@ -539,7 +539,7 @@ class PipelineModel(PipelineModule, PipelineGenerationMixin):
         
         self.inner_forward = False
         self.forward_type = "train" # train, eval, generate
-        self.skip_input_embedding()
+        self.skip_input_embeddings()
         
     def forward(self, *args, **kwargs):
         if not self.inner_forward:
@@ -558,41 +558,45 @@ class PipelineModel(PipelineModule, PipelineGenerationMixin):
             else:
                 return super(PipelineModel, self).forward(*args, **kwargs)
         
-    def get_input_embedding(self):
+    def get_input_embeddings(self):
         if env.pp_rank != 0:
-            return None, None
+            return None
         for name, layer in enumerate(self.forward_funcs):
             if isinstance(layer, (nn.Embedding, VocabParallelEmbedding)):
-                return name, layer
-        return None, None
+                setattr(layer, "_name", name)
+                return layer
+        return None
     
-    def get_lm_head(self):
+    def get_output_embeddings(self):
         if env.pp_rank != env.pp_size - 1:
-            return None, None
+            return None
         for name, layer in enumerate(reversed(self.forward_funcs)):
             if isinstance(layer, (ColumnParallelLinear, nn.Linear)):
-                return len(self.forward_funcs) - name - 1, layer
-        return None, None
+                setattr(layer, "_name", len(self.forward_funcs) - name - 1)
+                return layer
+        return None
     
-    def set_input_embedding(self, name, embedding):
-        if self.get_input_embedding()[1] is not None and self.get_input_embedding()[1] in list(self.tied_modules.values()):
-            key = list(self.tied_modules.keys())[list(self.tied_modules.values()).index(self.get_input_embedding()[1])]
+    def set_input_embeddings(self, embedding):
+        assert hasattr(embedding, "_name")
+        if self.get_input_embeddings() is not None and self.get_input_embeddings() in list(self.tied_modules.values()):
+            key = list(self.tied_modules.keys())[list(self.tied_modules.values()).index(self.get_input_embeddings())]
             self.tied_modules[key] = embedding
-        self.forward_funcs[name] = embedding
+        self.forward_funcs[embedding._name] = embedding
         
-    def set_lm_head(self, name, lm_head):
-        if self.get_lm_head()[1] is not None and self.get_lm_head()[1] in list(self.tied_modules.values()):
-            key = list(self.tied_modules.keys())[list(self.tied_modules.values()).index(self.get_lm_head()[1])]
-            self.tied_modules[key] = lm_head
-        self.forward_funcs[name] = lm_head
+    def set_output_embeddings(self, embedding):
+        assert hasattr(embedding, "_name")
+        if self.get_output_embeddings() is not None and self.get_output_embeddings() in list(self.tied_modules.values()):
+            key = list(self.tied_modules.keys())[list(self.tied_modules.values()).index(self.get_output_embeddings())]
+            self.tied_modules[key] = embedding
+        self.forward_funcs[embedding._name] = embedding
         
     def tie_weights(self):
         pass
     
-    def skip_input_embedding(self):
-        input_embedding = self.get_input_embedding()[1]
-        if input_embedding is not None and isinstance(input_embedding, nn.Module):
-            raw_foward = input_embedding.forward
+    def skip_input_embeddings(self):
+        input_embeddings = self.get_input_embeddings()
+        if input_embeddings is not None and isinstance(input_embeddings, nn.Module):
+            raw_foward = input_embeddings.forward
             def _forward(self, inputs):
                 if isinstance(inputs, dict):
                     if "inputs_embeds" in inputs.keys():
@@ -604,7 +608,7 @@ class PipelineModel(PipelineModule, PipelineGenerationMixin):
                     if hasattr(self, "raw_forward"):
                         return self.raw_forward(inputs)
                     return raw_foward(inputs)
-            object.__setattr__(input_embedding, "forward", MethodType(_forward, input_embedding))
+            object.__setattr__(input_embeddings, "forward", MethodType(_forward, input_embeddings))
         
         
 class MultiParallelGrid(PipelineParallelGrid):

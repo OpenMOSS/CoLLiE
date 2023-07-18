@@ -33,7 +33,7 @@ from collie.log import logger
 from collie.utils import progress, env, setup_ds_engine, BaseProvider, is_zero3_enabled, \
     BaseMonitor, _MultiMonitors, broadcast_tensor, ColliePadder, auto_param_call
 from collie.optim import Lomo
-from collie.models.base import CollieModelForCausalLM
+from collie.models.base import ColliePretrainedModel
 from .evaluator import Evaluator
 from .server import Server
 from collie.data import CollieDataLoader
@@ -47,7 +47,7 @@ class Trainer(TrainerEventTrigger):
 
     :param model: 用于训练和验证的模型，可以使用 **CoLLie** 实现的模型或 transformers 提供的模型：
 
-        * **CoLLie** 实现的模型 :class:`.CollieModelForCausalLM` 可支持的并行方式包括：张量并行、流水线并行、`ZeRO`
+        * **CoLLie** 实现的模型 :class:`.ColliePretrainedModel` 可支持的并行方式包括：张量并行、流水线并行、`ZeRO`
         * transformers 提供的模型 ``transformers.PreTrainedModel`` 只支持 `ZeRO`
         
     :param config: 用于训练和验证的配置
@@ -519,7 +519,7 @@ class Trainer(TrainerEventTrigger):
         io_driver = IODriver.from_protocol(protocol)
         io_driver.makedirs(path, exist_ok=True)
         self.on_save_model()
-        if isinstance(self.engine.module, CollieModelForCausalLM) or isinstance(self.engine.module, PipelineModel):
+        if isinstance(self.engine.module, ColliePretrainedModel) or isinstance(self.engine.module, PipelineModel):
             if is_zero3_enabled(self.config):
                 self._checkpoint_prologue()
                 with deepspeed.zero.GatheredParameters(list(self.engine.module.parameters(recurse=True))):
@@ -560,7 +560,7 @@ class Trainer(TrainerEventTrigger):
         io_driver = IODriver.from_protocol(protocol)
         assert io_driver.exists(path), f"`{path}` does not exist."
         self.on_load_model()
-        if isinstance(self.engine.module, CollieModelForCausalLM) or isinstance(self.engine.module, PipelineModel):
+        if isinstance(self.engine.module, ColliePretrainedModel) or isinstance(self.engine.module, PipelineModel):
             if is_zero3_enabled(self.config):
                 self._checkpoint_prologue()
                 with deepspeed.zero.GatheredParameters(list(self.engine.module.parameters(recurse=True)), modifier_rank=0):

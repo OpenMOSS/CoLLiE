@@ -275,7 +275,7 @@ if (sys.stdin and sys.stdin.isatty()):
         transient=True,
         disable=False,
         speed_estimate_period=600,
-        auto_refresh=True,
+        auto_refresh=False,
     )
 else:
     f_rich_progress = DummyFRichProgress()

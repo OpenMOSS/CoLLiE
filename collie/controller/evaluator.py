@@ -23,7 +23,7 @@ class Evaluator:
 
     :param model: 用于训练和验证的模型，可以使用 **CoLLie** 实现的模型或 transformers 提供的模型：
 
-        * **CoLLie** 实现的模型 :class:`.CollieModelForCausalLM` 可支持的并行方式包括：张量并行、流水线并行、`ZeRO`
+        * **CoLLie** 实现的模型 :class:`.ColliePretrainedModel` 可支持的并行方式包括：张量并行、流水线并行、`ZeRO`
         * transformers 提供的模型 ``transformers.PreTrainedModel`` 只支持 `ZeRO`
     :param dataset: 用于验证的数据集。
         **CoLLie** 可接收的 ``dataset`` 为可迭代对象，例如 ``torch.utils.data.Dataset``

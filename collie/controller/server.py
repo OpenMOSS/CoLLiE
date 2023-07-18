@@ -1,4 +1,4 @@
-from collie import CollieModelForCausalLM, BaseProvider, env, \
+from collie import ColliePretrainedModel, BaseProvider, env, \
     broadcast_tensor, _GenerationStreamer, PipelineGenerationMixin, CollieConfig, setup_ds_engine
 from deepspeed.runtime.pipe.engine import PipelineEngine
 from transformers import PreTrainedModel
@@ -9,7 +9,7 @@ from typing import Union
 
 class Server:
     def __init__(self,
-                 model: Union[CollieModelForCausalLM, PreTrainedModel],
+                 model: Union[ColliePretrainedModel, PreTrainedModel],
                  data_provider: BaseProvider) -> None:
         self.model = model
         self.data_provider = data_provider

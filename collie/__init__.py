@@ -1,7 +1,7 @@
 ''' **CoLLie** 为 **Causal Language Modeling** 提供了一系列的模型和工具，支持分布式训练和验证的快速部署
 '''
 from .config import CollieConfig
-from .models import LlamaForCausalLM, MossForCausalLM, CollieModelForCausalLM, \
+from .models import LlamaForCausalLM, MossForCausalLM, ColliePretrainedModel, \
     ChatGLMForCausalLM, InternLMForCausalLM, ChatGLM2ForCausalLM, Moss003MoonForCausalLM
 from .callbacks import Callback, HasMonitorCallback, CheckpointCallback, \
     LoadBestModelCallback
@@ -45,7 +45,7 @@ __all__ = [
     # models
     'LlamaForCausalLM',
     'MossForCausalLM',
-    'CollieModelForCausalLM',
+    'ColliePretrainedModel',
     'ChatGLMForCausalLM',
     'InternLMForCausalLM',
     'ChatGLM2ForCausalLM',

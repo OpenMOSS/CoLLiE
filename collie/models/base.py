@@ -27,11 +27,11 @@ from collie.log import logger
 from collie.utils import setup_distribution, is_zero3_enabled, env, \
     dict_as_params, get_keys_to_not_convert
 
-class CollieModelForCausalLM(nn.Module, GenerationMixin):
+class ColliePretrainedModel(nn.Module, GenerationMixin):
     """
     **CoLLiE** 的基础模型。如果要实现新的模型，必须继承该基类。
 
-    ``CollieModelForCausalLM`` 统一了非流水线模型和流水线模型的接口，并且可以执行
+    ``ColliePretrainedModel`` 统一了非流水线模型和流水线模型的接口，并且可以执行
     生成任务。
 
     为了适应流水线线的生成过程，每个新模型除了实现基类中的抽象方法外，还需要满足：
@@ -41,11 +41,13 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
     2. 将 Attention 过程中产生的 key 和 value 保存在每一个 layer 的
        ``past_key_value`` 属性中。
     3. 将每层的 hidden_states 保存在每一个 layer 的 ``hidden_states`` 属性中。
-    4. 将 lm_head 的输入 hidden_states 保存在 ``hidden_states`` 属性中。也可以使
+    4. 将 output_embedding 的输入 hidden_states 保存在 ``hidden_states`` 属性中。也可以使
        用 :class:`~collie.module.ColumnParallelLMHead` 来自动地保存。
 
     """
     main_input_name = "input_ids"
+    base_model_prefix = ""
+    _can_generate = False
 
     def __init__(self, config: CollieConfig) -> None:
         super().__init__()
@@ -104,7 +106,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                 object.__setattr__(layer, attr_name, use_cache)
 
     def can_generate(self) -> bool:
-        return True
+        return self._can_generate
 
     def generate(self, *args, **kwargs):
         """
@@ -188,7 +190,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                             dtype=config.model_config.torch_dtype
                         )
                     else:
-                        param.data = config.initization_method(torch.zeros_like(param.data)).to(config.model_config.torch_dtype).to(param.device)
+                        param.data = config.initization_method(torch.empty_like(param.data)).to(config.model_config.torch_dtype).to(param.device)
         if kwargs.get("get_peft", True) and config.peft_config.peft_type is not None:
             model = get_peft_model(model, config.peft_config)
             model.print_trainable_parameters()
@@ -283,7 +285,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
             from transformers.utils.bitsandbytes import replace_with_bnb_linear, \
                 set_module_quantized_tensor_to_device
             llm_int8_skip_modules = config.quantization_config.llm_int8_skip_modules
-            # We keep some modules such as the lm_head in their original dtype for numerical stability reasons
+            # We keep some modules such as the output_embedding in their original dtype for numerical stability reasons
             modules_to_not_convert = []
             if llm_int8_skip_modules is None:
                 modules_to_not_convert = get_keys_to_not_convert(model)
@@ -439,12 +441,12 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         model_cls = cls
         if isinstance(config, str):
             config = load_config(config)
-        if cls.__name__ == "CollieModelForCausalLM":
+        if cls.__name__ == "ColliePretrainedModel":
             mod = importlib.import_module(
                 ".model", f"collie.models.{config.model_type}")
             classes = inspect.getmembers(mod, inspect.isclass)
             for name, _cls in classes:
-                if not issubclass(_cls, CollieModelForCausalLM):
+                if not issubclass(_cls, ColliePretrainedModel):
                     continue
                 if name.lower().startswith(config.model_type):
                     model_cls = _cls
@@ -462,34 +464,34 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         return model_cls
 
     def resize_token_embeddings(self, new_num_tokens: Optional[int] = None) -> None:
-        embedding_name, embedding = self.get_input_embedding()
-        lm_head_name, lm_head = self.get_lm_head()
-        if embedding is None and lm_head is None:
+        embedding = self.get_input_embeddings()
+        output_embedding = self.get_output_embeddings()
+        if embedding is None and output_embedding is None:
             return
         new_num_tokens_embedding = new_num_tokens
-        new_num_tokens_lm_head = new_num_tokens
+        new_num_tokens_output_embedding = new_num_tokens
         if embedding is not None:
             if is_zero3_enabled(self.collie_config):
                 with deepspeed.zero.GatheredParameters(embedding.weight, modifier_rank=None):
                     old_embedding_tokens, embedding_dim = embedding.weight.size()
-                    old_lm_head_tokens = old_embedding_tokens
+                    old_output_embedding_tokens = old_embedding_tokens
             else:
                 old_embedding_tokens, embedding_dim = embedding.weight.size()
-                old_lm_head_tokens = old_embedding_tokens
-        if lm_head is not None:
+                old_output_embedding_tokens = old_embedding_tokens
+        if output_embedding is not None:
             if is_zero3_enabled(self.collie_config):
-                with deepspeed.zero.GatheredParameters(lm_head.weight, modifier_rank=None):
-                    old_lm_head_tokens, lm_head_dim = lm_head.weight.size()
-                    old_embedding_tokens = old_lm_head_tokens
+                with deepspeed.zero.GatheredParameters(output_embedding.weight, modifier_rank=None):
+                    old_output_embedding_tokens, output_embedding_dim = output_embedding.weight.size()
+                    old_embedding_tokens = old_output_embedding_tokens
             else:
-                old_lm_head_tokens, lm_head_dim = lm_head.weight.size()
-                old_embedding_tokens = old_lm_head_tokens
+                old_output_embedding_tokens, output_embedding_dim = output_embedding.weight.size()
+                old_embedding_tokens = old_output_embedding_tokens
         if isinstance(embedding, tensor_parallel.VocabParallelEmbedding):
             assert new_num_tokens % env.tp_size == 0, "The new number of tokens must be divisible by the tensor parallel size."
             old_embedding_tokens = old_embedding_tokens * env.tp_size
-        if isinstance(lm_head, tensor_parallel.ColumnParallelLinear):
+        if isinstance(output_embedding, tensor_parallel.ColumnParallelLinear):
             assert new_num_tokens % env.tp_size == 0, "The new number of tokens must be divisible by the tensor parallel size."
-            old_lm_head_tokens = old_lm_head_tokens * env.tp_size
+            old_output_embedding_tokens = old_output_embedding_tokens * env.tp_size
         if new_num_tokens is None or new_num_tokens == old_embedding_tokens:
             return
         if embedding is not None:
@@ -504,6 +506,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                     new_embedding = embedding.__class__(
                         new_num_tokens_embedding,
                         embedding_dim).to(embedding.weight.device).to(embedding.weight.dtype)
+                setattr(new_embedding, "_name", embedding._name)
             tp_devide_rank = old_embedding_tokens // (new_num_tokens // env.tp_size)
             if env.tp_rank < tp_devide_rank:
                 start_pos_old = (new_num_tokens // env.tp_size) * env.tp_rank
@@ -550,27 +553,28 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                                                                 **self.collie_config.initization_method_params)
                     else:
                         initization_method(new_embedding.weight[end_pos_new:new_num_tokens // env.tp_size, :])
-            self.set_input_embedding(embedding_name, new_embedding)
-        if lm_head is not None:
-            if embedding is not None and id(lm_head.weight) == id(embedding.weight):
-                lm_head.weight = new_embedding.weight
+            self.set_input_embeddings(new_embedding)
+        if output_embedding is not None:
+            if embedding is not None and id(output_embedding.weight) == id(embedding.weight):
+                output_embedding.weight = new_embedding.weight
                 return
             with deepspeed.zero.Init(data_parallel_group=parallel_state.get_data_parallel_group(), enabled=is_zero3_enabled(self.collie_config)):
-                if hasattr(lm_head, "dict_as_params_input_keys") and \
-                    hasattr(lm_head, "dict_as_params_output_keys"):
-                        new_lm_head = dict_as_params(
-                            input_keys=lm_head.dict_as_params_input_keys,
-                            output_keys=lm_head.dict_as_params_output_keys,
-                        )(lm_head.__class__,
-                          lm_head_dim,
-                          new_num_tokens_lm_head,
-                          bias=lm_head.bias is not None).to(lm_head.weight.device).to(lm_head.weight.dtype)
+                if hasattr(output_embedding, "dict_as_params_input_keys") and \
+                    hasattr(output_embedding, "dict_as_params_output_keys"):
+                        new_output_embedding = dict_as_params(
+                            input_keys=output_embedding.dict_as_params_input_keys,
+                            output_keys=output_embedding.dict_as_params_output_keys,
+                        )(output_embedding.__class__,
+                          output_embedding_dim,
+                          new_num_tokens_output_embedding,
+                          bias=output_embedding.bias is not None).to(output_embedding.weight.device).to(output_embedding.weight.dtype)
                 else:
-                    new_lm_head = lm_head.__class__(
+                    new_output_embedding = output_embedding.__class__(
                         embedding_dim,
-                        new_num_tokens_lm_head,
-                        bias=lm_head.bias is not None).to(lm_head.weight.device).to(lm_head.weight.dtype)
-            tp_devide_rank = old_lm_head_tokens // (new_num_tokens // env.tp_size)
+                        new_num_tokens_output_embedding,
+                        bias=output_embedding.bias is not None).to(output_embedding.weight.device).to(output_embedding.weight.dtype)
+                setattr(new_output_embedding, "_name", output_embedding._name)
+            tp_devide_rank = old_output_embedding_tokens // (new_num_tokens // env.tp_size)
             if env.tp_rank < tp_devide_rank:
                 start_pos_old = (new_num_tokens // env.tp_size) * env.tp_rank
                 end_pos_old = (new_num_tokens // env.tp_size) * (env.tp_rank + 1)
@@ -578,92 +582,98 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                 end_pos_new = new_num_tokens // env.tp_size
             elif env.tp_rank == tp_devide_rank:
                 start_pos_old = (new_num_tokens // env.tp_size) * env.tp_rank
-                end_pos_old = old_lm_head_tokens
+                end_pos_old = old_output_embedding_tokens
                 start_pos_new = 0
-                end_pos_new = old_lm_head_tokens - (new_num_tokens // env.tp_size) * tp_devide_rank
+                end_pos_new = old_output_embedding_tokens - (new_num_tokens // env.tp_size) * tp_devide_rank
             elif env.tp_rank > tp_devide_rank:
                 start_pos_old = 0
                 end_pos_old = 0
                 start_pos_new = 0
                 end_pos_new = 0
             if is_zero3_enabled(self.collie_config):
-                with deepspeed.zero.GatheredParameters([new_lm_head.weight, lm_head.weight] + \
-                    [new_lm_head.bias, lm_head.bias] if lm_head.bias is not None else [], modifier_rank=0):
-                    if env.tp_size > 1 and isinstance(new_lm_head, tensor_parallel.ColumnParallelLinear):
-                        weights_list = [lm_head.weight.clone() for _ in range(env.tp_size)]
-                        dist.all_gather(weights_list, lm_head.weight, group=parallel_state.get_tensor_model_parallel_group())
-                        lm_head.weight = nn.Parameter(torch.concat(weights_list, dim=0))
-                        if lm_head.bias is not None:
-                            bias_list = [lm_head.bias.clone() for _ in range(env.tp_size)]
-                            dist.all_gather(bias_list, lm_head.bias, group=parallel_state.get_tensor_model_parallel_group())
-                            lm_head.bias = nn.Parameter(torch.concat(bias_list, dim=0))
+                with deepspeed.zero.GatheredParameters([new_output_embedding.weight, output_embedding.weight] + \
+                    [new_output_embedding.bias, output_embedding.bias] if output_embedding.bias is not None else [], modifier_rank=0):
+                    if env.tp_size > 1 and isinstance(new_output_embedding, tensor_parallel.ColumnParallelLinear):
+                        weights_list = [output_embedding.weight.clone() for _ in range(env.tp_size)]
+                        dist.all_gather(weights_list, output_embedding.weight, group=parallel_state.get_tensor_model_parallel_group())
+                        output_embedding.weight = nn.Parameter(torch.concat(weights_list, dim=0))
+                        if output_embedding.bias is not None:
+                            bias_list = [output_embedding.bias.clone() for _ in range(env.tp_size)]
+                            dist.all_gather(bias_list, output_embedding.bias, group=parallel_state.get_tensor_model_parallel_group())
+                            output_embedding.bias = nn.Parameter(torch.concat(bias_list, dim=0))
                     if env.dp_rank == 0:
-                        new_lm_head.weight.data[start_pos_new:end_pos_new, :] \
-                            = lm_head.weight.data[start_pos_old:end_pos_old, :]
-                        if lm_head.bias is not None:
-                            new_lm_head.bias.data[start_pos_new:end_pos_new] \
-                                = lm_head.bias.data[start_pos_old:end_pos_old]
+                        new_output_embedding.weight.data[start_pos_new:end_pos_new, :] \
+                            = output_embedding.weight.data[start_pos_old:end_pos_old, :]
+                        if output_embedding.bias is not None:
+                            new_output_embedding.bias.data[start_pos_new:end_pos_new] \
+                                = output_embedding.bias.data[start_pos_old:end_pos_old]
                         if end_pos_new < (new_num_tokens // env.tp_size):
                             initization_method = self.collie_config.initization_method
                             if self.collie_config.initization_method_params is not None:
-                                initization_method = initization_method(new_lm_head.weight[end_pos_new:new_num_tokens // env.tp_size, :],
+                                initization_method = initization_method(new_output_embedding.weight[end_pos_new:new_num_tokens // env.tp_size, :],
                                                                         **self.collie_config.initization_method_params)
-                                if lm_head.bias is not None:
-                                    initization_method(new_lm_head.bias[end_pos_new:new_num_tokens // env.tp_size],
+                                if output_embedding.bias is not None:
+                                    initization_method(new_output_embedding.bias[end_pos_new:new_num_tokens // env.tp_size],
                                                         **self.collie_config.initization_method_params)
                             else:
-                                initization_method(new_lm_head.weight[end_pos_new:new_num_tokens // env.tp_size, :])
-                                if lm_head.bias is not None:
-                                    initization_method(new_lm_head.bias[end_pos_new:new_num_tokens // env.tp_size])
+                                initization_method(new_output_embedding.weight[end_pos_new:new_num_tokens // env.tp_size, :])
+                                if output_embedding.bias is not None:
+                                    initization_method(new_output_embedding.bias[end_pos_new:new_num_tokens // env.tp_size])
             else:
-                if env.tp_size > 1 and isinstance(new_lm_head, tensor_parallel.ColumnParallelLinear):
-                    weights_list = [lm_head.weight.clone() for _ in range(env.tp_size)]
-                    dist.all_gather(weights_list, lm_head.weight, group=parallel_state.get_tensor_model_parallel_group())
-                    lm_head.weight = nn.Parameter(torch.concat(weights_list, dim=0))
-                    if lm_head.bias is not None:
-                        bias_list = [lm_head.bias.clone() for _ in range(env.tp_size)]
-                        dist.all_gather(bias_list, lm_head.bias, group=parallel_state.get_tensor_model_parallel_group())
-                        lm_head.bias = nn.Parameter(torch.concat(bias_list, dim=0))
-                new_lm_head.weight.data[start_pos_new:end_pos_new, :] \
-                    = lm_head.weight.data[start_pos_old:end_pos_old, :]
-                if lm_head.bias is not None:
-                    new_lm_head.bias.data[start_pos_new:end_pos_new] \
-                        = lm_head.bias.data[start_pos_old:end_pos_old]
+                if env.tp_size > 1 and isinstance(new_output_embedding, tensor_parallel.ColumnParallelLinear):
+                    weights_list = [output_embedding.weight.clone() for _ in range(env.tp_size)]
+                    dist.all_gather(weights_list, output_embedding.weight, group=parallel_state.get_tensor_model_parallel_group())
+                    output_embedding.weight = nn.Parameter(torch.concat(weights_list, dim=0))
+                    if output_embedding.bias is not None:
+                        bias_list = [output_embedding.bias.clone() for _ in range(env.tp_size)]
+                        dist.all_gather(bias_list, output_embedding.bias, group=parallel_state.get_tensor_model_parallel_group())
+                        output_embedding.bias = nn.Parameter(torch.concat(bias_list, dim=0))
+                new_output_embedding.weight.data[start_pos_new:end_pos_new, :] \
+                    = output_embedding.weight.data[start_pos_old:end_pos_old, :]
+                if output_embedding.bias is not None:
+                    new_output_embedding.bias.data[start_pos_new:end_pos_new] \
+                        = output_embedding.bias.data[start_pos_old:end_pos_old]
                 if end_pos_new < (new_num_tokens // env.tp_size):
                     initization_method = self.collie_config.initization_method
                     if self.collie_config.initization_method_params is not None:
-                        initization_method = initization_method(new_lm_head.weight[end_pos_new:new_num_tokens // env.tp_size, :],
+                        initization_method = initization_method(new_output_embedding.weight[end_pos_new:new_num_tokens // env.tp_size, :],
                                                                 **self.collie_config.initization_method_params)
-                        if lm_head.bias is not None:
-                            initization_method(new_lm_head.bias[end_pos_new:new_num_tokens // env.tp_size],
+                        if output_embedding.bias is not None:
+                            initization_method(new_output_embedding.bias[end_pos_new:new_num_tokens // env.tp_size],
                                                 **self.collie_config.initization_method_params)
                     else:
-                        initization_method(new_lm_head.weight[end_pos_new:new_num_tokens // env.tp_size, :])
-                        if lm_head.bias is not None:
-                            initization_method(new_lm_head.bias[end_pos_new:new_num_tokens // env.tp_size])
-            self.set_lm_head(lm_head_name, new_lm_head)
+                        initization_method(new_output_embedding.weight[end_pos_new:new_num_tokens // env.tp_size, :])
+                        if output_embedding.bias is not None:
+                            initization_method(new_output_embedding.bias[end_pos_new:new_num_tokens // env.tp_size])
+            self.set_output_embeddings(new_output_embedding)
 
 
-    def get_input_embedding(self):
-        for name, module in self.named_children():
+    def get_input_embeddings(self):
+        base_model = getattr(self, self.base_model_prefix, self)
+        for name, module in base_model.named_children():
             if isinstance(module, (nn.Embedding, tensor_parallel.VocabParallelEmbedding)):
-                return name, module
-        return None, None
+                setattr(module, "_name", name)
+                return module
+        return None
 
-    def get_lm_head(self):
-        lm_head = None
-        lm_head_name = None
+    def get_output_embeddings(self):
+        assert self.base_model_prefix != ""
+        output_embeddings = None
         for name, module in self.named_children():
             if isinstance(module, (tensor_parallel.ColumnParallelLinear, nn.Linear)):
-                lm_head = module
-                lm_head_name = name
-        return lm_head_name, lm_head
+                output_embeddings = module
+                setattr(output_embeddings, "_name", name)
+        return output_embeddings
 
-    def set_input_embedding(self, name, embedding):
-        self.add_module(name, embedding)
+    def set_input_embeddings(self, embedding):
+        assert hasattr(embedding, "_name")
+        base_model = getattr(self, self.base_model_prefix, self)
+        base_model.add_module(embedding._name.replace(self.base_model_prefix, ""), embedding)
 
-    def set_lm_head(self, name, lm_head):
-        self.add_module(name, lm_head)
+    def set_output_embeddings(self, embedding):
+        assert self.base_model_prefix != ""
+        assert hasattr(embedding, "_name")
+        self.add_module(embedding._name, embedding)
 
     def enable_input_require_grads(self):
         """
@@ -676,6 +686,14 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                 output.requires_grad_(True)
             elif isinstance(output, dict):
                 output["hidden_states"].requires_grad_(True)
-        input_embedding = self.get_input_embedding()[1]
+        input_embedding = self.get_input_embeddings()[1]
         if input_embedding is not None:
             self._require_grads_hook = input_embedding.register_forward_hook(make_inputs_require_grads)
+            
+    def disable_input_require_grads(self):
+        """
+        Removes the `_require_grads_hook`.
+        """
+        input_embedding = self.get_input_embeddings()[1]
+        if input_embedding is not None:
+            self._require_grads_hook.remove()

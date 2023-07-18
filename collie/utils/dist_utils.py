@@ -81,13 +81,13 @@ def setup_ds_engine(
     if "gradient_accumulation_steps" not in config.ds_config.keys():
         config.ds_config["gradient_accumulation_steps"] = config.gradient_accumulation_steps
     if config.pp_size != 1 or config.tp_size != 1:
-        from collie.models import CollieModelForCausalLM
+        from collie.models import ColliePretrainedModel
         from collie.module import PipelineModel
         from peft import PeftModel
         if isinstance(model, PeftModel):
-            assert isinstance(model.get_base_model(), (CollieModelForCausalLM, PipelineModel)), "Currently pipeline or tensor parallelism only supports Collie models."
+            assert isinstance(model.get_base_model(), (ColliePretrainedModel, PipelineModel)), "Currently pipeline or tensor parallelism only supports Collie models."
         else:
-            assert isinstance(model, (CollieModelForCausalLM, PipelineModel)), "Currently pipeline or tensor parallelism only supports Collie models."
+            assert isinstance(model, (ColliePretrainedModel, PipelineModel)), "Currently pipeline or tensor parallelism only supports Collie models."
     engine, optimizer, _, lr_scheduler = initialize(
         model=model,
         optimizer=optimizer,

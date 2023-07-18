@@ -19,7 +19,7 @@ Models
    :nosignatures:
    :template: classtemplate.rst
 
-   CollieModelForCausalLM
+   ColliePretrainedModel
    LlamaForCausalLM
    MossForCausalLM
    ChatGLMForCausalLM

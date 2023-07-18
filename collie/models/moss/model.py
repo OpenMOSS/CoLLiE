@@ -27,7 +27,7 @@ from collie.config import load_config
 from collie.config import CollieConfig
 from collie.utils import progress, env, dict_as_params
 from collie.driver.io import IODriver
-from collie.models.base import CollieModelForCausalLM
+from collie.models.base import ColliePretrainedModel
 from collie.module import ColumnParallelLinearWithoutBias, RowParallelLinearWithoutBias, ColumnParallelLMHead
 
 from typing import Union, Optional
@@ -229,7 +229,7 @@ class MossLayer(nn.Module):
         return inputs
 
 
-class MossForCausalLM(CollieModelForCausalLM):
+class MossForCausalLM(ColliePretrainedModel):
     
     def __init__(self, config: CollieConfig) -> None:
         super().__init__(config)

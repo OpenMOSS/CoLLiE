@@ -22,7 +22,7 @@ except ModuleNotFoundError:
 
 from collie.log.logger import logger
 from collie.config import CollieConfig
-from collie.models.base import CollieModelForCausalLM
+from collie.models.base import ColliePretrainedModel
 from collie.driver.io import IODriver
 from collie.module import ColumnParallelLinearWithoutBias, RowParallelLinearWithoutBias, ColumnParallelLMHead
 from collie.utils import progress, env, dict_as_params
@@ -494,7 +494,7 @@ class ChatGLM2Layer(nn.Module):
         return inputs
 
 
-class ChatGLM2ForCausalLM(CollieModelForCausalLM):
+class ChatGLM2ForCausalLM(ColliePretrainedModel):
     def __init__(self, config: CollieConfig) -> None:
         super().__init__(config)
         self.word_embeddings = self._get_word_embedding_with_position_ids_cls(config)(

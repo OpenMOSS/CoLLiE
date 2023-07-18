@@ -24,7 +24,7 @@ def patch_peft_model():
 
         if config.num_transformer_submodules is None:
             config.num_transformer_submodules = 2 if config.task_type == TaskType.SEQ_2_SEQ_LM else 1
-        self.word_embeddings = self.base_model.get_input_embedding()[1]
+        self.word_embeddings = self.base_model.get_input_embeddings()[1]
         if config.peft_type == PeftType.PROMPT_TUNING:
             prompt_encoder = PromptEmbedding(config, self.word_embeddings)
         elif config.peft_type == PeftType.P_TUNING:

@@ -78,8 +78,8 @@ model.resize_token_embeddings(len(llama_tokenizer) + 7)  # 取个整
 for p in model.parameters():
     p.requires_grad = False
 # 因为 embedding 和 lm_head 在 pipeline 的情况下被分割到了不同的进程，所以要判断一下自己是否有 embedding 层
-if model.get_input_embedding()[1] is not None:
-    model.get_input_embedding()[1].weight.requires_grad = True
+if model.get_input_embeddings()[1] is not None:
+    model.get_input_embeddings()[1].weight.requires_grad = True
 if model.get_lm_head()[1] is not None:
     model.get_lm_head()[1].weight.requires_grad = True
 optimizer = torch.optim.AdamW(
