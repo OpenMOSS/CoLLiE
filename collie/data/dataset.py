@@ -285,8 +285,15 @@ class CollieDatasetForClassification(CollieDatasetForTraining):
             ]
     """
     
-    def __init__(self, style: str="harness", *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, 
+                 dataset: Sequence[Dict],
+                 tokenizer: Optional[PreTrainedTokenizer] = None,
+                 add_special_tokens: bool = True,
+                 shuffle: bool = False,
+                 seed: int = 1024,
+                 max_length: int=-1, 
+                 style: str="harness"):
+        super().__init__(dataset=dataset, tokenizer=tokenizer, add_special_tokens=add_special_tokens, shuffle=shuffle, seed=seed, max_length=max_length)
         assert style.lower() in ("harness", "helm"), "Style can only be one of `harness` or `helm`"
         self.style = style.lower()
 

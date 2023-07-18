@@ -249,7 +249,7 @@ class MossForCausalLM(CollieModelForCausalLM):
             bias=False
         )
         # GenerationMixin 需要的额外参数
-        self.config = PretrainedConfig(is_decoder=True)
+        self.config.is_decoder=True
         if config.model_config.tie_word_embeddings:
             self.lm_head.weight = self.embed_tokens.weight
         self.main_input_name = "input_ids"
