@@ -1,5 +1,5 @@
 #model_name="huggyllama/llama-13b"
-model_name="openlm-research/open_llama_3b"
+model_name="openlm-research/open_llama_7b_v2"
 tp_size=4
 
 #for optim in "adam" "adan" "lion" "sophiag"; do

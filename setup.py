@@ -4,8 +4,8 @@ with open("requirements.txt", encoding="utf-8") as f:
     reqs = f.read()
 
 setup(
-    name="collie",
-    version="1.0.1",
+    name="collie-lm",
+    version="1.0.2",
     description="CoLLiE: Collaborative Tuning of Large Language Models in an Efficient Way",
     author="OpenLMLab",
     author_email="yanhang@pjlab.org.cn",
