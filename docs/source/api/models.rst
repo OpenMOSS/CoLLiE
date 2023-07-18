@@ -23,3 +23,5 @@ Models
    LlamaForCausalLM
    MossForCausalLM
    ChatGLMForCausalLM
+   InternLMForCausalLM
+   Moss003MoonForCausalLM

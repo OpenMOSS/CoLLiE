@@ -9,7 +9,7 @@ from collie import Trainer, CollieConfig
 from collie.module import GPTLMLoss
 from collie.callbacks import LoadBestModelCallback
 from collie.metrics import BaseMetric
-from collie.models import MossForCausalLM
+from collie.models import Moss003MoonForCausalLM
 from collie.utils import env
 from collie.log import logger
 
@@ -93,7 +93,7 @@ def test_load_best_callback(pretrained_model, folder, dp_size, tp_size,
         train_dataset = [(train_sample, train_sample) for _ in range(500)]
         eval_dataset = [(eval_sample, eval_sample)]
 
-        model = MossForCausalLM.from_pretrained(pretrained_model, config=config)
+        model = Moss003MoonForCausalLM.from_pretrained(pretrained_model, config=config)
 
         callbacks = [LoadBestModelCallback(folder, monitor="acc")]
         metrics = {"acc": SFTAccMetric()}

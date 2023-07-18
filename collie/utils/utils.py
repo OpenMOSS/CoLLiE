@@ -76,7 +76,7 @@ class progress:
         self.completed = completed
         self.task_id = self.bar.add_task(
             desc, upgrade_period=upgrade_period, completed=completed,
-            post_desc=post_desc, visible=not disable, total=total
+            post_desc=post_desc, visible=not disable, total=self.total
         )
 
     def __iter__(self):
@@ -410,7 +410,7 @@ def dict_as_params(input_keys: Union[str, Sequence[str]], output_keys: Union[str
         obj = cls(*args, **kwargs)
         object.__setattr__(obj, "dict_as_params_input_keys", input_keys)
         object.__setattr__(obj, "dict_as_params_output_keys", output_keys)
-        raw_foward = obj.forward
+        raw_forward = obj.forward
         def _forward(self, dict_inputs: dict):
             if isinstance(input_keys, str):
                 inputs = [dict_inputs[input_keys]]
@@ -418,7 +418,7 @@ def dict_as_params(input_keys: Union[str, Sequence[str]], output_keys: Union[str
                 inputs = [dict_inputs[k] for k in input_keys]
             else:
                 raise ValueError(f"input_keys should be str or Sequence[str], but got {type(input_keys)}")
-            outputs = raw_foward(*inputs)
+            outputs = raw_forward(*inputs)
             if isinstance(output_keys, str):
                 dict_inputs[output_keys] = outputs
                 for k, v in dict_inputs.items():
@@ -435,6 +435,7 @@ def dict_as_params(input_keys: Union[str, Sequence[str]], output_keys: Union[str
             else:
                 raise ValueError(f"output_keys should be str or Sequence[str], but got {type(output_keys)}")
             return dict_inputs
+        object.__setattr__(obj, "raw_forward", raw_forward)
         obj.forward = MethodType(_forward, obj)
         return obj
     return _inner

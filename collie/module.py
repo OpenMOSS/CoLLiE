@@ -13,10 +13,13 @@ import copy
 import types
 import json
 import torch
+import warnings
+import inspect
 from types import MethodType
-from typing import Optional, List, Sequence, Dict
+from typing import Optional, List, Sequence, Dict, Any, Tuple
 
 from torch import nn
+from peft import PeftModel
 from torch import distributed as dist
 from transformers.generation.configuration_utils import GenerationConfig
 from megatron.core.tensor_parallel import (ColumnParallelLinear,
@@ -37,7 +40,6 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from collie.log import logger
 from collie.utils import env, broadcast_tensor, setup_ds_engine
-from collie.utils.peft_utils import skip_input_embedding
 
 class ColumnParallelLinearWithoutBias(ColumnParallelLinear):
     """重写 ``megatron`` 提供的列并行全连接层以去掉结果中的 ``bias``。
@@ -189,11 +191,13 @@ class PipelineGenerationMixin(GenerationMixin):
         return super().contrastive_search(*args, **kwargs)
         
     def generate_forward(self,
-                input_ids: torch.Tensor,
+                input_ids: Optional[torch.Tensor] = None,
                 attention_mask: Optional[torch.Tensor] = None,
                 inputs_embeds: Optional[torch.Tensor] = None,
                 position_ids: Optional[torch.Tensor] = None,
-                use_cache: bool = True, **kwargs) -> torch.Tensor:
+                use_cache: bool = True, 
+                past_key_values: Optional[Tuple[torch.Tensor]] = None,
+                **kwargs) -> torch.Tensor:
         """ 进行迭代的流水线模型的前向传播（生成）
         """
         if use_cache:
@@ -201,14 +205,20 @@ class PipelineGenerationMixin(GenerationMixin):
                 "In Pipeline Parallelism, `use_cache=True` will result in "
                 "slowing down the generate process.", once=True
             )
-        inputs = {"input_ids": input_ids}
+        inputs = {}
+        if input_ids is not None:
+            inputs["input_ids"] = input_ids
+            inputs["labels"] = inputs["input_ids"]
         if attention_mask is not None:
             inputs["attention_mask"] = attention_mask
         if position_ids is not None:
             inputs["position_ids"] = position_ids
         if inputs_embeds is not None:
             inputs["inputs_embeds"] = inputs_embeds
-        inputs["labels"] = inputs["input_ids"]
+        if past_key_values is None:
+            self._clean_past_key_values()
+        else:
+            self._set_past_key_values(past_key_values)
         outputs = self.engine_container[-1].generate_batch(inputs, use_cache)
         hidden_states = self._get_hidden_states()
         if self.is_contrastive_search:
@@ -234,20 +244,28 @@ class PipelineGenerationMixin(GenerationMixin):
         )
         
     def train_forward(self,
-                input_ids: torch.Tensor,
                 labels: torch.Tensor,
+                input_ids: Optional[torch.Tensor] = None,
                 attention_mask: Optional[torch.Tensor] = None,
                 inputs_embeds: Optional[torch.Tensor] = None,
-                position_ids: Optional[torch.Tensor] = None, **kwargs) -> torch.Tensor:
+                position_ids: Optional[torch.Tensor] = None, 
+                past_key_values: Optional[Tuple[torch.Tensor]] = None,
+                **kwargs) -> torch.Tensor:
         """ 进行一次流水线模型的正反向传播
         """
-        inputs = {"input_ids": input_ids}
+        inputs = {}
+        if input_ids is not None:
+            inputs["input_ids"] = input_ids
         if attention_mask is not None:
             inputs["attention_mask"] = attention_mask
         if position_ids is not None:
             inputs["position_ids"] = position_ids
         if inputs_embeds is not None:
             inputs["inputs_embeds"] = inputs_embeds
+        if past_key_values is None:
+            self._clean_past_key_values()
+        else:
+            self._set_past_key_values(past_key_values)
         inputs["labels"] = labels
         loss = self.engine_container[-1].train_batch(inputs)
         return CausalLMOutputWithPast(
@@ -259,20 +277,28 @@ class PipelineGenerationMixin(GenerationMixin):
         )
         
     def eval_forward(self,
-                input_ids: torch.Tensor,
                 labels: torch.Tensor,
+                input_ids: Optional[torch.Tensor] = None,
                 attention_mask: Optional[torch.Tensor] = None,
                 inputs_embeds: Optional[torch.Tensor] = None,
-                position_ids: Optional[torch.Tensor] = None, **kwargs) -> torch.Tensor:
+                position_ids: Optional[torch.Tensor] = None, 
+                past_key_values: Optional[Tuple[torch.Tensor]] = None,
+                **kwargs) -> torch.Tensor:
         """ 进行一次流水线模型的正反向传播
         """
-        inputs = {"input_ids": input_ids}
+        inputs = {}
+        if input_ids is not None:
+            inputs["input_ids"] = input_ids
         if attention_mask is not None:
             inputs["attention_mask"] = attention_mask
         if position_ids is not None:
             inputs["position_ids"] = position_ids
         if inputs_embeds is not None:
             inputs["inputs_embeds"] = inputs_embeds
+        if past_key_values is None:
+            self._clean_past_key_values()
+        else:
+            self._set_past_key_values(past_key_values)
         inputs["labels"] = labels
         outputs = self.engine_container[-1].eval_batch(inputs)
         hidden_states = self._get_hidden_states()
@@ -299,20 +325,45 @@ class PipelineGenerationMixin(GenerationMixin):
         )
     
     def prepare_inputs_for_generation(self, 
-                                      input_ids: torch.Tensor,
+                                      input_ids: Optional[torch.Tensor] = None,
+                                      inputs_embeds: Optional[torch.Tensor] = None,
                                       past_key_values: Optional[list] = None,
                                       attention_mask: Optional[torch.Tensor] = None,
                                       use_cache: bool = False,
                                       **kwargs):
         self._set_use_cache(use_cache)
-        if past_key_values is None:
-            self._clean_past_key_values()
-        else:
-            self._set_past_key_values(past_key_values)
+        if past_key_values is not None:
+            if None in past_key_values:
+                past_key_values = None
         return self.engine_container[-1].module.prepare_inputs(
-            input_ids=input_ids, past_key_values=past_key_values,
+            input_ids=input_ids, inputs_embeds=inputs_embeds, past_key_values=past_key_values,
             attention_mask=attention_mask, use_cache=use_cache, **kwargs
         )
+        
+    def _validate_model_kwargs(self, model_kwargs: Dict[str, Any]):
+        """Validates model kwargs for generation. Generate argument typos will also be caught here."""
+        # Excludes arguments that are handled before calling any model function
+        if self.config.is_encoder_decoder:
+            for key in ["decoder_input_ids"]:
+                model_kwargs.pop(key, None)
+
+        unused_model_args = []
+        model_args = set(inspect.signature(self.prepare_inputs_for_generation).parameters)
+        # `kwargs`/`model_kwargs` is often used to handle optional forward pass inputs like `attention_mask`. If
+        # `prepare_inputs_for_generation` doesn't accept them, then a stricter check can be made ;)
+        if "kwargs" in model_args or "model_kwargs" in model_args:
+            model_args |= set(inspect.signature(self.forward).parameters)
+        for key, value in model_kwargs.items():
+            if value is not None and key not in model_args:
+                unused_model_args.append(key)
+
+        if unused_model_args:
+            warnings.warn(f"The following `model_kwargs` are not used by the model: {unused_model_args} (note: typos in the"
+                " generate arguments will also show up in this list)")
+            # raise ValueError(
+            #     f"The following `model_kwargs` are not used by the model: {unused_model_args} (note: typos in the"
+            #     " generate arguments will also show up in this list)"
+            # )
     
     def can_generate(self) -> bool:
         """ 判断当前流水线模型是否可以进行生成
@@ -329,9 +380,9 @@ class PipelineGenerationMixin(GenerationMixin):
         """
         past_key_values = []
         for layer in self.layers:
-            if hasattr(layer, attr_name) and getattr(layer, attr_name) is not None:
+            if hasattr(layer, attr_name):
                 past_key_values.append(getattr(layer, attr_name))
-        return past_key_values if len(past_key_values) > 1 else None
+        return tuple(past_key_values) if None not in past_key_values else None
     
     def _clean_past_key_values(self, attr_name: str="past_key_values"):
         """ 清除所有层中的 `past_key_values`
@@ -353,9 +404,9 @@ class PipelineGenerationMixin(GenerationMixin):
         """
         all_hidden_states = []
         for layer in self.layers:
-            if hasattr(layer, attr_name) and getattr(layer, attr_name) is not None:
+            if hasattr(layer, attr_name):
                 all_hidden_states.append(getattr(layer, attr_name))
-        return all_hidden_states if len(all_hidden_states) > 1 else None
+        return tuple(all_hidden_states) if None not in all_hidden_states else None
     
     def _clean_hidden_states(self, attr_name: str="hidden_states"):
         """ 清除所有层中的 `hidden_states`
@@ -487,6 +538,7 @@ class PipelineModel(PipelineModule, PipelineGenerationMixin):
         
         self.inner_forward = False
         self.forward_type = "train" # train, eval, generate
+        self.skip_input_embedding()
         
     def forward(self, *args, **kwargs):
         if not self.inner_forward:
@@ -496,6 +548,8 @@ class PipelineModel(PipelineModule, PipelineGenerationMixin):
                 return self.train_forward(*args, **kwargs)
             elif self.forward_type == "eval":
                 return self.eval_forward(*args, **kwargs)
+            else:
+                raise RuntimeError("Wrong forward type!")
         else:
             # hack: super(PipelineModel, self).forward 只能接收一个参数，这个参数的类型是 dict
             if "input_ids" in kwargs.keys() and isinstance(kwargs["input_ids"], dict):
@@ -533,12 +587,29 @@ class PipelineModel(PipelineModule, PipelineGenerationMixin):
         
     def tie_weights(self):
         pass
+    
+    def skip_input_embedding(self):
+        input_embedding = self.get_input_embedding()[1]
+        if input_embedding is not None and isinstance(input_embedding, nn.Module):
+            raw_foward = input_embedding.forward
+            def _forward(self, inputs):
+                if isinstance(inputs, dict):
+                    if "inputs_embeds" in inputs.keys():
+                        inputs["hidden_states"] = inputs.pop("inputs_embeds")
+                        return inputs
+                    else:
+                        return raw_foward(inputs)
+                else:
+                    if hasattr(self, "raw_forward"):
+                        return self.raw_forward(inputs)
+                    return raw_foward(inputs)
+            object.__setattr__(input_embedding, "forward", MethodType(_forward, input_embedding))
         
         
 class MultiParallelGrid(PipelineParallelGrid):
     """
     重写以支持 ``megatron`` 中的张量并行进程组
-    """
+    """ 
     def __init__(self, topology):
         self.global_rank = dist.get_rank()
         self.world_size = dist.get_world_size()

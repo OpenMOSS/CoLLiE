@@ -3,7 +3,7 @@ sys.path.append("../../")
 import os
 from transformers import AutoTokenizer
 
-from collie.models.moss import MossForCausalLM
+from collie.models.moss_moon import Moss003MoonForCausalLM
 from collie.module import GPTLMLoss
 from collie.config import CollieConfig
 from collie.log import logger
@@ -78,11 +78,11 @@ train_dataset, val_dataset = get_dataset(tokenizer, data_dir, num=data_num, test
 
 # load from petrel s3
 # s3_folder = os.path.join("hdd:s3://opennlplab_hdd/models", pretrained_model)
-# model = MossForCausalLM(config)
-# state_dict = MossForCausalLM.load_parallel_state_dict(s3_folder, config, process_exclusion=False, protocol="petrel")
+# model = Moss003MoonForCausalLM(config)
+# state_dict = Moss003MoonForCausalLM.load_parallel_state_dict(s3_folder, config, process_exclusion=False, protocol="petrel")
 # model.load_state_dict(state_dict)
 # load from local:
-model = MossForCausalLM.from_pretrained(pretrained_model, config=config)
+model = Moss003MoonForCausalLM.from_pretrained(pretrained_model, config=config)
 
 metrics = {"sftacc": SFTAccMetric()}
 trainer = Trainer(

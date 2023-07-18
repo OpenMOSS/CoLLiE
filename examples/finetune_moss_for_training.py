@@ -3,7 +3,7 @@
 """
 import sys
 sys.path.append('..')
-sys.path.append("/mnt/petrelfs/gutianle/Megatron-LM/")
+
 import os
 import json
 import torch
@@ -20,11 +20,13 @@ from collie.optim.lomo import Lomo
 from collie.controller.trainer import Trainer
 from collie.controller.evaluator import EvaluatorForPerplexity, EvaluatorForGeneration
 
-from collie.models.moss import MossForCausalLM
+from collie.models.moss_moon import Moss003MoonForCausalLM
 
 from collie.utils.monitor import StepTimeMonitor, TGSMonitor, MemoryMonitor, LossMonitor, EvalMonitor
 from collie.metrics import DecodeMetric, PPLMetric, BleuMetric
 from collie.module import GPTLMLoss
+
+from collie.utils import env
 
 # 1. 设置路径
 # 1.1 预训练模型路径
@@ -33,13 +35,13 @@ pretrained_model = "fnlp/moss-moon-003-sft"
 # 2. 设置配置
 # 2.1 加载配置
 config = CollieConfig.from_pretrained(pretrained_model, trust_remote_code=True)
-config.tp_size = 2
-config.dp_size = 2
+config.tp_size = 1
+config.dp_size = 1
 config.pp_size = 1
 config.train_epochs = 1
 config.eval_per_n_steps = 0
 config.eval_per_n_epochs = 1 
-config.train_micro_batch_size = 32
+config.train_micro_batch_size = 16
 config.eval_batch_size = 1
 config.ds_config = {
         "fp16": {
@@ -57,7 +59,7 @@ config.ds_config = {
 }
 
 # 3. 设置tokenizer
-tokenizer = AutoTokenizer.from_pretrained(pretrained_model, trust_remote_code=True)
+tokenizer = AutoTokenizer.from_pretrained("fnlp/moss-moon-003-sft", trust_remote_code=True)
 
 # 4. 加载数据集
 train_dataset = [
@@ -70,7 +72,7 @@ train_dataset = CollieDatasetForTraining(train_dataset, tokenizer)
 eval_dataset = train_dataset[:32]
 
 # 5. 加载预训练模型
-model = MossForCausalLM.from_pretrained(pretrained_model, config=config)
+model = Moss003MoonForCausalLM.from_pretrained(pretrained_model, config=config)
 
 # 6. 设置优化器
 optimizer = Lomo(
@@ -124,7 +126,6 @@ trainer = Trainer(
     monitors = monitors,
     evaluators = [evaluator_ppl, evaluator_decode]
 )
-
 # 10. 训练/验证
 trainer.train()
 

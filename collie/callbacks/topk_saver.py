@@ -71,8 +71,7 @@ class Saver:
         return folder
     
     def rm(self, folder_name):
-        r"""移除 folder/folder_name 。其中 folder 为用户在初始化指定，
-        timestamp 为当前脚本的启动时间。
+        r"""移除 folder/folder_name 。
 
         :param folder_name: 需要移除的路径。
         :return:

@@ -251,7 +251,8 @@ def patch_deepspeed(config):
         raw_wandb_init(self, wandb_config)
         import wandb
         wandb.run.name = wandb_config.job_name
-        wandb.config.update(wandb_config.config, allow_val_change=True)
+        # this causes bugs
+        # wandb.config.update(wandb_config.config, allow_val_change=True)
     WandbMonitor.__init__ = collie_wandb_init
 
     # LayerSpec
@@ -282,20 +283,20 @@ def patch_bitesandbytes(config: CollieConfig):
     if getattr(config.quantization_config, "load_in_4bit", False) or \
         config.quantization_config.load_in_8bit:
         from bitsandbytes.nn import Int8Params, Params4bit
-        raw_cuda = copy.deepcopy(Int8Params.cuda)
-        def cuda(self, device):
+        raw_cuda_8bit = Int8Params.cuda
+        def cuda_8bit(self, device):
             if self.data.is_cuda:
                 return self
             else:
-                return raw_cuda(self, device)
-        Int8Params.cuda = cuda
-        raw_cuda = copy.deepcopy(Params4bit.cuda)
-        def cuda(self, device):
+                return raw_cuda_8bit(self, device)
+        Int8Params.cuda = cuda_8bit
+        raw_cuda_4bit = Params4bit.cuda
+        def cuda_4bit(self, device):
             if self.data.is_cuda:
                 return self
             else:
-                return raw_cuda(self, device)
-        Params4bit.cuda = cuda
+                return raw_cuda_4bit(self, device)
+        Params4bit.cuda = cuda_4bit
         
 
 def broadcast_tensor(tensor, dtype=None, src=0, shape=None,

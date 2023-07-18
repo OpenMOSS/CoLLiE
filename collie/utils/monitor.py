@@ -50,11 +50,11 @@ def get_monitor(config: CollieConfig):
         if "tensorboard" not in config.ds_config["monitor_config"].keys():
             config.ds_config["monitor_config"]["tensorboard"] = {"enabled": False}
         else:
-            config.ds_config["monitor_config"]["tensorboard"]["job_name"] = tag + datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+            config.ds_config["monitor_config"]["tensorboard"]["job_name"] = tag
         if "wandb" not in config.ds_config["monitor_config"].keys():
             config.ds_config["monitor_config"]["wandb"] = {"enabled": False}
         else:
-            config.ds_config["monitor_config"]["wandb"]["job_name"] = tag + datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+            config.ds_config["monitor_config"]["wandb"]["job_name"] = tag
             config.ds_config["monitor_config"]["wandb"]["config"] = config
         if "csv_monitor" not in config.ds_config["monitor_config"].keys():
             config.ds_config["monitor_config"]["csv_monitor"] = {"enabled": False}

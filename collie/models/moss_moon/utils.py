@@ -76,7 +76,7 @@ def _weight_name_in_current_rank(names):
     layers = env.pipeline_layers_idx
     parts = env.pipeline_parts
     cur_names = []
-    # MossForCausalLM 的模型顺序为：
+    # Moss003MoonForCausalLM 的模型顺序为：
     # vocab: transformer.wte.weight
     # dropout: not in dict
     # MossBlock: transformer.h.{idx}.xxx

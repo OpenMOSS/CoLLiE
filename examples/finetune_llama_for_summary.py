@@ -16,6 +16,7 @@ from collie.controller import Trainer
 from collie.utils import env
 from collie import CollieConfig, LlamaForCausalLM, DashProvider, LossMonitor, TGSMonitor, MemoryMonitor, LRMonitor, CollieDatasetForTraining, CollieDatasetForGeneration, EvaluatorForGeneration
 
+
 def load_data(path_dict):
     data_bundle = {}
     for name, path in path_dict.items():

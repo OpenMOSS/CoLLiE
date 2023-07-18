@@ -20,11 +20,9 @@ from torch import nn
 import torch.distributed as dist
 from torch.optim.lr_scheduler import _LRScheduler
 from deepspeed.accelerator import get_accelerator
-from deepspeed.runtime.pipe.engine import PipelineEngine
 from deepspeed.runtime.engine import DeepSpeedSchedulerCallable
-from transformers.generation.utils import GenerationConfig
 from transformers.modeling_utils import PreTrainedModel, load_state_dict
-from peft import PeftModel, PeftConfig, get_peft_model_state_dict, set_peft_model_state_dict
+from peft import PeftModel, PeftConfig, get_peft_model_state_dict, set_peft_model_state_dict, PeftType
 from transformers import PreTrainedTokenizerBase
 from transformers.utils import ContextManagers
 
@@ -32,7 +30,7 @@ from collie.config import CollieConfig
 from collie.module import PipelineGenerationMixin, GPTLMLoss, PipelineModel
 from collie.driver.io import IODriver
 from collie.log import logger
-from collie.utils import progress, env, setup_ds_engine, BaseProvider, _GenerationStreamer, is_zero3_enabled, \
+from collie.utils import progress, env, setup_ds_engine, BaseProvider, is_zero3_enabled, \
     BaseMonitor, _MultiMonitors, broadcast_tensor, ColliePadder, auto_param_call
 from collie.optim import Lomo
 from collie.models.base import CollieModelForCausalLM
@@ -41,7 +39,7 @@ from .server import Server
 from collie.data import CollieDataLoader
 from collie.callbacks.callback import Callback
 from collie.callbacks.callback_manager import CallbackManager, prepare_callback
-from .utils import TrainerEventTrigger
+from .utils import TrainerEventTrigger, _merge_peft, _split_peft
 
 class Trainer(TrainerEventTrigger):
     r"""
@@ -77,16 +75,7 @@ class Trainer(TrainerEventTrigger):
         .. note::
 
             当未提供 ``train_dataset_collate_fn`` 或 ``eval_dataset_collate_fn`` 时，``train_dataset`` 和 ``eval_dataset`` 
-            的取值应当为由 `Dict` 组成的长度为 **2** 的 `Tuple` 类型，例如 `(a, b)`，其中:
-                
-            * `a` 为 ``Dict`` 类型，可能包含的字段包括:
-            
-                ** ``input_ids``, 为 ``torch.Tensor`` 类型，形状为 ``(B, S)``, 表示模型的的输入
-                ** ``attention_mask``, 为 ``torch.Tensor`` 类型，形状为 ``(B, S)``, 表示 padding mask
-                
-            * `b` 为 ``Dict`` 类型，可能包含的字段包括:
-
-                ** ``labels``, 为 ``torch.Tensor`` 类型，形状为 ``(B, S)``, 表示模型的的标签, 自回归地训练时应当与 ``input_ids`` 相同
+            的取值应当为 `Dict` 类型
                 
             注意: 上述数据格式为训练所需的格式, 同时 **CoLLie** 提供了多种验证器, 所要求的格式各有不同, 详见 :class:`~collie.controller.evaluator.Evaluator`
     
@@ -97,16 +86,7 @@ class Trainer(TrainerEventTrigger):
         
         .. note::
 
-            ``train_dataset_collate_fn`` 和 ``eval_dataset_collate_fn`` 的返回值必须是由 `Dict` 组成的长度为 **2** 的 `Tuple` 类型，例如 `(a, b)`，其中:
-            
-            * `a` 为 ``Dict`` 类型，可能包含的字段包括:
-            
-                ** ``input_ids``, 为 ``torch.Tensor`` 类型，形状为 ``(B, S)``, 表示模型的的输入
-                ** ``attention_mask``, 为 ``torch.Tensor`` 类型，形状为 ``(B, S)``, 表示 padding mask
-                
-            * `b` 为 ``Dict`` 类型，可能包含的字段包括:
-
-                ** ``labels``, 为 ``torch.Tensor`` 类型，形状为 ``(B, S)``, 表示模型的的标签, 自回归地训练时应当与 ``input_ids`` 相同
+            ``train_dataset_collate_fn`` 和 ``eval_dataset_collate_fn`` 的返回值必须是 `Dict` 类型
                 
             注意: 上述数据格式为训练所需的格式, 同时 **CoLLie** 提供了多种验证器, 所要求的格式各有不同, 详见 :class:`~collie.controller.evaluator.Evaluator`
                 
@@ -119,7 +99,7 @@ class Trainer(TrainerEventTrigger):
                 # batch = ["样本1", "样本2", ...]
                 tokenizer = AutoTokenizer.from_pretrained("fnlp/moss-moon-003-sft", padding_side="left", trust_remote_code=True)
                 input_ids = tokenizer(batch, return_tensors="pt", padding=True)["input_ids"]
-                return {"input_ids": input_ids}, {"labels": input_ids}
+                return {"input_ids": input_ids, "labels": input_ids}
             
     :param data_provider: 额外的数据提供器，可在 ``eval_dataset`` 之外额外注入验证数据，例如通过前端网页或 http 请求等， 详见 :class:`~collie.utils.data_provider.BaseProvider`
     :param monitors: 用于监控训练过程的监控器，详见 :class:`~collie.utils.monitor.BaseMonitor`
@@ -230,6 +210,7 @@ class Trainer(TrainerEventTrigger):
 
         self.init_state_dict()
         self.on_after_trainer_initialized()
+        torch.cuda.empty_cache()
 
     def init_state_dict(self):
         """初始化优化器的自身状态字典
@@ -393,14 +374,18 @@ class Trainer(TrainerEventTrigger):
         
         :return: 当前 batch 的 loss
         """
-        # concat prompt labels for p-tuning
-        if trainer.config.peft_config and trainer.config.peft_config.peft_type in ["PROMPT_TUNING", "P_TUNING"]:
-            batch_size = batch["input_ids"].shape[0]
-            prefix_labels = torch.full((batch_size, trainer.config.peft_config.num_virtual_tokens), -100).to(batch['labels'].device)
-            batch['labels'] = torch.cat((prefix_labels, batch['labels']), dim=1)
         if trainer.config.pp_size > 1:
+            if isinstance(trainer.engine.module, PipelineModel):
+                trainer.engine.module.forward_type = "train"
+            if isinstance(trainer.engine.module, PeftModel) and isinstance(trainer.engine.module.get_base_model(), PipelineModel):
+                trainer.engine.module.get_base_model().forward_type = "train"
             loss = trainer.engine.module(**batch)["loss"]
         else:
+            # concat prompt labels for p-tuning
+            if trainer.config.peft_config and trainer.config.peft_config.peft_type in ["PROMPT_TUNING", "P_TUNING"]:
+                batch_size = batch["input_ids"].shape[0]
+                prefix_labels = torch.full((batch_size, trainer.config.peft_config.num_virtual_tokens), -100).to(batch['labels'].device)
+                batch['labels'] = torch.cat((prefix_labels, batch['labels']), dim=1)
             outputs = trainer.engine(**batch)
             loss = auto_param_call(trainer.loss_fn, {**batch, **outputs}, 
                                    signature_fn=trainer.loss_fn.forward if isinstance(trainer.loss_fn, nn.Module) else trainer.loss_fn)
@@ -409,15 +394,17 @@ class Trainer(TrainerEventTrigger):
                 trainer.engine.step()
             else:
                 # for lomo only
-                if trainer.optimizer.clip_grad_norm is not None:
+                if trainer.optimizer.clip_grad_norm is not None or \
+                        ('fp16' in trainer.engine.config and trainer.engine.config['fp16']['enabled']):
                     trainer.optimizer.grad_norm(loss)
                     if trainer.optimizer.loss_scaler and trainer.optimizer.loss_scaler.has_overflow_serial:
                         print(f"Gradient overflow, skipping step {global_step}")
                         if trainer.optimizer.zero3_enabled:
                             trainer.engine.optimizer.get_param_coordinator(training=True).reset_step()
                         return loss.detach().cpu().item()
-                    if trainer.optimizer.zero3_enabled:
-                        trainer.engine.optimizer.get_param_coordinator(training=True).reset_step()
+                    if trainer.optimizer.zero3_enabled or True:
+                        if trainer.engine.config['fp16']:
+                            trainer.engine.optimizer.get_param_coordinator(training=True).reset_step()
                         # zero-3 doesn't support backward twice, so need an additional forward here
                         outputs = trainer.engine(**batch)
                         loss = auto_param_call(trainer.loss_fn, {**batch, **outputs}, 
@@ -458,25 +445,28 @@ class Trainer(TrainerEventTrigger):
             self.model, adapter_name=adapter_name
         )
         named_parameters = {name: param for name, param in self.engine.module.named_parameters() if any([name.replace(f"{adapter_name}.", "") == k for k in state_dict.keys()])}
-        if adapter_name == "default":
-            name_prefix = "adapter"
-        else:
-            name_prefix = f"adapter_{adapter_name}"
-        if env.pp_size == 1:
+        # 是否需要每个 pp rank 单独保存
+        pp_save = True
+        pp_save = pp_save and env.pp_size > 1
+        pp_save = pp_save and self.config.peft_config.peft_type in (PeftType.LORA, PeftType.ADALORA,  PeftType.PREFIX_TUNING)
+        name_prefix = "adapter_model"
+        if not pp_save:
             name = f"{name_prefix}.bin"
         else:
             name = f"{name_prefix}_{env.pp_rank}.bin"
         if is_zero3_enabled(self.config):
             contexts.append(deepspeed.zero.GatheredParameters(list(named_parameters.values())))
         with ContextManagers(contexts):
-            if env.dp_rank == 0 or not is_zero3_enabled(self.config):
+            if env.dp_rank == 0 or not is_zero3_enabled(self.config) and (pp_save or env.pp_rank == 0):
                 for key in named_parameters.keys():
                     state_dict[key.replace(f"{adapter_name}.", "")] = named_parameters[key].data
                 if env.dp_rank == 0 and env.tp_rank == 0:
                     io_driver.save(state_dict, os.path.join(path, name))
+        env.barrier()
         if env.rank == 0:
             io_driver.save(json.dumps(self.config.peft_config.__dict__), os.path.join(path, "adapter_config.json"))
-        
+            _merge_peft(path, name_prefix, io_driver)
+
     def load_peft(self, path: str, process_exclusion: bool = False, adapter_name="default", **kwargs):...
     def load_peft(self, path: str, process_exclusion: bool = False, adapter_name="default",
                    protocol: str = "file", **kwargs):
@@ -500,15 +490,13 @@ class Trainer(TrainerEventTrigger):
                 f"{self.config.peft_config.task_type}"
             )
         if adapter_name == "default":
-            name_prefix = "adapter"
+            name_prefix = "adapter_model"
         else:
-            name_prefix = f"adapter_{adapter_name}"
-        if env.pp_size == 1:
-            name = f"{name_prefix}.bin"
-        else:
-            name = f"{name_prefix}_{env.pp_rank}.bin"
+            name_prefix = f"adapter_model_{adapter_name}"
+        name = f"{name_prefix}.bin"
         assert io_driver.exists(os.path.join(path, name)), f"{name} does not exist."
         loaded_state_dict = io_driver.load(os.path.join(path, name), mode="rb")
+        loaded_state_dict = _split_peft(loaded_state_dict)
         named_parameters = {name: param for name, param in self.engine.module.named_parameters() if any([name.replace(f"{adapter_name}.", "") == k for k in loaded_state_dict.keys()])}
         contexts = []
         if is_zero3_enabled(self.config):
@@ -533,7 +521,7 @@ class Trainer(TrainerEventTrigger):
         self.on_save_model()
         if isinstance(self.engine.module, CollieModelForCausalLM) or isinstance(self.engine.module, PipelineModel):
             if is_zero3_enabled(self.config):
-                self.engine.optimizer.checkpoint_event_prologue()
+                self._checkpoint_prologue()
                 with deepspeed.zero.GatheredParameters(list(self.engine.module.parameters(recurse=True))):
                     self.engine.module.save_parallel_state_dict(
                         state_dict=self.engine.module.state_dict(),
@@ -542,7 +530,7 @@ class Trainer(TrainerEventTrigger):
                         process_exclusion=process_exclusion,
                         protocol=protocol
                     )
-                self.engine.optimizer.checkpoint_event_epilogue()
+                self._checkpoint_epilogue()
             else:
                 self.engine.module.save_parallel_state_dict(
                     state_dict=self.engine.module.state_dict(),
@@ -553,13 +541,13 @@ class Trainer(TrainerEventTrigger):
                 )
         elif isinstance(self.engine.module, PreTrainedModel):
             if is_zero3_enabled(self.config):
-                self.engine.optimizer.checkpoint_event_prologue()
+                self._checkpoint_prologue()
                 with deepspeed.zero.GatheredParameters(list(self.engine.module.parameters(recurse=True))):
                     self.engine.module.save_pretrained(
                         save_directory=path,
                         **kwargs
                     )
-                self.engine.optimizer.checkpoint_event_epilogue()
+                self._checkpoint_epilogue()
             else:
                 self.engine.module.save_pretrained(
                     save_directory=path,
@@ -574,13 +562,13 @@ class Trainer(TrainerEventTrigger):
         self.on_load_model()
         if isinstance(self.engine.module, CollieModelForCausalLM) or isinstance(self.engine.module, PipelineModel):
             if is_zero3_enabled(self.config):
-                self.engine.optimizer.checkpoint_event_prologue()
+                self._checkpoint_prologue()
                 with deepspeed.zero.GatheredParameters(list(self.engine.module.parameters(recurse=True)), modifier_rank=0):
                     if env.rank == 0:
                         self.engine.module.load_state_dict(self.engine.module.load_parallel_state_dict(
                             path=path, config=self.config, process_exclusion=process_exclusion, protocol=protocol
                         ))
-                self.engine.optimizer.checkpoint_event_epilogue()
+                self._checkpoint_epilogue()
             else:
                 self.engine.module.load_state_dict(
                     self.engine.module.load_parallel_state_dict(
@@ -598,7 +586,7 @@ class Trainer(TrainerEventTrigger):
                             index[value] = [key]
                         else:
                             index[value].append(key)
-                self.engine.optimizer.checkpoint_event_prologue()
+                self._checkpoint_prologue()
                 if index is not None:
                     for key, value in index.items():
                         with deepspeed.zero.GatheredParameters([self.engine.module.state_dict()[attr] for attr in value], modifier_rank=0):
@@ -611,7 +599,7 @@ class Trainer(TrainerEventTrigger):
                         if env.dp_rank == 0:
                             state_dict = reduce(lambda x, y: {**x, **y}, [io_driver.load(file, mode="rb") for file in glob.glob(os.path.join(path, "*.bin"))])
                             self.engine.module.load_state_dict(state_dict)
-                self.engine.optimizer.checkpoint_event_epilogue()
+                self._checkpoint_epilogue()
             else:
                 index = None
                 if io_driver.exists(os.path.join(path, "pytorch_model.bin.index.json")):
@@ -655,9 +643,8 @@ class Trainer(TrainerEventTrigger):
 
         self.save_model(path, protocol=protocol)
 
-        if engine.zero_optimization_partition_weights():
-            # Prepare for checkpoint save by ensuring all parameters are partitioned
-            engine.optimizer.checkpoint_event_prologue()
+        # Prepare for checkpoint save by ensuring all parameters are partitioned
+        self._checkpoint_prologue()
         
         ## DeepSpeedEngine._save_checkpoint
         zero_optimizer_state = engine.zero_optimization() or engine.bfloat16_enabled()
@@ -677,8 +664,7 @@ class Trainer(TrainerEventTrigger):
         if engine.save_zero_checkpoint:
             self._save_zero_checkpoint(path, io_driver)
 
-        if engine.zero_optimization_partition_weights():
-            engine.optimizer.checkpoint_event_epilogue()
+        self._checkpoint_epilogue()
 
         dist.barrier()
 
@@ -712,9 +698,8 @@ class Trainer(TrainerEventTrigger):
             ckpt_file = "collie_dp0_pp0_tp0.pt"
         checkpoint = io_driver.load(os.path.join(path, ckpt_file), "b")
 
-        if engine.zero_optimization_partition_weights():
-            # Prepare for checkpoint load by ensuring all parameters are partitioned
-            self.optimizer.checkpoint_event_prologue()
+        # Prepare for checkpoint load by ensuring all parameters are partitioned
+        self._checkpoint_prologue()
 
         has_zero_optimizer_state = engine.zero_optimization() or engine.bfloat16_enabled()
 
@@ -741,14 +726,14 @@ class Trainer(TrainerEventTrigger):
         engine.global_samples = checkpoint.get('global_samples', engine.global_steps * engine.train_batch_size())
         engine.skipped_steps = checkpoint['skipped_steps']
 
-        load_zero_checkpoint = engine.zero_optimization() or engine.bfloat16_enabled()
+        # load_zero_checkpoint = engine.zero_optimization() or engine.bfloat16_enabled()
+        load_zero_checkpoint = engine.save_zero_checkpoint
         if load_zero_checkpoint:
             success = self._load_zero_checkpoint(path, io_driver)
             if not success:
                 engine.optimizer._restore_from_bit16_weights()
 
-        if engine.zero_optimization_partition_weights():
-            engine.optimizer.checkpoint_event_epilogue()
+        self._checkpoint_epilogue()
 
         self.on_load_checkpoint(checkpoint["callback_states"])
 
@@ -776,3 +761,27 @@ class Trainer(TrainerEventTrigger):
         )
 
         return True
+
+    def _checkpoint_prologue(self):
+        # Lomo + zero3 时因为没有将 optimizer 传给 engine
+        # engine.optimizer 是 DeepSpeedZeRoOffload 而非 stage 3
+        # 故进行判断
+        if not self.engine.zero_optimization_partition_weights():
+            return
+        if isinstance(self.optimizer, Lomo):
+            param_offload = self.engine.optimizer
+        else:
+            param_offload = self.engine.optimizer.parameter_offload
+        param_offload.partition_all_parameters()
+        
+    def _checkpoint_epilogue(self):
+        if not self.engine.zero_optimization_partition_weights():
+            return
+        if isinstance(self.optimizer, Lomo):
+            persistent_params = self.engine.optimizer.persistent_parameters
+        else:
+            persistent_params = self.engine.optimizer.parameter_offload.persistent_parameters
+        persistent_params[0].all_gather(persistent_params)
+        
+        if len(persistent_params) > 0:
+            persistent_params[0].all_gather(persistent_params)
