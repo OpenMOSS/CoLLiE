@@ -154,7 +154,8 @@ class PipelineGenerationMixin(GenerationMixin):
         setup_ds_engine` 函数生成
     """
     def __init__(self) -> None:
-        self.config = PretrainedConfig(is_decoder=True)
+        self.config = self.collie_config.model_config
+        self.config.is_decoder=True
         self.generation_config = GenerationConfig()
         self.main_input_name = "input_ids"
         self.device = torch.device("cuda")
