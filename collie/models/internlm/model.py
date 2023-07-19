@@ -529,7 +529,6 @@ class InternLMForCausalLM(CollieModelForCausalLM):
                     and (env.pp_rank == rank
                          or not process_exclusion):
                     for key in sorted(list(state_dict.keys())):
-                        device = state_dict[key].device
                         tensor_list = None
                         if env.tp_rank == 0:
                             tensor_list = [torch.zeros_like(state_dict[key]).to(state_dict[key].dtype).cuda() for _ in range(config.tp_size)]
@@ -545,17 +544,23 @@ class InternLMForCausalLM(CollieModelForCausalLM):
                                                         or key.endswith("up_proj.weight") \
                                                             or key.endswith("embed_tokens.weight") \
                                                                 or key.endswith("lm_head.weight"):
-                                                                    state_dict[key] = torch.cat(tensor_list, dim=0).detach().clone().to(device)
+                                                                    tensor_list_cpu = [t.detach().clone().cpu() for t in tensor_list]
+                                                                    tensor_list.clear()
+                                                                    del tensor_list
+                                                                    state_dict[key] = torch.cat(tensor_list_cpu, dim=0)
                                                                     if key.endswith("q_proj.weight")  or key.endswith("k_proj.weight"):
                                                                         state_dict[key] = reshape_wq_wk(state_dict[key])
-                                                                    del tensor_list
+                                                                    del tensor_list_cpu
                                                                     if process_exclusion:
                                                                         # CPU 内存回收（速度很慢）
                                                                         gc.collect()
                             elif key.endswith("o_proj.weight") \
                                 or key.endswith("down_proj.weight"):
-                                    state_dict[key] = torch.cat(tensor_list, dim=1).detach().clone().to(device)
+                                    tensor_list_cpu = [t.detach().clone().cpu() for t in tensor_list]
+                                    tensor_list.clear()
                                     del tensor_list
+                                    state_dict[key] = torch.cat(tensor_list_cpu, dim=1)
+                                    del tensor_list_cpu
                                     if process_exclusion:
                                         # CPU 内存回收（速度很慢）
                                         gc.collect()

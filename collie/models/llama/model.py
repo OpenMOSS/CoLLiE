@@ -594,7 +594,6 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                     and (env.pp_rank == rank
                          or not process_exclusion):
                     for key in sorted(list(state_dict.keys())):
-                        device = state_dict[key].device
                         tensor_list = None
                         if env.tp_size > 1:
                             if env.tp_rank == 0:
@@ -607,19 +606,26 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                                     # embedding 层和 lm_head 都需要切
                                     need_split = need_split or int(key.split(".")[0]) == max(parts) - 1
                                     need_split = need_split or int(key.split(".")[0]) == min(parts)
+
                                 if need_split:
-                                    state_dict[key] = torch.cat(tensor_list, dim=0).detach().clone().to(device)
+                                    tensor_list_cpu = [t.detach().clone().cpu() for t in tensor_list]
+                                    tensor_list.clear()
+                                    del tensor_list
+                                    state_dict[key] = torch.cat(tensor_list_cpu, dim=0)
                                     if key.endswith("q_proj.weight")  or key.endswith("k_proj.weight"):
                                         state_dict[key] = reshape_wq_wk(state_dict[key])
-                                    del tensor_list
+                                    del tensor_list_cpu
                                     if process_exclusion:
                                         # CPU 内存回收（速度很慢）
                                         gc.collect()
                                                             
                                 elif key.endswith("o_proj.weight") \
                                     or key.endswith("down_proj.weight"):
-                                        state_dict[key] = torch.cat(tensor_list, dim=1).detach().clone().to(device)
+                                        tensor_list_cpu = [t.detach().clone().cpu() for t in tensor_list]
+                                        tensor_list.clear()
                                         del tensor_list
+                                        state_dict[key] = torch.cat(tensor_list_cpu, dim=1)
+                                        del tensor_list_cpu
                                         if process_exclusion:
                                             # CPU 内存回收（速度很慢）
                                             gc.collect()

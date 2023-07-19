@@ -942,7 +942,6 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
                     and (env.pp_rank == rank
                          or not process_exclusion):
                     for key in sorted(list(state_dict.keys())):
-                        device = state_dict[key].device
                         tensor_list = None
                         if env.tp_rank == 0:
                             tensor_list = [torch.zeros_like(state_dict[key]).to(state_dict[key].dtype).cuda() for _ in range(config.tp_size)]
@@ -960,14 +959,20 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
                                 except:
                                     pass
                             if need_column_split:
-                                state_dict[key] = torch.cat(tensor_list, dim=0).detach().clone().to(device)
+                                tensor_list_cpu = [t.detach().clone().cpu() for t in tensor_list]
+                                tensor_list.clear()
                                 del tensor_list
+                                state_dict[key] = torch.cat(tensor_list_cpu, dim=0)
+                                del tensor_list_cpu
                                 if process_exclusion:
                                     # CPU 内存回收（速度很慢）
                                     gc.collect()
                             elif need_row_split:
-                                state_dict[key] = torch.cat(tensor_list, dim=1).detach().clone().to(device)
+                                tensor_list_cpu = [t.detach().clone().cpu() for t in tensor_list]
+                                tensor_list.clear()
                                 del tensor_list
+                                state_dict[key] = torch.cat(tensor_list_cpu, dim=1)
+                                del tensor_list_cpu
                                 if process_exclusion:
                                     # CPU 内存回收（速度很慢）
                                     gc.collect()
