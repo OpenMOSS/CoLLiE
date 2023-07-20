@@ -25,7 +25,7 @@ from collie.module import PipelineModel, GPTLMLoss
 from collie.config import CollieConfig, load_config
 from collie.log import logger
 from collie.utils import setup_distribution, is_zero3_enabled, env, \
-    dict_as_params, get_keys_to_not_convert
+    dict_as_params, get_keys_to_not_convert, concat_tensor
 
 class CollieModelForCausalLM(nn.Module, GenerationMixin):
     """
@@ -523,9 +523,9 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
             if is_zero3_enabled(self.collie_config):
                 with deepspeed.zero.GatheredParameters([new_embedding.weight, embedding.weight], modifier_rank=0):
                     if env.tp_size > 1 and isinstance(new_embedding, tensor_parallel.VocabParallelEmbedding):
-                        weights_list = [embedding.weight.clone() for _ in range(env.tp_size)]
-                        dist.all_gather(weights_list, embedding.weight, group=parallel_state.get_tensor_model_parallel_group())
-                        embedding.weight = nn.Parameter(torch.concat(weights_list, dim=0))
+                        weights_list = [embedding.weight.clone().cuda() for _ in range(env.tp_size)]
+                        dist.all_gather(weights_list, embedding.weight.cuda(), group=parallel_state.get_tensor_model_parallel_group())
+                        embedding.weight = nn.Parameter(concat_tensor(weights_list, dim=0))
                     if env.dp_rank == 0:
                         new_embedding.weight.data[start_pos_new:end_pos_new, :] \
                             = embedding.weight.data[start_pos_old:end_pos_old, :]
@@ -534,9 +534,9 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                             init_method(new_embedding.weight[end_pos_new:new_num_tokens // env.tp_size, :])
             else:
                 if env.tp_size > 1 and isinstance(new_embedding, tensor_parallel.VocabParallelEmbedding):
-                    weights_list = [embedding.weight.clone() for _ in range(env.tp_size)]
-                    dist.all_gather(weights_list, embedding.weight, group=parallel_state.get_tensor_model_parallel_group())
-                    embedding.weight = nn.Parameter(torch.concat(weights_list, dim=0))
+                    weights_list = [embedding.weight.clone().cuda() for _ in range(env.tp_size)]
+                    dist.all_gather(weights_list, embedding.weight.cuda(), group=parallel_state.get_tensor_model_parallel_group())
+                    embedding.weight = nn.Parameter(concat_tensor(weights_list, dim=0))
                 new_embedding.weight.data[start_pos_new:end_pos_new, :] \
                     = embedding.weight.data[start_pos_old:end_pos_old, :]
                 if end_pos_new < (new_num_tokens // env.tp_size):
@@ -582,13 +582,13 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                 with deepspeed.zero.GatheredParameters([new_lm_head.weight, lm_head.weight] + \
                     [new_lm_head.bias, lm_head.bias] if lm_head.bias is not None else [], modifier_rank=0):
                     if env.tp_size > 1 and isinstance(new_lm_head, tensor_parallel.ColumnParallelLinear):
-                        weights_list = [lm_head.weight.clone() for _ in range(env.tp_size)]
-                        dist.all_gather(weights_list, lm_head.weight, group=parallel_state.get_tensor_model_parallel_group())
-                        lm_head.weight = nn.Parameter(torch.concat(weights_list, dim=0))
+                        weights_list = [lm_head.weight.clone().cuda() for _ in range(env.tp_size)]
+                        dist.all_gather(weights_list, lm_head.weight.cuda(), group=parallel_state.get_tensor_model_parallel_group())
+                        lm_head.weight = nn.Parameter(concat_tensor(weights_list, dim=0))
                         if lm_head.bias is not None:
-                            bias_list = [lm_head.bias.clone() for _ in range(env.tp_size)]
-                            dist.all_gather(bias_list, lm_head.bias, group=parallel_state.get_tensor_model_parallel_group())
-                            lm_head.bias = nn.Parameter(torch.concat(bias_list, dim=0))
+                            bias_list = [lm_head.bias.clone().cuda() for _ in range(env.tp_size)]
+                            dist.all_gather(bias_list, lm_head.bias.cuda(), group=parallel_state.get_tensor_model_parallel_group())
+                            lm_head.bias = nn.Parameter(concat_tensor(bias_list, dim=0))
                     if env.dp_rank == 0:
                         new_lm_head.weight.data[start_pos_new:end_pos_new, :] \
                             = lm_head.weight.data[start_pos_old:end_pos_old, :]
@@ -602,13 +602,13 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                                 init_method(new_lm_head.bias[end_pos_new:new_num_tokens // env.tp_size])
             else:
                 if env.tp_size > 1 and isinstance(new_lm_head, tensor_parallel.ColumnParallelLinear):
-                    weights_list = [lm_head.weight.clone() for _ in range(env.tp_size)]
-                    dist.all_gather(weights_list, lm_head.weight, group=parallel_state.get_tensor_model_parallel_group())
-                    lm_head.weight = nn.Parameter(torch.concat(weights_list, dim=0))
+                    weights_list = [lm_head.weight.clone().cuda() for _ in range(env.tp_size)]
+                    dist.all_gather(weights_list, lm_head.weight.cuda(), group=parallel_state.get_tensor_model_parallel_group())
+                    lm_head.weight = nn.Parameter(concat_tensor(weights_list, dim=0))
                     if lm_head.bias is not None:
                         bias_list = [lm_head.bias.clone() for _ in range(env.tp_size)]
-                        dist.all_gather(bias_list, lm_head.bias, group=parallel_state.get_tensor_model_parallel_group())
-                        lm_head.bias = nn.Parameter(torch.concat(bias_list, dim=0))
+                        dist.all_gather(bias_list, lm_head.bias.cuda(), group=parallel_state.get_tensor_model_parallel_group())
+                        lm_head.bias = nn.Parameter(concat_tensor(bias_list, dim=0))
                 new_lm_head.weight.data[start_pos_new:end_pos_new, :] \
                     = lm_head.weight.data[start_pos_old:end_pos_old, :]
                 if lm_head.bias is not None:
