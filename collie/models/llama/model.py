@@ -83,31 +83,39 @@ class LlamaLayer(nn.Module):
     def __init__(self, config: CollieConfig) -> None:
         super().__init__()
         self.config = config
+        if hasattr(config, "num_key_value_heads"):
+            # llama2 (transformers >= 4.31.0)
+            self.num_key_value_heads = config.num_key_value_heads
+        else:
+            self.num_key_value_heads = config.num_attention_heads
+        self.num_key_value_groups = config.num_attention_heads // self.num_key_value_heads
+        self.num_heads = config.num_attention_heads
+        self.head_dim = config.hidden_size // config.num_attention_heads
         self.self_attn = nn.ModuleDict(
             {
                 "q_proj": ColumnParallelLinearWithoutBias(
                     config.hidden_size,
-                    config.hidden_size,
+                    self.num_heads * self.head_dim,
                     bias=False,
                     gather_output=False,
                     init_method=lambda x: x
                 ),
                 "k_proj": ColumnParallelLinearWithoutBias(
                     config.hidden_size,
-                    config.hidden_size,
+                    self.num_key_value_heads * self.head_dim,
                     bias=False,
                     gather_output=False,
                     init_method=lambda x: x
                 ),
                 "v_proj": ColumnParallelLinearWithoutBias(
                     config.hidden_size,
-                    config.hidden_size,
+                    self.num_key_value_heads * self.head_dim,
                     bias=False,
                     gather_output=False,
                     init_method=lambda x: x
                 ),
                 "o_proj": RowParallelLinearWithoutBias(
-                    config.hidden_size,
+                    self.num_heads * self.head_dim,
                     config.hidden_size,
                     bias=False,
                     input_is_parallel=True,
@@ -162,13 +170,12 @@ class LlamaLayer(nn.Module):
             self.hidden_states = None
         assert hidden_states.ndim == 3, f"hidden_states.shape must be (B, N, H), but got {hidden_states.shape}"
         batch_size, seq_len, _ = hidden_states.shape
-        head_dim = self.config.hidden_size // self.config.num_attention_heads
         _hidden_states = self.input_layernorm(hidden_states)
         query, key, value = self.self_attn["q_proj"](_hidden_states), self.self_attn["k_proj"](
             _hidden_states), self.self_attn["v_proj"](_hidden_states)
-        query, key, value = rearrange(query, "b n (h d) -> b n h d", d=head_dim), \
-            rearrange(key, "b n (h d) -> b n h d", d=head_dim), \
-            rearrange(value, "b n (h d) -> b n h d", d=head_dim)
+        query, key, value = rearrange(query, "b n (h d) -> b n h d", d=self.head_dim), \
+            rearrange(key, "b n (h d) -> b n h d", d=self.head_dim), \
+            rearrange(value, "b n (h d) -> b n h d", d=self.head_dim)
         if self.past_key_values is not None:
             start_pos = self.past_key_values.shape[3]
         else:
@@ -180,6 +187,8 @@ class LlamaLayer(nn.Module):
             value = torch.cat([self.past_key_values[1].permute([0, 2, 1, 3]), value], dim=1)
         if self.use_cache and not self.training:
             self.past_key_values = torch.stack((key.permute([0, 2, 1, 3]), value.permute([0, 2, 1, 3])), dim=0)
+        key = torch.repeat_interleave(key, dim=1, repeats=self.num_key_value_groups)
+        value = torch.repeat_interleave(value, dim=1, repeats=self.num_key_value_groups)
         attention_mask = attention_mask if attention_mask is not None else torch.ones((query.shape[0], query.shape[1])).to(hidden_states.device)
         if self.config.use_flash:
             assert FlashAttention is not None, \
@@ -187,13 +196,11 @@ class LlamaLayer(nn.Module):
             qkv = torch.stack([query, key, value], dim=2)
             output, _ = FlashAttention()(qkv, key_padding_mask=attention_mask, causal=True)
             output = rearrange(output, "b n h d -> b n (h d)")
-            output = F.dropout(output, p=self.config.dropout,
-                               training=self.training)
         else:
             query, key, value = query.permute(0, 2, 1, 3), key.permute(
                 0, 2, 1, 3), value.permute(0, 2, 1, 3)
             attention_score = torch.matmul(query, key.transpose(
-                2, 3)) / math.sqrt(head_dim)
+                2, 3)) / math.sqrt(self.head_dim)
             if seq_len + start_pos > 1:
                 mask = torch.full((1, 1, seq_len + start_pos, seq_len + start_pos), float("-inf"))
                 mask = torch.triu(mask, diagonal=1).to(
@@ -206,8 +213,8 @@ class LlamaLayer(nn.Module):
             output = torch.matmul(attention_score, value)
             output = output.transpose(1, 2).contiguous().view(
                 batch_size, seq_len + start_pos, -1)
-            output = F.dropout(output, p=self.config.dropout,
-                               training=self.training)
+        output = F.dropout(output, p=self.config.dropout,
+                            training=self.training)
         output = output[:, start_pos:, :]
         hidden_states = hidden_states + self.self_attn["o_proj"](output)
         _hidden_states = self.post_attention_layernorm(hidden_states)
