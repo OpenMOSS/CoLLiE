@@ -28,7 +28,7 @@ from collie.config import CollieConfig
 from collie.models.base import CollieModelForCausalLM
 from collie.driver.io import IODriver
 from collie.module import ColumnParallelLinearWithoutBias, RowParallelLinearWithoutBias, ColumnParallelLMHead
-from collie.utils import progress, env, dict_as_params
+from collie.utils import progress, env, dict_as_params, concat_tensor
 
 from typing import Any, Union, Optional
 from collections import OrderedDict
@@ -637,21 +637,13 @@ class ChatGLMForCausalLM(CollieModelForCausalLM):
                                     need_split = need_split or int(key.split(".")[0]) == max(parts) - 1
                                     need_split = need_split or int(key.split(".")[0]) == min(parts)
                                 if need_split:
-                                    tensor_list_cpu = [t.detach().clone().cpu() for t in tensor_list]
-                                    tensor_list.clear()
-                                    del tensor_list
-                                    state_dict[key] = torch.cat(tensor_list_cpu, dim=0)
-                                    del tensor_list_cpu
+                                    state_dict[key] = concat_tensor(tensor_list, dim=0)
                                     if process_exclusion:
                                         # CPU 内存回收（速度很慢）
                                         gc.collect()
                                 elif key.endswith("dense.weight") \
                                     or key.endswith("dense_4h_to_4.weight.weight"):
-                                        tensor_list_cpu = [t.detach().clone().cpu() for t in tensor_list]
-                                        tensor_list.clear()
-                                        del tensor_list
-                                        state_dict[key] = torch.cat(tensor_list_cpu, dim=1)
-                                        del tensor_list_cpu
+                                        state_dict[key] = concat_tensor(tensor_list, dim=1)
                                         if process_exclusion:
                                             # CPU 内存回收（速度很慢）
                                             gc.collect()

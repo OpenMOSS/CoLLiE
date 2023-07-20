@@ -43,6 +43,7 @@ Utils
    find_tensors
    apply_to_collection
    dict_as_params
+   concat_tensor
 
 .. autosummary::
    :toctree: generated

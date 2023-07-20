@@ -3,7 +3,7 @@ import gc
 import torch
 from torch import distributed as dist
 from transformers.modeling_utils import dtype_byte_size
-from collie.utils import env
+from collie.utils import env, concat_tensor
 
 def create_sinusoidal_positions(num_pos: int, dim: int) -> torch.Tensor:
     inv_freq = 1.0 / (10000 ** (torch.arange(0, dim, 2) / dim))
@@ -173,15 +173,13 @@ def _gather_weights(state_dict, tp_rank, tp_size, tp_group, process_exclusion):
         # gather to tp_rank 0
         gather_list = [torch.empty_like(param) for _ in range(tp_size)]
         dist.all_gather(gather_list, param, group=tp_group)
-        gather_list_cpu = [t.detach().clone().cpu() for t in gather_list]
-        gather_list.clear()
-        del gather_list
         if tp_rank == 0:
-            tensor = torch.cat(gather_list_cpu, dim=chunk_dim)
+            tensor = concat_tensor(gather_list)
             del state_dict[name]
             del gather_list_cpu
             state_dict[name] = tensor
         else:
+            del gather_list
             del state_dict[name]
         if process_exclusion:
             # CPU 内存回收（速度很慢）
