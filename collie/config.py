@@ -46,7 +46,7 @@ class CollieConfig:
     :param use_flash: 是否使用 `FlashAttention <https://github.com/HazyResearch/flash-attention>`_ 。
         仅对部分模型有效。
     :param dropout: :class:`Dropout` 的概率。仅对部分模型有效。
-    :param initization_method: 初始化方法。必须是一个接收一个 ``torch.Tensor`` 
+    :param init_method: 初始化方法。必须是一个接收一个 ``torch.Tensor`` 
         并返回一个 ``torch.Tensor`` 的可调用对象。
     :param low_cpu_mem_usage: 是否在初始化模型时尝试减少 CPU 占用
     :param ds_config: **DeepSpeed** 的配置文件。可以是一个路径或字典。
@@ -139,7 +139,7 @@ class CollieConfig:
             "help": "Dropout probability."
         }
     )
-    initization_method: Callable = field(
+    init_method: Callable = field(
         default_factory=lambda: torch.nn.init.uniform_,
         metadata={
             "help": "Initialization method. Possible values are 'none', 'normal', 'xavier_normal', "
