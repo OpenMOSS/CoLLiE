@@ -14,9 +14,9 @@ from .utils import progress, setup_distribution, set_seed, env, \
     broadcast_tensor, find_tensors, BaseProvider, GradioProvider, \
     _GenerationStreamer, BaseMonitor, StepTimeMonitor, TGSMonitor, \
     MemoryMonitor, LossMonitor, EvalMonitor, LRMonitor, dict_as_params, \
-        DashProvider, is_static_method, \
-            auto_param_call, NetworkIOMonitor, DiskIOMonitor, \
-                CPUMemoryMonitor, ColliePadder, get_keys_to_not_convert
+    DashProvider, is_static_method, auto_param_call, NetworkIOMonitor, \
+    DiskIOMonitor, CPUMemoryMonitor, ColliePadder, get_keys_to_not_convert, \
+    concat_tensor
 from .module import PipelineGenerationMixin, ColumnParallelLinear, \
     RowParallelLinearWithoutBias, LinearWithHiddenStates, \
     ColumnParallelLMHead, GPTLMLoss
@@ -77,6 +77,7 @@ __all__ = [
     'zero3_load_state_dict',
     'is_zero3_enabled',
     'broadcast_tensor',
+    'concat_tensor',
     'find_tensors',
     'BaseProvider', 
     'GradioProvider', 

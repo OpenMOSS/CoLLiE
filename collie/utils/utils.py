@@ -18,7 +18,7 @@ from .rich_progress import f_rich_progress
 
 __all__ = ["find_tensors", "progress", "dictToObj", "apply_to_collection", 
            "dict_as_params", "initization_mapping", "is_static_method", 
-           "auto_param_call", "get_keys_to_not_convert"]
+           "auto_param_call", "get_keys_to_not_convert", "concat_tensor"]
 
 def find_tensors():
     """
@@ -34,6 +34,19 @@ def find_tensors():
                 print(type(obj), obj.size(), obj.dtype, obj.device)
         except:
             pass
+
+
+def concat_tensor(tensor_list, dim=0):
+    """
+    拼接 ``tensor_list`` 中的张量，并且在拼接时将张量转移到 cpu 上来避免显存的增加。
+
+    :return: 拼接后位于 cpu 上的张量
+    """
+    tensor_list_cpu = [t.detach().cpu().clone() for t in tensor_list]
+    tensor_list.clear()
+    # del tensor_list
+    ret = torch.cat(tensor_list_cpu, dim=dim)
+    return ret
 
         
 class progress:

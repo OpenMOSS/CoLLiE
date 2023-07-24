@@ -25,12 +25,12 @@ except ModuleNotFoundError:
 from collie.log.logger import logger
 from collie.config import load_config
 from collie.config import CollieConfig
-from collie.utils import progress, env, dict_as_params
+from collie.utils import progress, env, dict_as_params, concat_tensor
 from collie.driver.io import IODriver
 from collie.models.base import CollieModelForCausalLM
 from collie.module import ColumnParallelLinearWithoutBias, RowParallelLinearWithoutBias, ColumnParallelLMHead
 
-from typing import Union, Optional
+from typing import Union, Optional, Tuple
 from collections import OrderedDict
 from transformers.modeling_utils import dtype_byte_size
 from transformers.modeling_utils import PretrainedConfig
@@ -56,7 +56,7 @@ class RotaryPositionEmbedding(nn.Module):
         freqs = torch.outer(torch.arange(
             (2 ** 16) * 2, device=self.inv_freq.device), self.inv_freq).float()
         freqs_cis = torch.polar(torch.ones_like(freqs), freqs)[
-            start_pos: start_pos + seq_len].to(query)
+            start_pos: start_pos + seq_len]
         shape = [d if i == 1 or i == query.ndim -
                  1 else 1 for i, d in enumerate(query.shape)]
         freqs_cis = freqs_cis.view(*shape)
@@ -149,7 +149,7 @@ class MossLayer(nn.Module):
             eps=config.rms_norm_eps
         )
         # 务必保持变量名一致
-        self.use_cache = False
+        self.use_cache = self.config.model_config.use_cache
         self.past_key_values = None
         self.hidden_states = None
 
@@ -169,19 +169,17 @@ class MossLayer(nn.Module):
         query, key, value = rearrange(query, "b n (h d) -> b n h d", d=head_dim), \
             rearrange(key, "b n (h d) -> b n h d", d=head_dim), \
             rearrange(value, "b n (h d) -> b n h d", d=head_dim)
-        if self.past_key_values is not None and self.use_cache:
-            start_pos = self.past_key_values[0].shape[1]
+        if self.past_key_values is not None:
+            start_pos = self.past_key_values.shape[3]
         else:
-            self.past_key_values = None
             start_pos = 0
         query, key = self.self_attn["rotary_emb"](query, key, seq_len, start_pos)
-        if self.use_cache:
-            if self.past_key_values is not None:
-                query = torch.cat([self.past_key_values[0], query], dim=1)
-                key = torch.cat([self.past_key_values[0], key], dim=1)
-                value = torch.cat([self.past_key_values[1], value], dim=1)
-            if not self.training:
-                self.past_key_values = [key, value]
+        if self.past_key_values is not None:
+            query = torch.cat([self.past_key_values[0].permute([0, 2, 1, 3]), query], dim=1)
+            key = torch.cat([self.past_key_values[0].permute([0, 2, 1, 3]), key], dim=1)
+            value = torch.cat([self.past_key_values[1].permute([0, 2, 1, 3]), value], dim=1)
+        if self.use_cache and not self.training:
+            self.past_key_values = torch.stack((key.permute([0, 2, 1, 3]), value.permute([0, 2, 1, 3])), dim=0)
         attention_mask = attention_mask if attention_mask is not None else torch.ones((query.shape[0], query.shape[1])).to(hidden_states.device)
         if self.config.use_flash:
             assert FlashAttention is not None, \
@@ -249,12 +247,16 @@ class MossForCausalLM(CollieModelForCausalLM):
             bias=False
         )
         # GenerationMixin 需要的额外参数
-        self.config = PretrainedConfig(is_decoder=True)
+        self.config.is_decoder=True
         if config.model_config.tie_word_embeddings:
             self.lm_head.weight = self.embed_tokens.weight
         self.main_input_name = "input_ids"
 
-    def forward(self, input_ids: Optional[torch.Tensor] = None, attention_mask: Optional[torch.Tensor] = None, **kwargs):
+    def forward(self, 
+                input_ids: Optional[torch.Tensor] = None, 
+                attention_mask: Optional[torch.Tensor] = None, 
+                past_key_values: Optional[Tuple[torch.Tensor]] = None,
+                **kwargs):
         inputs = {"input_ids": input_ids}
         if attention_mask is not None:
             inputs["attention_mask"] = attention_mask
@@ -262,6 +264,10 @@ class MossForCausalLM(CollieModelForCausalLM):
             inputs["hidden_states"] = kwargs['inputs_embeds']
         else:
             inputs["hidden_states"] = self.embed_tokens(inputs["input_ids"])
+        if past_key_values is not None:
+            self._set_past_key_values(self.layers, past_key_values)
+        else:
+            self._clean_past_key_values(self.layers)
         all_hidden_states = ()
         for layer in self.layers:
             all_hidden_states += (inputs["hidden_states"],)
@@ -277,23 +283,14 @@ class MossForCausalLM(CollieModelForCausalLM):
             attentions=None
         )
 
-    def prepare_inputs_for_generation(self,
-                                      input_ids: torch.Tensor,
-                                      past_key_values: Optional[list] = None,
-                                      attention_mask: Optional[torch.Tensor] = None,
-                                      **kwargs):
-        self._set_use_cache(self.layers, kwargs.get("use_cache", self.generation_config.use_cache))
-        if past_key_values is None:
-            self._clean_past_key_values(self.layers)
-        else:
-            input_ids = input_ids[:, -1].unsqueeze(-1)
-            self._set_past_key_values(self.layers, past_key_values)
-        return {"input_ids": input_ids, "attention_mask": attention_mask, "past_key_values": past_key_values}
-
     def clean(self):
         self._clean_hidden_states([*self.layers, self.lm_head])
         self._clean_past_key_values(self.layers)
         self._set_use_cache(self.layers, False)
+        
+    def set_cache(self, use_cache, past_key_values):
+        self._set_use_cache(self.layers, use_cache)
+        self._set_past_key_values(self.layers, past_key_values)
 
     @classmethod
     def pipeline_layers(cls, config: CollieConfig):
@@ -597,34 +594,33 @@ class MossForCausalLM(CollieModelForCausalLM):
                     and (env.pp_rank == rank
                          or not process_exclusion):
                     for key in sorted(list(state_dict.keys())):
-                        device = state_dict[key].device
                         tensor_list = None
-                        if env.tp_rank == 0:
-                            tensor_list = [torch.zeros_like(state_dict[key]).to(state_dict[key].dtype).cuda() for _ in range(config.tp_size)]
-                        dist.gather(state_dict[key].cuda(), dst=dst, gather_list=tensor_list, group=env.tp_group)
-                        if env.tp_rank == 0:
-                            filte_list = ["q_proj.weight", "q_proj.weight", "k_proj.weight", "v_proj.weight", "gate_proj.weight", "up_proj.weight", "embed_tokens.weight", "lm_head.weight"]
-                            need_split = any([key.endswith(filte) for filte in filte_list])
-                            if env.pp_size > 1:
-                                # embedding 层和 lm_head 都需要切
-                                need_split = need_split or int(key.split(".")[0]) == max(parts) - 1
-                                need_split = need_split or int(key.split(".")[0]) == min(parts)
-                            if need_split:
-                                state_dict[key] = torch.cat(tensor_list, dim=0).detach().clone().to(device)
-                                if key.endswith("q_proj.weight")  or key.endswith("k_proj.weight"):
-                                    state_dict[key] = reshape_wq_wk(state_dict[key])
-                                del tensor_list
-                                if process_exclusion:
-                                    # CPU 内存回收（速度很慢）
-                                    gc.collect()
-                                                        
-                            elif key.endswith("o_proj.weight") \
-                                or key.endswith("down_proj.weight"):
-                                    state_dict[key] = torch.cat(tensor_list, dim=1).detach().clone().to(device)
-                                    del tensor_list
+                        if env.tp_size > 1:
+                            if env.tp_rank == 0:
+                                tensor_list = [torch.zeros_like(state_dict[key]).to(state_dict[key].dtype).cuda() for _ in range(config.tp_size)]
+                            dist.gather(state_dict[key].cuda(), dst=dst, gather_list=tensor_list, group=env.tp_group)
+                            if env.tp_rank == 0:
+                                filte_list = ["q_proj.weight", "q_proj.weight", "k_proj.weight", "v_proj.weight", "gate_proj.weight", "up_proj.weight", "embed_tokens.weight", "lm_head.weight"]
+                                need_split = any([key.endswith(filte) for filte in filte_list])
+                                if env.pp_size > 1:
+                                    # embedding 层和 lm_head 都需要切
+                                    need_split = need_split or int(key.split(".")[0]) == max(parts) - 1
+                                    need_split = need_split or int(key.split(".")[0]) == min(parts)
+
+                                if need_split:
+                                    state_dict[key] = concat_tensor(tensor_list, dim=0)
+                                    if key.endswith("q_proj.weight")  or key.endswith("k_proj.weight"):
+                                        state_dict[key] = reshape_wq_wk(state_dict[key])
                                     if process_exclusion:
                                         # CPU 内存回收（速度很慢）
                                         gc.collect()
+                                                            
+                                elif key.endswith("o_proj.weight") \
+                                    or key.endswith("down_proj.weight"):
+                                        state_dict[key] = concat_tensor(tensor_list, dim=1)
+                                        if process_exclusion:
+                                            # CPU 内存回收（速度很慢）
+                                            gc.collect()
                             if not key.startswith("lm_head.weight"):
                                 state_dict[f"model.{key}"] = state_dict.pop(key)
                     if env.tp_rank == 0:

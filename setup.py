@@ -5,7 +5,7 @@ with open("requirements.txt", encoding="utf-8") as f:
 
 setup(
     name="collie-lm",
-    version="1.0.2",
+    version="1.0.3",
     description="CoLLiE: Collaborative Tuning of Large Language Models in an Efficient Way",
     author="OpenLMLab",
     author_email="yanhang@pjlab.org.cn",

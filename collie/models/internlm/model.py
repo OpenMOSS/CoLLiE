@@ -25,7 +25,7 @@ except ModuleNotFoundError:
 from collie.log.logger import logger
 from collie.config import load_config
 from collie.config import CollieConfig
-from collie.utils import progress, env, dict_as_params
+from collie.utils import progress, env, dict_as_params, concat_tensor
 from collie.driver.io import IODriver
 from collie.models.base import CollieModelForCausalLM
 from collie.module import ColumnParallelLinearWithoutBias, RowParallelLinearWithoutBias, ColumnParallelLMHead
@@ -247,7 +247,7 @@ class InternLMForCausalLM(CollieModelForCausalLM):
             bias=False
         )
         # GenerationMixin 需要的额外参数
-        self.config = PretrainedConfig(is_decoder=True)
+        self.config.is_decoder=True
         if config.model_config.tie_word_embeddings:
             self.lm_head.weight = self.embed_tokens.weight
         self.main_input_name = "input_ids"
@@ -529,7 +529,6 @@ class InternLMForCausalLM(CollieModelForCausalLM):
                     and (env.pp_rank == rank
                          or not process_exclusion):
                     for key in sorted(list(state_dict.keys())):
-                        device = state_dict[key].device
                         tensor_list = None
                         if env.tp_rank == 0:
                             tensor_list = [torch.zeros_like(state_dict[key]).to(state_dict[key].dtype).cuda() for _ in range(config.tp_size)]
@@ -545,17 +544,15 @@ class InternLMForCausalLM(CollieModelForCausalLM):
                                                         or key.endswith("up_proj.weight") \
                                                             or key.endswith("embed_tokens.weight") \
                                                                 or key.endswith("lm_head.weight"):
-                                                                    state_dict[key] = torch.cat(tensor_list, dim=0).detach().clone().to(device)
+                                                                    state_dict[key] = concat_tensor(tensor_list, dim=0)
                                                                     if key.endswith("q_proj.weight")  or key.endswith("k_proj.weight"):
                                                                         state_dict[key] = reshape_wq_wk(state_dict[key])
-                                                                    del tensor_list
                                                                     if process_exclusion:
                                                                         # CPU 内存回收（速度很慢）
                                                                         gc.collect()
                             elif key.endswith("o_proj.weight") \
                                 or key.endswith("down_proj.weight"):
-                                    state_dict[key] = torch.cat(tensor_list, dim=1).detach().clone().to(device)
-                                    del tensor_list
+                                    state_dict[key] = concat_tensor(tensor_list, dim=1)
                                     if process_exclusion:
                                         # CPU 内存回收（速度很慢）
                                         gc.collect()

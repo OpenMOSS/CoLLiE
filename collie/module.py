@@ -154,7 +154,8 @@ class PipelineGenerationMixin(GenerationMixin):
         setup_ds_engine` 函数生成
     """
     def __init__(self) -> None:
-        self.config = PretrainedConfig(is_decoder=True)
+        self.config = self.collie_config.model_config
+        self.config.is_decoder=True
         self.generation_config = GenerationConfig()
         self.main_input_name = "input_ids"
         self.device = torch.device("cuda")
@@ -574,15 +575,21 @@ class PipelineModel(PipelineModule, PipelineGenerationMixin):
         return None, None
     
     def set_input_embedding(self, name, embedding):
-        if self.get_input_embedding()[1] is not None and self.get_input_embedding()[1] in list(self.tied_modules.values()):
-            key = list(self.tied_modules.keys())[list(self.tied_modules.values()).index(self.get_input_embedding()[1])]
-            self.tied_modules[key] = embedding
+        if self.get_input_embedding()[1] is not None:
+            if self.get_input_embedding()[1] in list(self.tied_modules.values()):
+                key = list(self.tied_modules.keys())[list(self.tied_modules.values()).index(self.get_input_embedding()[1])]
+                self.tied_modules[key] = embedding
+            elif self.get_input_embedding()[1] in list(self._modules.values()):
+                self.add_module(str(name), embedding)
         self.forward_funcs[name] = embedding
-        
+
     def set_lm_head(self, name, lm_head):
-        if self.get_lm_head()[1] is not None and self.get_lm_head()[1] in list(self.tied_modules.values()):
-            key = list(self.tied_modules.keys())[list(self.tied_modules.values()).index(self.get_lm_head()[1])]
-            self.tied_modules[key] = lm_head
+        if self.get_lm_head()[1] is not None:
+            if self.get_lm_head()[1] in list(self.tied_modules.values()):
+                key = list(self.tied_modules.keys())[list(self.tied_modules.values()).index(self.get_lm_head()[1])]
+                self.tied_modules[key] = lm_head
+            elif self.get_lm_head()[1] in list(self._modules.values()):
+                self.add_module(str(name), lm_head)
         self.forward_funcs[name] = lm_head
         
     def tie_weights(self):
