@@ -18,7 +18,7 @@ import math
 from einops import rearrange
 
 try:
-    from flash_attn.flash_attention import FlashAttention
+    from flash_attn.modules.mha import SelfAttention as FlashAttention
 except ModuleNotFoundError:
     FlashAttention = None
 
@@ -194,7 +194,12 @@ class LlamaLayer(nn.Module):
             assert FlashAttention is not None, \
                 "Detected flash_attn is not installed. See https://github.com/HazyResearch/flash-attention"
             qkv = torch.stack([query, key, value], dim=2)
-            output, _ = FlashAttention()(qkv, key_padding_mask=attention_mask, causal=True)
+            output = FlashAttention()(qkv, key_padding_mask=attention_mask.bool(), causal=True)
+            """ flash_attn_2 note: 
+                from flash_attn.modules.mha import SelfAttention as FlashAttention
+                require attention_mask as a bool tensor
+                replace 'output, _ =' as 'output =' 
+            """
             output = rearrange(output, "b n h d -> b n (h d)")
         else:
             query, key, value = query.permute(0, 2, 1, 3), key.permute(

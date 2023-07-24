@@ -198,12 +198,11 @@ class CollieDatasetForTraining(Dataset):
         shard_idx = 0
         meta = np.empty((0, 2), int)
         for i in self.indices:
-            labels = self[i][1]
             data = {
-                "tokens": labels["labels"]
+                "tokens": self[i]["input_ids"]
             }
             data.update(
-                {key: value for key, value in labels.items() if key != "labels"})
+                {key: value for key, value in self[i].items() if key != "input_ids"})
             bytes_data = json.dumps(data).encode() + "\n".encode()
             offset = shard.tell()
             length = len(data["tokens"])
