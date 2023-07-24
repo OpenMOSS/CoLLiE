@@ -616,8 +616,7 @@ class LlamaForCausalLM(CollieModelForCausalLM):
 
                                 if need_split:
                                     state_dict[key] = concat_tensor(tensor_list, dim=0)
-                                    if key.endswith("q_proj.weight")  or key.endswith("k_proj.weight"):
-                                        state_dict[key] = reshape_wq_wk(state_dict[key])
+                                    
                                     if process_exclusion:
                                         # CPU 内存回收（速度很慢）
                                         gc.collect()
@@ -628,8 +627,10 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                                         if process_exclusion:
                                             # CPU 内存回收（速度很慢）
                                             gc.collect()
-                            if not key.startswith("lm_head.weight"):
-                                state_dict[f"model.{key}"] = state_dict.pop(key)
+                        if key.endswith("q_proj.weight")  or key.endswith("k_proj.weight"):
+                            state_dict[key] = reshape_wq_wk(state_dict[key])
+                        if not key.startswith("lm_head.weight"):
+                            state_dict[f"model.{key}"] = state_dict.pop(key)
                     if env.tp_rank == 0:
                         # Save gathered weights
                         if env.is_pipeline:
