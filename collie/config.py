@@ -222,6 +222,7 @@ class CollieConfig:
             self.peft_config = get_peft_config(self.peft_config)
         if isinstance(self.quantization_config, str):
             self.quantization_config = BitsAndBytesConfig.from_dict(load_config(self.quantization_config))
+        self.model_config.gradient_checkpointing = self.checkpointing
         assert isinstance(self.ds_config, dict), self.ds_config
         os.environ["COLLIE_SEED"] = str(self.seed)
 
