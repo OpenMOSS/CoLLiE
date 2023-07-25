@@ -448,22 +448,19 @@ class InternLMForCausalLM(CollieModelForCausalLM):
                                 state_dict.pop(key)
                 # 根据用户配置的新的 tp size 进行分割
                 for key in list(state_dict.keys()):
-                    if key.endswith("q_proj.weight") \
-                        or key.endswith("q_proj.bias") \
-                            or key.endswith("k_proj.weight") \
-                                or key.endswith("k_proj.bias") \
-                                    or key.endswith("v_proj.weight") \
-                                        or key.endswith("v_proj.bias") \
-                                            or key.endswith("gate_proj.weight") \
-                                                or key.endswith("up_proj.weight") \
-                                                    or key.endswith("embed_tokens.weight") \
-                                                        or key.endswith("lm_head.weight"):
-                                                            tensor = list(torch.chunk(state_dict[key], config.tp_size, dim=0))[int(os.environ.get("COLLIE_TP_RANK", "0"))].detach().clone()
-                                                            del state_dict[key]
-                                                            if process_exclusion:
-                                                                # CPU 内存回收（速度很慢）
-                                                                gc.collect()
-                                                            state_dict[key] = tensor
+                    col_parallel = [
+                        "q_proj.weight", "q_proj.bias", "k_proj.weight",
+                        "k_proj.bias", "v_proj.weight", "v_proj.bias",
+                        "gate_proj.weight", "up_proj.weight",
+                        "lm_head.weight", "embed_tokens.weight"
+                    ]
+                    if any([key.endswith(p) for p in col_parallel]):
+                        tensor = list(torch.chunk(state_dict[key], config.tp_size, dim=0))[int(os.environ.get("COLLIE_TP_RANK", "0"))].detach().clone()
+                        del state_dict[key]
+                        if process_exclusion:
+                            # CPU 内存回收（速度很慢）
+                            gc.collect()
+                        state_dict[key] = tensor
                     elif key.endswith("o_proj.weight") \
                         or key.endswith("down_proj.weight"):
                             tensor = list(torch.chunk(state_dict[key], config.tp_size, dim=1))[int(os.environ.get("COLLIE_TP_RANK", "0"))].detach().clone()
@@ -514,6 +511,12 @@ class InternLMForCausalLM(CollieModelForCausalLM):
                     layer = int(key.split(".")[0])
                     if layer == max(parts) - 2:
                         state_dict[key.replace(f"{layer}.", "model.norm.")] = state_dict.pop(key)
+                    elif layer == max(parts) - 1:
+                        # lm_head
+                        state_dict[key.replace(f"{layer}.", "lm_head.")] = state_dict.pop(key)
+                    elif layer == 0:
+                        # embedding
+                        state_dict[key.replace(f"{layer}.", "model.embed_tokens.")] = state_dict.pop(key)
                     else:
                         state_dict[key.replace(f"{layer}.", f"model.layers.{layer - 1}.")] = state_dict.pop(key)
         if dist.is_initialized() and process_exclusion:
@@ -534,22 +537,19 @@ class InternLMForCausalLM(CollieModelForCausalLM):
                             tensor_list = [torch.zeros_like(state_dict[key]).to(state_dict[key].dtype).cuda() for _ in range(config.tp_size)]
                         dist.gather(state_dict[key].cuda(), dst=dst, gather_list=tensor_list, group=env.tp_group)
                         if env.tp_rank == 0:
-                            if key.endswith("q_proj.weight") \
-                                or key.endswith("q_proj.bias") \
-                                    or key.endswith("k_proj.weight") \
-                                        or key.endswith("k_proj.bias") \
-                                            or key.endswith("v_proj.weight") \
-                                                or key.endswith("v_proj.bias") \
-                                                    or key.endswith("gate_proj.weight") \
-                                                        or key.endswith("up_proj.weight") \
-                                                            or key.endswith("embed_tokens.weight") \
-                                                                or key.endswith("lm_head.weight"):
-                                                                    state_dict[key] = concat_tensor(tensor_list, dim=0)
-                                                                    if key.endswith("q_proj.weight")  or key.endswith("k_proj.weight"):
-                                                                        state_dict[key] = reshape_wq_wk(state_dict[key])
-                                                                    if process_exclusion:
-                                                                        # CPU 内存回收（速度很慢）
-                                                                        gc.collect()
+                            col_parallel = [
+                                "q_proj.weight", "q_proj.bias", "k_proj.weight",
+                                "k_proj.bias", "v_proj.weight", "v_proj.bias",
+                                "gate_proj.weight", "up_proj.weight",
+                                "lm_head.weight", "embed_tokens.weight"
+                            ]
+                            if any([key.endswith(p) for p in col_parallel]):
+                                state_dict[key] = concat_tensor(tensor_list, dim=0)
+                                if key.endswith("q_proj.weight") or key.endswith("k_proj.weight"):
+                                    state_dict[key] = reshape_wq_wk(state_dict[key])
+                                if process_exclusion:
+                                    # CPU 内存回收（速度很慢）
+                                    gc.collect()
                             elif key.endswith("o_proj.weight") \
                                 or key.endswith("down_proj.weight"):
                                     state_dict[key] = concat_tensor(tensor_list, dim=1)
