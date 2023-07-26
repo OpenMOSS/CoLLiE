@@ -1,40 +1,40 @@
-import os
 import gc
 import json
+import math
+import os
 
 import torch
-from torch import nn
-import torch.utils.checkpoint
-import torch.nn.functional as F
 import torch.distributed as dist
-
-from megatron.core import parallel_state
-from megatron.core import tensor_parallel
-
-from deepspeed.pipe import LayerSpec, TiedLayerSpec
+import torch.nn.functional as F
+import torch.utils.checkpoint
 from deepspeed.accelerator import get_accelerator
-
-import math
+from deepspeed.pipe import LayerSpec, TiedLayerSpec
 from einops import rearrange
+from megatron.core import parallel_state, tensor_parallel
+from torch import nn
 
 try:
-    from flash_attn.modules.mha import SelfAttention as FlashAttention
+    from flash_attn.modules.mha import FlashSelfAttention as FlashAttention
 except ModuleNotFoundError:
     FlashAttention = None
 
-from collie.log.logger import logger
-from collie.config import load_config
-from collie.config import CollieConfig
-from collie.utils import progress, env, dict_as_params, concat_tensor
-from collie.driver.io import IODriver
-from collie.models.base import CollieModelForCausalLM
-from collie.module import ColumnParallelLinearWithoutBias, RowParallelLinearWithoutBias, ColumnParallelLMHead
-
-from typing import Union, Optional, Tuple
 from collections import OrderedDict
-from transformers.modeling_utils import dtype_byte_size
-from transformers.modeling_utils import PretrainedConfig
+from typing import Optional, Tuple, Union
+
 from transformers.modeling_outputs import CausalLMOutputWithPast
+from transformers.modeling_utils import PretrainedConfig, dtype_byte_size
+
+from collie.config import CollieConfig, load_config
+from collie.driver.io import IODriver
+from collie.log.logger import logger
+from collie.models.base import CollieModelForCausalLM
+from collie.module import (
+    ColumnParallelLinearWithoutBias,
+    ColumnParallelLMHead,
+    RowParallelLinearWithoutBias,
+)
+from collie.utils import concat_tensor, dict_as_params, env, progress
+
 
 class RotaryPositionEmbedding(nn.Module):
     def __init__(self, head_dim: int) -> None:
@@ -78,6 +78,7 @@ class RMSNormalize(nn.Module):
         if self.weight.dtype in [torch.float16, torch.bfloat16]:
             hidden_states = hidden_states.to(self.weight.dtype)
         return hidden_states * self.weight
+
 
 class LlamaLayer(nn.Module):
     def __init__(self, config: CollieConfig) -> None:
@@ -181,14 +182,14 @@ class LlamaLayer(nn.Module):
         else:
             start_pos = 0
         query, key = self.self_attn["rotary_emb"](query, key, seq_len, start_pos)
+        key = torch.repeat_interleave(key, dim=2, repeats=self.num_key_value_groups)
+        value = torch.repeat_interleave(value, dim=2, repeats=self.num_key_value_groups)
         if self.past_key_values is not None:
             query = torch.cat([self.past_key_values[0].permute([0, 2, 1, 3]), query], dim=1)
             key = torch.cat([self.past_key_values[0].permute([0, 2, 1, 3]), key], dim=1)
             value = torch.cat([self.past_key_values[1].permute([0, 2, 1, 3]), value], dim=1)
         if self.use_cache and not self.training:
             self.past_key_values = torch.stack((key.permute([0, 2, 1, 3]), value.permute([0, 2, 1, 3])), dim=0)
-        key = torch.repeat_interleave(key, dim=1, repeats=self.num_key_value_groups)
-        value = torch.repeat_interleave(value, dim=1, repeats=self.num_key_value_groups)
         attention_mask = attention_mask if attention_mask is not None else torch.ones((query.shape[0], query.shape[1])).to(hidden_states.device)
         if self.config.use_flash:
             assert FlashAttention is not None, \
@@ -394,6 +395,12 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                 if env.is_pipeline:
                     # 保存的是 json 格式
                     parts = env.pipeline_parts
+                if hasattr(config, "num_key_value_heads"):
+                    # llama2 (transformers >= 4.31.0)
+                    num_key_value_heads = config.num_key_value_heads
+                else:
+                    num_key_value_heads = config.num_attention_heads
+                head_dim = config.hidden_size // config.num_attention_heads
                 if format == "hf":
                     # 如果存在 pytorch_model.bin.index.json 文件的话，此时不同的 pp 进程可以按需加载自己需要的权重
                     if io_driver.exists(os.path.join(path, "pytorch_model.bin.index.json")) and "COLLIE_PP_PARTS" in os.environ.keys():
@@ -422,13 +429,21 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                             part_state_dict = io_driver.load(os.path.join(path, weight), mode="rb")
                             for key in list(part_state_dict.keys()):
                                 # 对 q_proj.weight 和 k_proj.weight 进行 reshape
-                                if key.endswith("q_proj.weight") or key.endswith("k_proj.weight"):
+                                if key.endswith("q_proj.weight"):
                                     part_state_dict[key] = rearrange(
                                         part_state_dict[key],
                                         "(h two t) d -> h two t d",
                                         h=config.num_attention_heads,
                                         two=2).transpose(1, 2).reshape(
                                             config.hidden_size,
+                                            config.hidden_size)
+                                elif key.endswith("k_proj.weight"):
+                                    part_state_dict[key] = rearrange(
+                                        part_state_dict[key],
+                                        "(h two t) d -> h two t d",
+                                        h=num_key_value_heads,
+                                        two=2).transpose(1, 2).reshape(
+                                            num_key_value_heads * head_dim,
                                             config.hidden_size)
                                 part_state_dict[key.replace("model.", "")] = part_state_dict.pop(key)
                             state_dict.update(part_state_dict)
@@ -528,8 +543,8 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                                 state_dict.pop(key)
                 # 根据用户配置的新的 tp size 进行分割
                 for key in list(state_dict.keys()):
-                    filte_list = ["q_proj.weight", "q_proj.weight", "k_proj.weight", "v_proj.weight", "gate_proj.weight", "up_proj.weight", "embed_tokens.weight", "lm_head.weight"]
-                    need_split = any([key.endswith(filte) for filte in filte_list])
+                    filter_list = ["q_proj.weight", "k_proj.weight", "v_proj.weight", "gate_proj.weight", "up_proj.weight", "embed_tokens.weight", "lm_head.weight"]
+                    need_split = any([key.endswith(filte) for filte in filter_list])
                     if env.pp_size > 1:
                         # embedding 层和 lm_head 都需要切
                         need_split = need_split or int(key.split(".")[0]) == max(parts) - 1
@@ -571,12 +586,19 @@ class LlamaForCausalLM(CollieModelForCausalLM):
         `huggingface`.
         """
         io_driver = IODriver.from_protocol(protocol)
-        def reshape_wq_wk(w: torch.Tensor):
-            return w.view(config.num_attention_heads,
-                          config.hidden_size // config.num_attention_heads // 2,
-                          2,
-                          config.hidden_size).transpose(1, 2).reshape(config.hidden_size,
-                                                                    config.hidden_size)
+        def reshape_wq_wk(w: torch.Tensor, kv=False):
+            if hasattr(config, "num_key_value_heads"):
+                # llama2 (transformers >= 4.31.0)
+                num_key_value_heads = config.num_key_value_heads
+            else:
+                num_key_value_heads = config.num_attention_heads
+            head_dim = config.hidden_size // config.num_attention_heads
+            if kv:
+                num_heads = num_key_value_heads
+            else:
+                num_heads = config.num_attention_heads
+            return w.view(num_heads, head_dim // 2, 2, config.hidden_size) \
+                    .transpose(1, 2).reshape(num_heads * head_dim, config.hidden_size)
         # gather to tp rank 0
         if env.is_pipeline:
             layers = env.pipeline_layers_idx
@@ -591,6 +613,12 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                     layer = int(key.split(".")[0])
                     if layer == max(parts) - 2:
                         state_dict[key.replace(f"{layer}.", "model.norm.")] = state_dict.pop(key)
+                    elif layer == max(parts) - 1:
+                        # lm_head
+                        state_dict[key.replace(f"{layer}.", "lm_head.")] = state_dict.pop(key)
+                    elif layer == 0:
+                        # embedding
+                        state_dict[key.replace(f"{layer}.", "model.embed_tokens.")] = state_dict.pop(key)
                     else:
                         state_dict[key.replace(f"{layer}.", f"model.layers.{layer - 1}.")] = state_dict.pop(key)
         if dist.is_initialized() and process_exclusion:
@@ -607,35 +635,31 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                          or not process_exclusion):
                     for key in sorted(list(state_dict.keys())):
                         tensor_list = None
-                        if env.tp_size > 1:
-                            if env.tp_rank == 0:
-                                tensor_list = [torch.zeros_like(state_dict[key]).to(state_dict[key].dtype).cuda() for _ in range(config.tp_size)]
-                            dist.gather(state_dict[key].cuda(), dst=dst, gather_list=tensor_list, group=env.tp_group)
-                            if env.tp_rank == 0:
-                                filte_list = ["q_proj.weight", "q_proj.weight", "k_proj.weight", "v_proj.weight", "gate_proj.weight", "up_proj.weight", "embed_tokens.weight", "lm_head.weight"]
-                                need_split = any([key.endswith(filte) for filte in filte_list])
-                                if env.pp_size > 1:
-                                    # embedding 层和 lm_head 都需要切
-                                    need_split = need_split or int(key.split(".")[0]) == max(parts) - 1
-                                    need_split = need_split or int(key.split(".")[0]) == min(parts)
+                        if env.tp_rank == 0:
+                            tensor_list = [torch.zeros_like(state_dict[key]).to(state_dict[key].dtype).cuda() for _ in range(config.tp_size)]
+                        dist.gather(state_dict[key].cuda(), dst=dst, gather_list=tensor_list, group=env.tp_group)
+                        if env.tp_rank == 0:
+                            filter_list = ["q_proj.weight", "k_proj.weight", "v_proj.weight", "gate_proj.weight", "up_proj.weight", "embed_tokens.weight", "lm_head.weight"]
+                            need_split = any([key.endswith(filte) for filte in filter_list])
 
-                                if need_split:
-                                    state_dict[key] = concat_tensor(tensor_list, dim=0)
-                                    
+                            if need_split:
+                                state_dict[key] = concat_tensor(tensor_list, dim=0)
+                                
+                                if process_exclusion:
+                                    # CPU 内存回收（速度很慢）
+                                    gc.collect()
+                                                        
+                            elif key.endswith("o_proj.weight") \
+                                or key.endswith("down_proj.weight"):
+                                    state_dict[key] = concat_tensor(tensor_list, dim=1)
+
                                     if process_exclusion:
                                         # CPU 内存回收（速度很慢）
                                         gc.collect()
-                                                            
-                                elif key.endswith("o_proj.weight") \
-                                    or key.endswith("down_proj.weight"):
-                                        state_dict[key] = concat_tensor(tensor_list, dim=1)
-                                        if process_exclusion:
-                                            # CPU 内存回收（速度很慢）
-                                            gc.collect()
-                        if key.endswith("q_proj.weight")  or key.endswith("k_proj.weight"):
-                            state_dict[key] = reshape_wq_wk(state_dict[key])
-                        if not key.startswith("lm_head.weight"):
-                            state_dict[f"model.{key}"] = state_dict.pop(key)
+                            if key.endswith("q_proj.weight"):
+                                state_dict[key] = reshape_wq_wk(state_dict[key])
+                            if key.endswith("k_proj.weight"):
+                                state_dict[key] = reshape_wq_wk(state_dict[key], kv=True)
                     if env.tp_rank == 0:
                         # Save gathered weights
                         if env.is_pipeline:
