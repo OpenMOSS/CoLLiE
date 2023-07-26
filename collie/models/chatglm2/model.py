@@ -1,38 +1,42 @@
-from typing import List, Dict, Any
-import math
-import os
 import gc
 import json
+import math
+import os
+from typing import Any, Dict, List
 
 import torch
-from torch import nn
 import torch.distributed as dist
 import torch.nn.functional as F
 import torch.nn.init as init
 import torch.utils.checkpoint
-from torch.nn import LayerNorm
-from einops import rearrange
-from megatron.core import tensor_parallel
-from megatron.core import parallel_state
 from deepspeed.pipe import LayerSpec
+from einops import rearrange
+from megatron.core import parallel_state, tensor_parallel
+from torch import nn
+from torch.nn import LayerNorm
+
 try:
-    from flash_attn.flash_attention import FlashAttention
+    from flash_attn.modules.mha import FlashSelfAttention as FlashAttention
 except ModuleNotFoundError:
     FlashAttention = None
 
-from collie.log.logger import logger
-from collie.config import CollieConfig
-from collie.models.base import CollieModelForCausalLM
-from collie.driver.io import IODriver
-from collie.module import ColumnParallelLinearWithoutBias, RowParallelLinearWithoutBias, ColumnParallelLMHead
-from collie.utils import progress, env, dict_as_params, concat_tensor
-
-from typing import Any, Union, Optional
 from collections import OrderedDict
-from transformers.modeling_utils import dtype_byte_size
-from transformers.modeling_utils import PretrainedConfig
+from typing import Any, Optional, Union
+
 from transformers.modeling_outputs import CausalLMOutputWithPast
- 
+from transformers.modeling_utils import PretrainedConfig, dtype_byte_size
+
+from collie.config import CollieConfig
+from collie.driver.io import IODriver
+from collie.log.logger import logger
+from collie.models.base import CollieModelForCausalLM
+from collie.module import (
+    ColumnParallelLinearWithoutBias,
+    ColumnParallelLMHead,
+    RowParallelLinearWithoutBias,
+)
+from collie.utils import concat_tensor, dict_as_params, env, progress
+
 
 def split_tensor_along_last_dim(
         tensor: torch.Tensor,

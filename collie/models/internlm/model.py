@@ -1,40 +1,40 @@
-import os
 import gc
 import json
+import math
+import os
 
 import torch
-from torch import nn
-import torch.utils.checkpoint
-import torch.nn.functional as F
 import torch.distributed as dist
-
-from megatron.core import parallel_state
-from megatron.core import tensor_parallel
-
-from deepspeed.pipe import LayerSpec, TiedLayerSpec
+import torch.nn.functional as F
+import torch.utils.checkpoint
 from deepspeed.accelerator import get_accelerator
-
-import math
+from deepspeed.pipe import LayerSpec, TiedLayerSpec
 from einops import rearrange
+from megatron.core import parallel_state, tensor_parallel
+from torch import nn
 
 try:
-    from flash_attn.flash_attention import FlashAttention
+    from flash_attn.modules.mha import FlashSelfAttention as FlashAttention
 except ModuleNotFoundError:
     FlashAttention = None
 
-from collie.log.logger import logger
-from collie.config import load_config
-from collie.config import CollieConfig
-from collie.utils import progress, env, dict_as_params, concat_tensor
-from collie.driver.io import IODriver
-from collie.models.base import CollieModelForCausalLM
-from collie.module import ColumnParallelLinearWithoutBias, RowParallelLinearWithoutBias, ColumnParallelLMHead
-
-from typing import Union, Optional, Tuple
 from collections import OrderedDict
-from transformers.modeling_utils import dtype_byte_size
-from transformers.modeling_utils import PretrainedConfig
+from typing import Optional, Tuple, Union
+
 from transformers.modeling_outputs import CausalLMOutputWithPast
+from transformers.modeling_utils import PretrainedConfig, dtype_byte_size
+
+from collie.config import CollieConfig, load_config
+from collie.driver.io import IODriver
+from collie.log.logger import logger
+from collie.models.base import CollieModelForCausalLM
+from collie.module import (
+    ColumnParallelLinearWithoutBias,
+    ColumnParallelLMHead,
+    RowParallelLinearWithoutBias,
+)
+from collie.utils import concat_tensor, dict_as_params, env, progress
+
 
 class RotaryPositionEmbedding(nn.Module):
     def __init__(self, head_dim: int) -> None:
@@ -185,7 +185,12 @@ class InternLMLayer(nn.Module):
             assert FlashAttention is not None, \
                 "Detected flash_attn is not installed. See https://github.com/HazyResearch/flash-attention"
             qkv = torch.stack([query, key, value], dim=2)
-            output, _ = FlashAttention()(qkv, key_padding_mask=attention_mask, causal=True)
+            output = FlashAttention()(qkv, key_padding_mask=attention_mask.bool(), causal=True)
+            """ flash_attn_2 note: 
+                from flash_attn.modules.mha import SelfAttention as FlashAttention
+                require attention_mask as a bool tensor
+                replace 'output, _ =' as 'output =' 
+            """
             output = rearrange(output, "b n h d -> b n (h d)")
             output = F.dropout(output, p=self.config.dropout,
                                training=self.training)
@@ -448,22 +453,19 @@ class InternLMForCausalLM(CollieModelForCausalLM):
                                 state_dict.pop(key)
                 # 根据用户配置的新的 tp size 进行分割
                 for key in list(state_dict.keys()):
-                    if key.endswith("q_proj.weight") \
-                        or key.endswith("q_proj.bias") \
-                            or key.endswith("k_proj.weight") \
-                                or key.endswith("k_proj.bias") \
-                                    or key.endswith("v_proj.weight") \
-                                        or key.endswith("v_proj.bias") \
-                                            or key.endswith("gate_proj.weight") \
-                                                or key.endswith("up_proj.weight") \
-                                                    or key.endswith("embed_tokens.weight") \
-                                                        or key.endswith("lm_head.weight"):
-                                                            tensor = list(torch.chunk(state_dict[key], config.tp_size, dim=0))[int(os.environ.get("COLLIE_TP_RANK", "0"))].detach().clone()
-                                                            del state_dict[key]
-                                                            if process_exclusion:
-                                                                # CPU 内存回收（速度很慢）
-                                                                gc.collect()
-                                                            state_dict[key] = tensor
+                    col_parallel = [
+                        "q_proj.weight", "q_proj.bias", "k_proj.weight",
+                        "k_proj.bias", "v_proj.weight", "v_proj.bias",
+                        "gate_proj.weight", "up_proj.weight",
+                        "lm_head.weight", "embed_tokens.weight"
+                    ]
+                    if any([key.endswith(p) for p in col_parallel]):
+                        tensor = list(torch.chunk(state_dict[key], config.tp_size, dim=0))[int(os.environ.get("COLLIE_TP_RANK", "0"))].detach().clone()
+                        del state_dict[key]
+                        if process_exclusion:
+                            # CPU 内存回收（速度很慢）
+                            gc.collect()
+                        state_dict[key] = tensor
                     elif key.endswith("o_proj.weight") \
                         or key.endswith("down_proj.weight"):
                             tensor = list(torch.chunk(state_dict[key], config.tp_size, dim=1))[int(os.environ.get("COLLIE_TP_RANK", "0"))].detach().clone()
@@ -514,6 +516,12 @@ class InternLMForCausalLM(CollieModelForCausalLM):
                     layer = int(key.split(".")[0])
                     if layer == max(parts) - 2:
                         state_dict[key.replace(f"{layer}.", "model.norm.")] = state_dict.pop(key)
+                    elif layer == max(parts) - 1:
+                        # lm_head
+                        state_dict[key.replace(f"{layer}.", "lm_head.")] = state_dict.pop(key)
+                    elif layer == 0:
+                        # embedding
+                        state_dict[key.replace(f"{layer}.", "model.embed_tokens.")] = state_dict.pop(key)
                     else:
                         state_dict[key.replace(f"{layer}.", f"model.layers.{layer - 1}.")] = state_dict.pop(key)
         if dist.is_initialized() and process_exclusion:
@@ -534,22 +542,19 @@ class InternLMForCausalLM(CollieModelForCausalLM):
                             tensor_list = [torch.zeros_like(state_dict[key]).to(state_dict[key].dtype).cuda() for _ in range(config.tp_size)]
                         dist.gather(state_dict[key].cuda(), dst=dst, gather_list=tensor_list, group=env.tp_group)
                         if env.tp_rank == 0:
-                            if key.endswith("q_proj.weight") \
-                                or key.endswith("q_proj.bias") \
-                                    or key.endswith("k_proj.weight") \
-                                        or key.endswith("k_proj.bias") \
-                                            or key.endswith("v_proj.weight") \
-                                                or key.endswith("v_proj.bias") \
-                                                    or key.endswith("gate_proj.weight") \
-                                                        or key.endswith("up_proj.weight") \
-                                                            or key.endswith("embed_tokens.weight") \
-                                                                or key.endswith("lm_head.weight"):
-                                                                    state_dict[key] = concat_tensor(tensor_list, dim=0)
-                                                                    if key.endswith("q_proj.weight")  or key.endswith("k_proj.weight"):
-                                                                        state_dict[key] = reshape_wq_wk(state_dict[key])
-                                                                    if process_exclusion:
-                                                                        # CPU 内存回收（速度很慢）
-                                                                        gc.collect()
+                            col_parallel = [
+                                "q_proj.weight", "q_proj.bias", "k_proj.weight",
+                                "k_proj.bias", "v_proj.weight", "v_proj.bias",
+                                "gate_proj.weight", "up_proj.weight",
+                                "lm_head.weight", "embed_tokens.weight"
+                            ]
+                            if any([key.endswith(p) for p in col_parallel]):
+                                state_dict[key] = concat_tensor(tensor_list, dim=0)
+                                if key.endswith("q_proj.weight") or key.endswith("k_proj.weight"):
+                                    state_dict[key] = reshape_wq_wk(state_dict[key])
+                                if process_exclusion:
+                                    # CPU 内存回收（速度很慢）
+                                    gc.collect()
                             elif key.endswith("o_proj.weight") \
                                 or key.endswith("down_proj.weight"):
                                     state_dict[key] = concat_tensor(tensor_list, dim=1)
