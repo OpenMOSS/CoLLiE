@@ -19,7 +19,6 @@ from types import MethodType
 from typing import Optional, List, Sequence, Dict, Any, Tuple
 
 from torch import nn
-from peft import PeftModel
 from torch import distributed as dist
 from transformers.generation.configuration_utils import GenerationConfig
 from megatron.core.tensor_parallel import (ColumnParallelLinear,
@@ -29,13 +28,11 @@ from megatron.core import parallel_state
 from deepspeed.runtime.pipe.module import PipelineModule
 from deepspeed.runtime.pipe.topology import (PipeModelDataParallelTopology,
                                              PipelineParallelGrid)
-from deepspeed.runtime.utils import set_random_seed
 from deepspeed.runtime.engine import DeepSpeedEngine
 from deepspeed.runtime.activation_checkpointing import checkpointing
 from deepspeed.accelerator import get_accelerator
 from deepspeed.runtime.pipe.topology import ProcessTopology
 from transformers.generation.utils import GenerationConfig, GenerationMixin
-from transformers.modeling_utils import PretrainedConfig
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from collie.log import logger
@@ -524,6 +521,7 @@ class PipelineModel(PipelineModule, PipelineGenerationMixin):
         self.tied_weight_attrs = {}
 
         self._build()
+        self.to(get_accelerator().device_name(self.local_rank))
 
         self.tied_comms = self._index_tied_modules()
         self._synchronize_tied_weights()
