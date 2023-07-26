@@ -8,8 +8,12 @@ CoLLiE (Collaborative Tuning of Large Language Models in an Efficient Way)，一
 
 
 [![Github Repo Stars](https://img.shields.io/github/stars/openlmlab/collie?style=social)](https://github.com/openlmlab/collie/stargazers)
+[![GitHub](https://img.shields.io/github/license/OpenLMLab/collie)]()
 [![Doc](https://img.shields.io/badge/Website-Doc-blue)](https://openlmlab-collie.readthedocs.io/zh_CN/latest/)
 [![HuggingFace badge](https://img.shields.io/badge/%F0%9F%A4%97HuggingFace-Join-yellow)](https://huggingface.co/openlmlab)
+[![GitHub Workflow Status (with event)](https://img.shields.io/github/actions/workflow/status/OpenLMLab/collie/python-publish.yml)](https://pypi.org/project/collie-lm/)
+[![GitHub commit activity (branch)](https://img.shields.io/github/commit-activity/w/OpenLMLab/collie)](https://github.com/OpenLMLab/collie/commits/main)
+[![GitHub issues](https://img.shields.io/github/issues/OpenLMLab/collie)](https://github.com/OpenLMLab/collie/issues)
 
 <h4 align="center">
   <p>
