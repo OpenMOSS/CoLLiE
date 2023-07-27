@@ -168,13 +168,13 @@ class CollieConfig:
         }
     )
     peft_config: PeftConfig = field(
-        default=PeftConfig(),
+        default_factory=lambda:PeftConfig(),
         metadata={
             "help": "PEFT configuration."
         }
     )
     quantization_config: BitsAndBytesConfig = field(
-        default=BitsAndBytesConfig(),
+        default_factory=lambda:BitsAndBytesConfig(),
         metadata={
             "help": "Configuration parameters for the `bitsandbytes` library"
         }
