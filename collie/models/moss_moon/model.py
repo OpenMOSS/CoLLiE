@@ -555,7 +555,7 @@ class Moss003MoonForCausalLM(CollieModelForCausalLM):
         """
         io_driver = IODriver.from_protocol(protocol)
         if env.rank == 0:
-            config.save_pretrained(path)
+            config.save_pretrained(path, protocol=protocol)
 
         # gather to tp rank 0
         desc = "Saving state dict"
