@@ -424,6 +424,7 @@ class Moss003MoonForCausalLM(CollieModelForCausalLM):
 
     :param config: :class:`.CollieConfig`
     """
+    base_model_prefix = "transformer"
     def __init__(self, config):
         super().__init__(config)
         self.transformer = Moss003MoonModel(config)

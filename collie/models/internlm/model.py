@@ -310,7 +310,7 @@ class InternLMModel(nn.Module):
 
 
 class InternLMForCausalLM(CollieModelForCausalLM):
-    
+    base_model_prefix = "model"
     def __init__(self, config: CollieConfig) -> None:
         super().__init__(config)
         self.model = InternLMModel(config)

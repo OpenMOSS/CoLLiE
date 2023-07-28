@@ -323,7 +323,7 @@ class LlamaModel(nn.Module):
 
 
 class LlamaForCausalLM(CollieModelForCausalLM):
-    
+    base_model_prefix = "model"
     def __init__(self, config: CollieConfig) -> None:
         super().__init__(config)
         self.model = LlamaModel(config)

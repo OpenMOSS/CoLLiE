@@ -311,7 +311,7 @@ class MossModel(nn.Module):
 
 
 class MossForCausalLM(CollieModelForCausalLM):
-    
+    base_model_prefix = "model"
     def __init__(self, config: CollieConfig) -> None:
         super().__init__(config)
         self.model = MossModel(config)

@@ -46,6 +46,8 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
 
     """
     main_input_name = "input_ids"
+    base_model_prefix = ""
+    _can_generate = False
 
     def __init__(self, config: CollieConfig) -> None:
         super().__init__()
@@ -628,6 +630,12 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
 
     def get_input_embedding(self):
         for name, module in self.named_children():
+            if isinstance(module, (nn.Embedding, tensor_parallel.VocabParallelEmbedding)):
+                return name, module
+        base_model = getattr(self, self.base_model_prefix, None)
+        if base_model is None:
+            return None, None
+        for name, module in base_model.named_children():
             if isinstance(module, (nn.Embedding, tensor_parallel.VocabParallelEmbedding)):
                 return name, module
         return None, None
