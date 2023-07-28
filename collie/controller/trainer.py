@@ -454,18 +454,28 @@ class Trainer(TrainerEventTrigger):
             name = f"{name_prefix}.bin"
         else:
             name = f"{name_prefix}_{env.pp_rank}.bin"
+            pipeline_model = self.model.base_model
+            if not isinstance(pipeline_model, PipelineModel):
+                pipeline_model = pipeline_model.model
+            else:
+                raise NotImplementedError
         if is_zero3_enabled(self.config):
             contexts.append(deepspeed.zero.GatheredParameters(list(named_parameters.values())))
+            # 加上以避免报错 assert not param.ds_active_sub_modules
+            self._checkpoint_prologue()
         with ContextManagers(contexts):
             if env.dp_rank == 0 or not is_zero3_enabled(self.config) and (pp_save or env.pp_rank == 0):
                 for key in named_parameters.keys():
                     state_dict[key.replace(f"{adapter_name}.", "")] = named_parameters[key].data
                 if env.dp_rank == 0 and env.tp_rank == 0:
                     io_driver.save(state_dict, os.path.join(path, name))
+        if is_zero3_enabled(self.config):
+            self._checkpoint_epilogue()
         env.barrier()
         if env.rank == 0:
             io_driver.save(json.dumps(self.config.peft_config.__dict__), os.path.join(path, "adapter_config.json"))
-            _merge_peft(path, name_prefix, io_driver)
+            if pp_save:
+                _merge_peft(path, name_prefix, self.model, io_driver)
 
     def load_peft(self, path: str, process_exclusion: bool = False, adapter_name="default", **kwargs):...
     def load_peft(self, path: str, process_exclusion: bool = False, adapter_name="default",
@@ -489,14 +499,18 @@ class Trainer(TrainerEventTrigger):
                 f"checkpoint `{path}` is not the current task type"
                 f"{self.config.peft_config.task_type}"
             )
-        if adapter_name == "default":
-            name_prefix = "adapter_model"
-        else:
-            name_prefix = f"adapter_model_{adapter_name}"
-        name = f"{name_prefix}.bin"
+        name = f"adapter_model.bin"
         assert io_driver.exists(os.path.join(path, name)), f"{name} does not exist."
         loaded_state_dict = io_driver.load(os.path.join(path, name), mode="rb")
-        loaded_state_dict = _split_peft(loaded_state_dict)
+        if env.pp_size > 1:
+            pipeline_model = self.model.base_model
+            prefix = "base_model."
+            if not isinstance(pipeline_model, PipelineModel):
+                pipeline_model = pipeline_model.model
+                prefix += "model."
+            else:
+                raise NotImplementedError
+            loaded_state_dict = _split_peft(loaded_state_dict, pipeline_model, prefix)
         named_parameters = {name: param for name, param in self.engine.module.named_parameters() if any([name.replace(f"{adapter_name}.", "") == k for k in loaded_state_dict.keys()])}
         contexts = []
         if is_zero3_enabled(self.config):
