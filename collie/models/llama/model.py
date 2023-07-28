@@ -643,6 +643,9 @@ class LlamaForCausalLM(CollieModelForCausalLM):
             total_size = 0
             weight_map = {}
             for _file in tmp_index_files:
+                if not io_driver.exists(_file):
+                    logger.rank_zero_warning("Detect missing index file, skip merging.")
+                    return
                 _index_dict = json.loads(io_driver.load(_file, mode="r"))
                 total_size += _index_dict["total_size"]
                 weight_map.update(_index_dict["weight_map"])
