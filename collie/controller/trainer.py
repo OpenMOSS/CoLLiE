@@ -178,11 +178,6 @@ class Trainer(TrainerEventTrigger):
         if self.data_provider is not None:
             self.server = Server(model=self.model, data_provider=self.data_provider)
             self.server.start()
-        if evaluators is not None and eval_dataset is not None:
-            logger.rank_zero_warning(
-                "Note that you have set both `evaluators` and `eval_dataset` "
-                "and the later will not take effect."
-            )
         if evaluators is None:
             evaluators = []
         if not isinstance(evaluators, Sequence):
