@@ -1,11 +1,13 @@
 import os
-from dataclasses import dataclass, field, is_dataclass, asdict
+from dataclasses import dataclass, field
 from typing import Any, Union, Callable
 
+import torch
 from transformers import PretrainedConfig, AutoConfig, BitsAndBytesConfig
 from peft.utils import PeftConfig, PeftType
 from peft.mapping import get_peft_config
-import torch
+
+from collie.driver import IODriver
 
 __all__ = ["CollieConfig"]
 
@@ -160,7 +162,7 @@ class CollieConfig:
         }
     )
     model_config: PretrainedConfig = field(
-        default_factory=lambda:PretrainedConfig(),
+        default_factory=lambda: PretrainedConfig(),
         metadata={
             "help": "Model configuration."
         }
@@ -196,11 +198,15 @@ class CollieConfig:
 
         return cfg
     
-    def save_pretrained(self, path):
+    def save_pretrained(self, path, **kwargs):
         """
         保存预训练模型的设置。
         """
-        self.model_config.save_pretrained(path)
+        protocol = kwargs.get("protocol", "file")
+        driver = IODriver.from_protocol(protocol)
+        driver.makedirs(path, exist_ok=True)
+        driver.save(self.model_config.to_json_string(use_diff=True),
+                    os.path.join(path, "config.json"))
 
     def __getattr__(self, name):
         return getattr(self.model_config, name)

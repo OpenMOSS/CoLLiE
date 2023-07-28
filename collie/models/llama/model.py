@@ -682,8 +682,8 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                 if dist.is_initialized() and process_exclusion:
                     dist.barrier()
         dist.barrier()
-        if env.rank == 0 and protocol == "file":
-            config.save_pretrained(path)
+        if env.rank == 0:
+            config.save_pretrained(path, protocol=protocol)
         if env.rank == 0 and env.is_pipeline:
             # merge
             tmp_index_files = [tmp_index_file.format(i) for i in range(config.pp_size)]
