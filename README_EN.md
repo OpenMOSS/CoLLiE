@@ -19,6 +19,7 @@ CoLLiE (Collaborative Tuning of Large Language Models in an Efficient Way) is a 
 </h4>
 
 ## Latest News
+* [2023/07/18] Release python package collie-lm(1.0.2). You can find more detials in this [link](https://pypi.org/project/collie-lm/#history).
 
 ## Table of Contents
 <ul>

@@ -1,5 +1,5 @@
 import sys
-sys.path.append("../../")
+sys.path.append("../..")
 from collie.models.llama.model import LlamaForCausalLM
 from collie.controller import Trainer, EvaluatorForGeneration
 from collie.metrics.decode import DecodeMetric
@@ -9,12 +9,10 @@ from transformers import LlamaTokenizer
 from transformers.generation.utils import GenerationConfig
 import torch
 
-tokenizer = LlamaTokenizer.from_pretrained("/mnt/petrelfs/zhangshuo/model/llama-7b-hf", 
-                                           padding_side="left",
-                                           add_eos_token=False)
+tokenizer = LlamaTokenizer.from_pretrained("decapoda-research/llama-7b-hf", padding_side="left",add_eos_token=False)
 tokenizer.bos_token_id = 1
 tokenizer.eos_token_id = 2
-config = CollieConfig.from_pretrained("/mnt/petrelfs/zhangshuo/model/llama-7b-hf")
+config = CollieConfig.from_pretrained("decapoda-research/llama-7b-hf")
 config.tp_size = 4
 config.dp_size = 1
 config.pp_size = 2
@@ -31,7 +29,7 @@ config.ds_config = {
     }
 }
 
-model = LlamaForCausalLM.from_pretrained("/mnt/petrelfs/zhangshuo/model/llama-7b-hf", config=config)
+model = LlamaForCausalLM.from_pretrained("decapoda-research/llama-7b-hf", config=config)
 optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5)
 train_sample = tokenizer("Collie is a python package for finetuning large language models.</s>", return_tensors="pt").input_ids.squeeze(0)
 eval_sample = tokenizer("Collie is", return_tensors="pt")

@@ -17,21 +17,12 @@ config.ds_config = {
     "fp16": {
         "enabled": True
     },
-    # "monitor_config": {
-    #     "enabled": True,
-    #     "wandb": {
-    #         "enabled": True,
-    #         "team": "00index",
-    #         "project": "collie",
-    #         "group": "test_evaluator"
-    #     }
-    # },
     "zero_optimization": {
         "stage": 3,
     }
 }
 config.seed = 1024
-model = LlamaForCausalLM.from_pretrained("/mnt/petrelfs/zhangshuo/model/llama-7b-hf", config=config)
+model = LlamaForCausalLM.from_pretrained("decapoda-research/llama-7b-hf", config=config)
 # model = LlamaForCausalLM.from_config(config)
 optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5)
 lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=1000)
@@ -42,11 +33,6 @@ train_dataset = [
         "output": "positive." if sample["label"] else "negative."
     } for sample in load_dataset("imdb", split="train")
 ]
-# train_dataset = [
-#     {
-#         "text": f"Comment: {sample['text']}. The sentiment of this comment is: {'positive.' if sample['label'] else 'negative.'}",
-#     } for sample in load_dataset("imdb", split="train")
-# ]
 ### Prepare perplexity evaluation dataset
 ratio = 0.01
 eval_dataset_ppl, train_dataset = train_dataset[:int(len(train_dataset) * ratio)], train_dataset[int(len(train_dataset) * ratio):]
@@ -60,11 +46,11 @@ eval_dataset_cls = [
 ][:1000]
 ### Convert to CoLLie Dataset
 traine_dataset = CollieDatasetForTraining(train_dataset, 
-                                          tokenizer=LlamaTokenizer.from_pretrained("/mnt/petrelfs/zhangshuo/model/llama-7b-hf", add_eos_token=True))
+                                          tokenizer=LlamaTokenizer.from_pretrained("decapoda-research/llama-7b-hf", add_eos_token=True))
 eval_dataset_ppl = CollieDatasetForTraining(eval_dataset_ppl, 
-                                            tokenizer=LlamaTokenizer.from_pretrained("/mnt/petrelfs/zhangshuo/model/llama-7b-hf", add_eos_token=True))
+                                            tokenizer=LlamaTokenizer.from_pretrained("decapoda-research/llama-7b-hf", add_eos_token=True))
 eval_dataset_cls = CollieDatasetForClassification(eval_dataset_cls, 
-                                              tokenizer=LlamaTokenizer.from_pretrained("/mnt/petrelfs/zhangshuo/model/llama-7b-hf", add_eos_token=True))
+                                              tokenizer=LlamaTokenizer.from_pretrained("decapoda-research/llama-7b-hf", add_eos_token=True))
 ### Prepare Evaluator
 evaluator_ppl = EvaluatorForPerplexity(
     model=model,
@@ -101,7 +87,7 @@ trainer = Trainer(
         MemoryMonitor(config),
         LRMonitor(config)
     ],
-    data_provider=GradioProvider(LlamaTokenizer.from_pretrained("/mnt/petrelfs/zhangshuo/model/llama-7b-hf"), port=12300, stream=True),
+    data_provider=GradioProvider(LlamaTokenizer.from_pretrained("decapoda-research/llama-7b-hf"), port=12300, stream=True),
     evaluators=[evaluator_ppl, evaluator_cls]
 )
 trainer.train()

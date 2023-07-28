@@ -113,9 +113,21 @@ CoLLiE 基于 *DeepSpeed* 和 *PyTorch*，为大型语言模型提供协作式�
 注：在使用Adam优化器的情况下，各个模型需要的最少的GPU（A100）数量
 
 ## 安装
+在安装前，你需要确保：
+* PyTorch >= 1.13
+* CUDA >= 11.6 
+* Linux OS
+### PyPI安装
+你可以简单地通过PyPI安装，命令如下：
 ```bash
-pip install git+https://github.com/OpenLMLab/collie.git
+pip install collie-lm
 ```
+### 源码安装
+```bash
+git clone https://github.com/OpenLMLab/collie
+python setup.py install
+```
+
 ## Docker安装
 
 ## 使用
