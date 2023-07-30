@@ -19,9 +19,8 @@ import numpy as np
 from torch import nn
 import torch.distributed as dist
 from torch.optim.lr_scheduler import _LRScheduler
-from deepspeed.accelerator import get_accelerator
 from deepspeed.runtime.engine import DeepSpeedSchedulerCallable
-from transformers.modeling_utils import PreTrainedModel, load_state_dict
+from transformers.modeling_utils import PreTrainedModel
 from peft import PeftModel, PeftConfig, get_peft_model_state_dict, set_peft_model_state_dict, PeftType
 from transformers import PreTrainedTokenizerBase
 from transformers.utils import ContextManagers
@@ -31,7 +30,7 @@ from collie.module import PipelineGenerationMixin, GPTLMLoss, PipelineModel
 from collie.driver.io import IODriver
 from collie.log import logger
 from collie.utils import progress, env, setup_ds_engine, BaseProvider, is_zero3_enabled, \
-    BaseMonitor, _MultiMonitors, broadcast_tensor, ColliePadder, auto_param_call
+    BaseMonitor, _MultiMonitors, ColliePadder, auto_param_call
 from collie.optim import Lomo
 from collie.models.base import CollieModelForCausalLM
 from .evaluator import Evaluator
@@ -101,7 +100,7 @@ class Trainer(TrainerEventTrigger):
                 input_ids = tokenizer(batch, return_tensors="pt", padding=True)["input_ids"]
                 return {"input_ids": input_ids, "labels": input_ids}
             
-    :param data_provider: 额外的数据提供器，可在 ``eval_dataset`` 之外额外注入验证数据，例如通过前端网页或 http 请求等， 详见 :class:`~collie.utils.data_provider.BaseProvider`
+    :param server: 用于打开一个交互界面，随时进行生成测试，详见 :class:`~collie.controller.server.Server`
     :param monitors: 用于监控训练过程的监控器，详见 :class:`~collie.utils.monitor.BaseMonitor`
     :param metrics: 用于传给 ``Trainer`` 内部训练过程中的对 eval_dataset 进行验证。
         其应当为一个字典，其中 key 表示 monitor，value 表示一个
@@ -128,7 +127,7 @@ class Trainer(TrainerEventTrigger):
                  callbacks: Optional[Union[Callback, List[Callback]]] = None,
                  train_dataset_collate_fn: Optional[Callable] = ColliePadder(),
                  eval_dataset_collate_fn: Optional[Callable] = ColliePadder(padding_left=True),
-                 data_provider: Optional[BaseProvider] = None,
+                 server: Optional[Server] = None,
                  monitors: Sequence[BaseMonitor] = [],
                  metrics: Optional[Dict] = None,
                  evaluators: Optional[List] = None) -> None:
@@ -172,11 +171,9 @@ class Trainer(TrainerEventTrigger):
             self.engine.module.set_engine(self.engine)
         if isinstance(self.engine.module, PeftModel) and isinstance(self.engine.module.get_base_model(), PipelineGenerationMixin):
             self.engine.module.get_base_model().set_engine(self.engine)
-        self.data_provider = data_provider
         self.monitor = _MultiMonitors(monitors)
-        self.server = None
-        if self.data_provider is not None:
-            self.server = Server(model=self.model, data_provider=self.data_provider)
+        self.server = server
+        if self.server is not None:
             self.server.start()
         if evaluators is None:
             evaluators = []

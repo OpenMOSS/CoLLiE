@@ -101,7 +101,6 @@ trainer = Trainer(
         MemoryMonitor(config),
         LRMonitor(config)
     ],
-    data_provider=GradioProvider(LlamaTokenizer.from_pretrained("/mnt/petrelfs/zhangshuo/model/llama-7b-hf"), port=12300, stream=True),
     evaluators=[evaluator_ppl, evaluator_cls]
 )
 trainer.train()

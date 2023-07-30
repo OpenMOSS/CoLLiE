@@ -1,28 +1,37 @@
 import sys
 sys.path.append("..")
-import torch
-from datasets import load_dataset
-from transformers import LlamaTokenizer, GenerationConfig
+
+from rich.traceback import install
 from collie import Trainer, EvaluatorForPerplexity, LlamaForCausalLM, CollieConfig, PPLMetric, AccuracyMetric, DecodeMetric, CollieDatasetForTraining, CollieDatasetForGeneration, \
-    LossMonitor, TGSMonitor, MemoryMonitor, EvalMonitor, GradioProvider, EvaluatorForGeneration, LRMonitor, BleuMetric, DashProvider
-config = CollieConfig.from_pretrained("/mnt/petrelfs/zhangshuo/model/llama-7b-hf")
-config.pp_size = 8
-config.train_micro_batch_size = 1
-config.eval_batch_size = 1
-config.gradient_accumulation_steps = 128
-config.eval_per_n_epochs = 1
+    LossMonitor, TGSMonitor, MemoryMonitor, EvalMonitor, GradioProvider, EvaluatorForGeneration, LRMonitor, BleuMetric, DashProvider, Server
+from transformers import LlamaTokenizer, GenerationConfig
+from datasets import load_dataset
+import torch
+
+
+install()
+
+config = CollieConfig.from_pretrained(
+    "/mnt/petrelfs/zhangshuo/model/llama-7b-hf")
+config.tp_size = 4
+config.train_micro_batch_size = 128
+config.eval_batch_size = 256
+config.gradient_accumulation_steps = 1
+config.eval_per_n_epochs = 3
 config.train_epochs = 10
+config.use_flash = True
 config.ds_config = {
     "fp16": {
         "enabled": True
     },
     "monitor_config": {
         "enabled": True,
+        "tag": "v2",
         "wandb": {
             "enabled": True,
             "team": "00index",
             "project": "collie-experiment",
-            "group": "translation"
+            "group": "flash-attention-tp"
         }
     }
 }
@@ -58,7 +67,7 @@ tokenizer = LlamaTokenizer.from_pretrained(
     "/mnt/petrelfs/zhangshuo/model/llama-7b-hf", add_eos_token=False, add_bos_token=False)
 # Convert to CoLLie Dataset
 train_dataset = CollieDatasetForTraining(train_dataset,
-                                          tokenizer=tokenizer)
+                                         tokenizer=tokenizer)
 eval_dataset_ppl = CollieDatasetForTraining(eval_dataset_ppl,
                                             tokenizer=tokenizer)
 eval_dataset_bleu = CollieDatasetForGeneration(eval_dataset_bleu,
@@ -92,6 +101,12 @@ evaluator_bleu = EvaluatorForGeneration(
         max_new_tokens=100,
     )
 )
+server = Server(model=model, data_provider=GradioProvider(tokenizer, stream=True,
+                                                          generation_config=GenerationConfig(
+                                                              eos_token_id=tokenizer.eos_token_id,
+                                                              pad_token_id=tokenizer.pad_token_id,
+                                                              max_new_tokens=100,
+                                                          )))
 # Prepare Trainer
 trainer = Trainer(
     model=model,
@@ -106,12 +121,7 @@ trainer = Trainer(
         MemoryMonitor(config),
         LRMonitor(config)
     ],
-    data_provider=DashProvider(tokenizer, port=12888, stream=True,
-                                 generation_config=GenerationConfig(
-                                     eos_token_id=tokenizer.eos_token_id,
-                                     pad_token_id=tokenizer.pad_token_id,
-                                     max_new_tokens=100,
-                                 )),
+    server=server,
     evaluators=[evaluator_ppl, evaluator_bleu]
 )
 trainer.train()

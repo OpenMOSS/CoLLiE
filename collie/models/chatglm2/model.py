@@ -17,7 +17,7 @@ from megatron.core import parallel_state
 from deepspeed.pipe import LayerSpec
 try:
     from flash_attn.flash_attention import FlashAttention
-except ModuleNotFoundError:
+except (ModuleNotFoundError, ImportError):
     FlashAttention = None
 
 from collie.log.logger import logger

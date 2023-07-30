@@ -19,7 +19,7 @@ from einops import rearrange
 
 try:
     from flash_attn.flash_attention import FlashAttention
-except ModuleNotFoundError:
+except (ModuleNotFoundError, ImportError):
     FlashAttention = None
 
 from collie.log.logger import logger

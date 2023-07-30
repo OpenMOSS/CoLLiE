@@ -56,12 +56,12 @@ class Evaluator:
                 input_ids = tokenizer(batch, return_tensors="pt", padding=True)["input_ids"]
                 # 第二个 input_ids 会被用于 loss_fn 的 label
                 return {"input_ids": input_ids, "labels": input_ids}
-    :param data_provider: 额外的数据提供器，可在 ``dataset`` 之外额外注入验证数据，例如通过前端网页或 http 请求等， 详见 :class:`~collie.utils.data_provider.BaseProvider`
+    :param server: 用于打开一个交互界面，随时进行生成测试，详见 :class:`~collie.controller.server.Server`
     :param monitors: 用于监控训练过程的监控器，详见 :class:`~collie.utils.monitor.BaseMonitor`
     """
 
     def __init__(self, model, dataset: torch.utils.data.Dataset, tokenizer: Optional[PreTrainedTokenizerBase] = None, metrics: Optional[Dict] = None, eval_fn: Optional[Callable]=None,
-                 config: Optional[CollieConfig] = None, collate_fn: Optional[Callable] = ColliePadder(padding_left=True), data_provider: Optional[BaseProvider] = None,
+                 config: Optional[CollieConfig] = None, collate_fn: Optional[Callable] = ColliePadder(padding_left=True), server: Optional[Server] = None,
                  monitors: Sequence[BaseMonitor] = []):
         self.engine = None
         self.model = model
@@ -73,10 +73,7 @@ class Evaluator:
         self.dataset = dataset
         self.collate_fn = collate_fn
         self.eval_dataloader = None
-        self.data_provider = data_provider
-        self.server = None
-        if self.data_provider is not None:
-            self.server = Server(model=self.model, data_provider=self.data_provider)
+        self.server = server
         self.monitor = _MultiMonitors(monitors)
         self.global_batch_idx = 0
 

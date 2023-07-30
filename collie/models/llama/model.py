@@ -17,11 +17,6 @@ from deepspeed.accelerator import get_accelerator
 import math
 from einops import rearrange
 
-try:
-    from flash_attn.modules.mha import SelfAttention as FlashAttention
-except ModuleNotFoundError:
-    FlashAttention = None
-
 from collie.log.logger import logger
 from collie.config import load_config
 from collie.config import CollieConfig
@@ -192,16 +187,27 @@ class LlamaLayer(nn.Module):
             self.past_key_values = torch.stack((key.permute([0, 2, 1, 3]), value.permute([0, 2, 1, 3])), dim=0)
         attention_mask = attention_mask if attention_mask is not None else torch.ones((query.shape[0], query.shape[1])).to(hidden_states.device)
         if self.config.use_flash:
-            assert FlashAttention is not None, \
-                "Detected flash_attn is not installed. See https://github.com/HazyResearch/flash-attention"
-            qkv = torch.stack([query, key, value], dim=2)
-            output = FlashAttention()(qkv, key_padding_mask=attention_mask.bool(), causal=True)
-            """ flash_attn_2 note: 
-                from flash_attn.modules.mha import SelfAttention as FlashAttention
-                require attention_mask as a bool tensor
-                replace 'output, _ =' as 'output =' 
-            """
-            output = rearrange(output, "b n h d -> b n (h d)")
+            import flash_attn
+            version, _, _ = flash_attn.__version__.split('.')
+            if int(version) < 2:
+                from flash_attn.flash_attention import FlashAttention
+                qkv = torch.stack([query, key, value], dim=2)
+                output, _ = FlashAttention()(qkv, causal=True)
+                output = rearrange(output, "b n h d -> b n (h d)")
+                output = F.dropout(output, p=self.config.dropout,
+                                    training=self.training)
+            else:
+                from flash_attn.flash_attn_interface import flash_attn_varlen_kvpacked_func
+                from flash_attn.bert_padding import unpad_input, pad_input
+                kv = torch.stack([key, value], dim=2)
+                q_unpad, indices, cu_seqlens_q, max_seqlen_q = unpad_input(query, attention_mask)
+                kv_unpad, indices, cu_seqlens_kv, max_seqlen_kv = unpad_input(kv, attention_mask)
+                output_unpad = flash_attn_varlen_kvpacked_func(
+                    q_unpad, kv_unpad, cu_seqlens_q, cu_seqlens_kv, max_seqlen_q, max_seqlen_kv, 0.0, softmax_scale=None, causal=True
+                )
+                output = pad_input(
+                    rearrange(output_unpad, "nnz h d -> nnz (h d)"), indices,  batch_size, start_pos + seq_len
+                )
         else:
             query, key, value = query.permute(0, 2, 1, 3), key.permute(
                 0, 2, 1, 3), value.permute(0, 2, 1, 3)

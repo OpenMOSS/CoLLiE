@@ -109,12 +109,6 @@ trainer = Trainer(
         MemoryMonitor(config),
         LRMonitor(config)
     ],
-    data_provider=DashProvider(tokenizer, port=12888, stream=True,
-                                 generation_config=GenerationConfig(
-                                     eos_token_id=tokenizer.eos_token_id,
-                                     pad_token_id=tokenizer.pad_token_id,
-                                     max_new_tokens=100,
-                                 )),
     evaluators=[evaluator_ppl, evaluator_bleu]
 )
 trainer.train()

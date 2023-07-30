@@ -105,10 +105,6 @@ trainer = Trainer(
     tokenizer=llama_tokenizer,
     monitors=[LossMonitor(config), TGSMonitor(config), MemoryMonitor(
         config), EvalMonitor(config), LRMonitor(config)],
-    # 打开一个交互界面，方便随时 human eval
-    data_provider=GradioProvider(generation_config=GenerationConfig(
-        eos_token_id=llama_tokenizer.eos_token_id, max_length=128),
-        tokenizer=llama_tokenizer, port=12311),
     evaluators=[evaluator]
 )
 

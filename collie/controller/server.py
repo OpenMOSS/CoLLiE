@@ -37,12 +37,14 @@ class Server:
             return
         use_stream = self.data_provider.stream
         streamer = _GenerationStreamer(server=self.data_provider)
-        generated_ids = generation_model.generate(
-            input_ids=input_ids.cuda(), 
-            attention_mask=torch.ones_like(input_ids).cuda(), 
-            generation_config=self.data_provider.generation_config,
-            streamer=streamer if use_stream else None
-        )
+        generation_model.eval()
+        with torch.no_grad():
+            generated_ids = generation_model.generate(
+                input_ids=input_ids.cuda(), 
+                attention_mask=torch.ones_like(input_ids).cuda(), 
+                generation_config=self.data_provider.generation_config,
+                streamer=streamer if use_stream else None
+            )
         if not use_stream:
             self.data_provider.put_feedback(generated_ids[0].cpu())
     
