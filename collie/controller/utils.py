@@ -1,4 +1,5 @@
 import os
+import re
 
 from collie.callbacks.callback_manager import CallbackManager
 from collie.utils.dist_utils import env
@@ -48,7 +49,7 @@ class TrainerEventTrigger:
     def on_evaluate_end(self, results):
         self.callback_manager.on_evaluate_end(self, results)
 
-def _merge_peft(path, prefix, io_driver):
+def _merge_peft(path, prefix, model, io_driver):
     """
     在 pp 情况下将分开保存的 peft 合并到同一个文件
     """
@@ -59,28 +60,27 @@ def _merge_peft(path, prefix, io_driver):
         cur_name = os.path.join(path, f"{prefix}_{pp}.bin")
         full_dict.update(io_driver.load(cur_name, "b"))
         io_driver.delete(cur_name)
-    # TODO merge pp to hf
     io_driver.save(full_dict, os.path.join(path, f"{prefix}.bin"))
 
 def _is_name_in_current_rank(name):
     # TODO convert hf to pp
-    name_split = name.split(".")
-    for name_part in name_split:
-        try:
-            layer_idx = int(name_part)
-        except ValueError:
-            continue
-        if layer_idx in env.pipeline_layers_idx:
-            return True
-        else:
-            return False
-    # 不可能走到这里
-    raise ValueError("Not a pipeline peft checkpoint.")
+    search = re.search("\.[0-9]+\.", name)
+    if search is None:
+        # 不可能走到这里
+        raise ValueError(f"{name} is not a pipeline state key.")
+    layer_idx = int(search.group()[1:-1])
+    return layer_idx in env.pipeline_layers_idx
 
-def _split_peft(state: dict):
+def _split_peft(state: dict, model, prefix: str):
+    """
+    在 pp 时选取当前 rank 的 key
+    """
     if env.pp_size == 1:
         return state
     for name in list(state.keys()):
-        if not _is_name_in_current_rank(name):
-            state.pop(name)
+        name_pp = prefix + model.name_to_pipeline(name[len(prefix):])
+        if _is_name_in_current_rank(name_pp):
+            state[name_pp] = state[name]
+        state.pop(name)
+        
     return state

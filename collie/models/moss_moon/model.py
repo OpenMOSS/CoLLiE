@@ -7,7 +7,7 @@ import torch
 from torch import nn
 from torch import distributed as dist
 from transformers.activations import NewGELUActivation
-from transformers.modeling_outputs import CausalLMOutputWithPast
+from transformers.modeling_outputs import CausalLMOutputWithPast, BaseModelOutputWithPast
 from deepspeed.pipe import LayerSpec
 
 from collie.log import logger
@@ -326,15 +326,9 @@ class MossBlock(nn.Module):
         
         return output
 
-
-class Moss003MoonForCausalLM(CollieModelForCausalLM):
-    """
-    支持 3D 并行的 Moss-moon 模型。
-
-    :param config: :class:`.CollieConfig`
-    """
+class Moss003MoonModel(nn.Module):
     def __init__(self, config):
-        super().__init__(config)
+        super(Moss003MoonModel, self).__init__()
         self.embed_dim = config.n_embd
         self.vocab_size = config.vocab_size
         self.wte = VocabParallelEmbedding(config.vocab_size, self.embed_dim)
@@ -343,8 +337,6 @@ class Moss003MoonForCausalLM(CollieModelForCausalLM):
             MossBlock(config, i) for i in range(config.n_layer)
         ])
         self.ln_f = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_epsilon)
-        self.lm_head = ColumnParallelLinearWithoutBias(config.n_embd,
-                                                       config.vocab_size)
 
     def forward(self, input_ids, attention_mask=None, input_embeds=None,
                 **kwargs):
@@ -370,59 +362,12 @@ class Moss003MoonForCausalLM(CollieModelForCausalLM):
             )["hidden_states"]
 
         hidden_states = self.ln_f(hidden_states)
-        all_hidden_states += (hidden_states, )
-        logits = self.lm_head(hidden_states)
-        return CausalLMOutputWithPast(
-            loss=None,
-            logits=logits,
-            past_key_values=self._get_past_key_values(self.h),
-            hidden_states=all_hidden_states,
-            attentions=None
+        all_hidden_states += (hidden_states,)
+
+        return BaseModelOutputWithPast(
+            last_hidden_state=hidden_states, hidden_states=all_hidden_states
         )
     
-    def prepare_inputs_for_generation(self, 
-                                      input_ids: torch.Tensor,
-                                      past_key_values: Optional[list] = None,
-                                      attention_mask: Optional[torch.Tensor] = None,
-                                      use_cache: bool = False,
-                                      **kwargs):
-        self.set_cache(use_cache, past_key_values)
-        return self.prepare_inputs(input_ids, attention_mask, use_cache, 
-                                   past_key_values, **kwargs)
-
-    def set_cache(self, use_cache: bool = False,
-                  past_key_values: Optional[list] = None,):
-        self._set_use_cache(self.h, use_cache)
-        if past_key_values is None:
-            self._clean_past_key_values(self.h)
-        else:
-            self._set_past_key_values(self.h, past_key_values)
-
-    def prepare_inputs(self, 
-                       input_ids: torch.Tensor,
-                       attention_mask: Optional[torch.Tensor] = None,
-                       use_cache: bool = None,
-                       past_key_values: Optional[list] = None,
-                       **kwargs):
-        if past_key_values is not None:
-            input_ids = input_ids[:, -1:]
-
-        position_ids = kwargs.get("position_ids", None)
-
-        if attention_mask is not None and position_ids is None:
-            # create position_ids on the fly for batch generation
-            position_ids = attention_mask.long().cumsum(-1) - 1
-            position_ids.masked_fill_(attention_mask == 0, 1)
-            if past_key_values:
-                position_ids = position_ids[:, -1].unsqueeze(-1)
-        return {"input_ids": input_ids, "attention_mask": attention_mask,
-                "use_cache": use_cache, "position_ids": position_ids}
-    
-    def clean(self):
-        self._clean_hidden_states([*self.h, self.lm_head])
-        self._clean_past_key_values(self.h)
-        self._set_use_cache(self.h, False)
-
     @classmethod
     def pipeline_layers(cls, config):
         if isinstance(config, str):
@@ -448,26 +393,113 @@ class Moss003MoonForCausalLM(CollieModelForCausalLM):
                 attention_mask = (1.0 - attention_mask) * torch.finfo(dtype).min
                 input_dict["attention_mask"] = attention_mask
             return input_dict
-
-        layers = [
-            pre_forward,
-            dict_as_params("input_ids", "hidden_states")(
-                VocabParallelEmbedding, config.vocab_size, config.n_embd,
-            ),
-            dict_as_params("hidden_states", "hidden_states")(
-                nn.Dropout, config.embd_pdrop
-            ),
-        ]
-        layers += [
+        
+        wte = dict_as_params("input_ids", "hidden_states")(
+            VocabParallelEmbedding, config.vocab_size, config.n_embd
+        )
+        drop = dict_as_params("hidden_states", "hidden_states")(
+            nn.Dropout, config.embd_pdrop
+        )
+        h = [
             LayerSpec(MossBlock, config, i) for i in range(config.n_layer)
         ]
-        layers += [
-            dict_as_params("hidden_states", "hidden_states")(
-                nn.LayerNorm, config.n_embd, eps=config.layer_norm_epsilon
-            ),
-            dict_as_params("hidden_states", "logits")(
-                ColumnParallelLMHead, config.n_embd, config.vocab_size,
-            )
+        ln_f = dict_as_params("hidden_states", "hidden_states")(
+            nn.LayerNorm, config.n_embd, eps=config.layer_norm_epsilon
+        )
+
+        layers = [
+            ("pre_forward", pre_forward),
+            ("wte", wte),
+            ("drop", drop),
+            ("h", h),
+            ("ln_f", ln_f),
+        ]
+
+        return layers
+        
+
+class Moss003MoonForCausalLM(CollieModelForCausalLM):
+    """
+    支持 3D 并行的 Moss-moon 模型。
+
+    :param config: :class:`.CollieConfig`
+    """
+    base_model_prefix = "transformer"
+    def __init__(self, config):
+        super().__init__(config)
+        self.transformer = Moss003MoonModel(config)
+        self.lm_head = ColumnParallelLinearWithoutBias(config.n_embd,
+                                                       config.vocab_size)
+
+    def forward(self, input_ids, attention_mask=None, input_embeds=None,
+                past_key_values: Optional[Tuple[torch.Tensor]] = None,
+                **kwargs):
+        if past_key_values is not None:
+            self._set_past_key_values(self.transformer.h, past_key_values)
+        else:
+            self._clean_past_key_values(self.transformer.h)
+        output = self.transformer(
+            input_ids=input_ids, attention_mask=attention_mask,
+            input_embeds=input_embeds, **kwargs
+        )
+        hidden_states = output.last_hidden_state
+        all_hidden_states = output.hidden_states
+        logits = self.lm_head(hidden_states)
+        return CausalLMOutputWithPast(
+            loss=None,
+            logits=logits,
+            past_key_values=self._get_past_key_values(self.transformer.h),
+            hidden_states=all_hidden_states,
+            attentions=None
+        )
+
+    def set_cache(self, use_cache: bool = False,
+                  past_key_values: Optional[list] = None,):
+        self._set_use_cache(self.transformer.h, use_cache)
+        if past_key_values is None:
+            self._clean_past_key_values(self.transformer.h)
+        else:
+            self._set_past_key_values(self.transformer.h, past_key_values)
+
+    def prepare_inputs(self, 
+                       input_ids: torch.Tensor,
+                       attention_mask: Optional[torch.Tensor] = None,
+                       use_cache: bool = None,
+                       past_key_values: Optional[list] = None,
+                       **kwargs):
+        if past_key_values is not None:
+            input_ids = input_ids[:, -1:]
+
+        position_ids = kwargs.get("position_ids", None)
+
+        if attention_mask is not None and position_ids is None:
+            # create position_ids on the fly for batch generation
+            position_ids = attention_mask.long().cumsum(-1) - 1
+            position_ids.masked_fill_(attention_mask == 0, 1)
+            if past_key_values:
+                position_ids = position_ids[:, -1].unsqueeze(-1)
+        return {"input_ids": input_ids, "attention_mask": attention_mask,
+                "use_cache": use_cache, "position_ids": position_ids,
+                "past_key_values": past_key_values}
+    
+    def clean(self):
+        self._clean_hidden_states([*self.transformer.h, self.lm_head])
+        self._clean_past_key_values(self.transformer.h)
+        self._set_use_cache(self.transformer.h, False)
+
+    @classmethod
+    def pipeline_layers(cls, config):
+        if isinstance(config, str):
+            config = CollieConfig.from_pretrained(config)
+
+        transformer = Moss003MoonModel.pipeline_layers(config)
+        lm_head = dict_as_params("hidden_states", "logits")(
+            ColumnParallelLMHead, config.n_embd, config.vocab_size,
+            bias=False
+        )
+
+        layers = [
+            ("transformer", transformer), ("lm_head", lm_head)
         ]
 
         return layers
@@ -479,8 +511,7 @@ class Moss003MoonForCausalLM(CollieModelForCausalLM):
     def load_parallel_state_dict(path: str,
                                  config: Union[CollieConfig, str],
                                  process_exclusion: bool = False,
-                                 protocol: str = 'file',
-                                 format: str = 'hf', **kwargs):
+                                 protocol: str = 'file', **kwargs):
         """
         从 ``path`` 中加载模型权重。``path`` 中的模型权重应当是 huggingface 格式。
 
@@ -490,7 +521,6 @@ class Moss003MoonForCausalLM(CollieModelForCausalLM):
             型规模较大时，该参数可以帮助节省内存。
         :return: 一个字典，每个字典都包含当前 rank 上模型需要的权重。
         """
-        assert format in ["hf", "meta"], f"Only support hf and meta , not `{format}`."
         # Actually Moss only supports `hf` format
         if isinstance(config, str):
             config = CollieConfig.from_pretrained(config)

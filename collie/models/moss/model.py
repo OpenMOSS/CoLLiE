@@ -34,7 +34,7 @@ from typing import Union, Optional, Tuple
 from collections import OrderedDict
 from transformers.modeling_utils import dtype_byte_size
 from transformers.modeling_utils import PretrainedConfig
-from transformers.modeling_outputs import CausalLMOutputWithPast
+from transformers.modeling_outputs import CausalLMOutputWithPast, BaseModelOutputWithPast
 
 class RotaryPositionEmbedding(nn.Module):
     def __init__(self, head_dim: int) -> None:
@@ -79,7 +79,7 @@ class RMSNormalize(nn.Module):
             hidden_states = hidden_states.to(self.weight.dtype)
         return hidden_states * self.weight
 
-class MossLayer(nn.Module):
+class MossBlock(nn.Module):
     def __init__(self, config: CollieConfig) -> None:
         super().__init__()
         self.config = config
@@ -225,22 +225,96 @@ class MossLayer(nn.Module):
         else:
             inputs["hidden_states"] = self._forward(**inputs)
         return inputs
+    
+
+class MossModel(nn.Module):
+    def __init__(self, config: CollieConfig):
+        super().__init__()
+        self.config = config
+        self.embed_tokens = tensor_parallel.VocabParallelEmbedding(
+            config.vocab_size, config.hidden_size
+        )
+        self.layers = nn.ModuleList(
+            [MossBlock(self.config) for _ in range(self.config.num_hidden_layers)])
+        self.norm = RMSNormalize(
+            dim=self.config.hidden_size,
+            eps=self.config.rms_norm_eps
+        )
+
+    def forward(self,
+                input_ids: Optional[torch.Tensor] = None, 
+                attention_mask: Optional[torch.Tensor] = None, 
+                past_key_values: Optional[Tuple[torch.Tensor]] = None,
+                **kwargs):
+        inputs = {"input_ids": input_ids}
+        if attention_mask is not None:
+            inputs["attention_mask"] = attention_mask
+        if input_ids == None:
+            inputs["hidden_states"] = kwargs['inputs_embeds']
+        else:
+            inputs["hidden_states"] = self.embed_tokens(inputs["input_ids"])
+        all_hidden_states = ()
+        for layer in self.layers:
+            all_hidden_states += (inputs["hidden_states"],)
+            inputs.update(layer(inputs))
+        inputs["hidden_states"] = self.norm(inputs["hidden_states"])
+        all_hidden_states += (inputs["hidden_states"], )
+
+        return BaseModelOutputWithPast(
+            last_hidden_state=inputs["hidden_states"],
+            hidden_states=all_hidden_states
+        )
+    
+    @classmethod
+    def pipeline_layers(cls, config: CollieConfig):
+        """
+        Get layers of pipeline.
+
+        :return: list
+        """
+        if isinstance(config, str):
+            config = CollieConfig.from_pretrained(config)
+
+        if config.model_config.tie_word_embeddings:
+            embed_tokens = TiedLayerSpec(
+                "embed_tokens",
+                dict_as_params(input_keys="input_ids", output_keys="hidden_states"),
+                tensor_parallel.VocabParallelEmbedding,
+                config.vocab_size,
+                config.hidden_size
+            )
+        else:
+            embed_tokens = LayerSpec(
+                dict_as_params(
+                    input_keys="input_ids", output_keys="hidden_states"
+                ),
+                tensor_parallel.VocabParallelEmbedding,
+                config.vocab_size,
+                config.hidden_size
+            )
+        
+        layers = [
+            LayerSpec(MossBlock, config)
+            for _ in range(config.num_hidden_layers)
+        ]
+        norm = LayerSpec(
+            dict_as_params(input_keys="hidden_states",
+                           output_keys="hidden_states"),
+            RMSNormalize, dim=config.hidden_size, eps=config.rms_norm_eps
+        )
+
+        return [
+            ("embed_tokens", embed_tokens),
+            ("layers", layers),
+            ("norm", norm),
+        ]
 
 
 class MossForCausalLM(CollieModelForCausalLM):
-    
+    base_model_prefix = "model"
     def __init__(self, config: CollieConfig) -> None:
         super().__init__(config)
-        self.embed_tokens = tensor_parallel.VocabParallelEmbedding(
-            self.collie_config.vocab_size,
-            self.collie_config.hidden_size
-        )
-        self.layers = nn.ModuleList(
-            [MossLayer(self.collie_config) for _ in range(self.collie_config.num_hidden_layers)])
-        self.norm = RMSNormalize(
-            dim=self.collie_config.hidden_size,
-            eps=self.collie_config.rms_norm_eps
-        )
+        self.model = MossModel(config)
         self.lm_head = ColumnParallelLinearWithoutBias(
             self.collie_config.hidden_size,
             self.collie_config.vocab_size,
@@ -257,40 +331,29 @@ class MossForCausalLM(CollieModelForCausalLM):
                 attention_mask: Optional[torch.Tensor] = None, 
                 past_key_values: Optional[Tuple[torch.Tensor]] = None,
                 **kwargs):
-        inputs = {"input_ids": input_ids}
-        if attention_mask is not None:
-            inputs["attention_mask"] = attention_mask
-        if input_ids == None:
-            inputs["hidden_states"] = kwargs['inputs_embeds']
-        else:
-            inputs["hidden_states"] = self.embed_tokens(inputs["input_ids"])
         if past_key_values is not None:
-            self._set_past_key_values(self.layers, past_key_values)
+            self._set_past_key_values(self.model.layers, past_key_values)
         else:
-            self._clean_past_key_values(self.layers)
-        all_hidden_states = ()
-        for layer in self.layers:
-            all_hidden_states += (inputs["hidden_states"],)
-            inputs.update(layer(inputs))
-        inputs["hidden_states"] = self.norm(inputs["hidden_states"])
-        all_hidden_states += (inputs["hidden_states"], )
-        inputs["logits"] = self.lm_head(inputs["hidden_states"])
+            self._clean_past_key_values(self.model.layers)
+        output = self.model(input_ids=input_ids, attention_mask=attention_mask,
+                            **kwargs)
+        logits = self.lm_head(output.last_hidden_state)
         return CausalLMOutputWithPast(
             loss=None,
-            logits=inputs["logits"],
-            past_key_values=self._get_past_key_values(self.layers),
-            hidden_states=all_hidden_states,
+            logits=logits,
+            past_key_values=self._get_past_key_values(self.model.layers),
+            hidden_states=output.hidden_states,
             attentions=None
         )
 
     def clean(self):
-        self._clean_hidden_states([*self.layers, self.lm_head])
-        self._clean_past_key_values(self.layers)
-        self._set_use_cache(self.layers, False)
+        self._clean_hidden_states([*self.model.layers, self.lm_head])
+        self._clean_past_key_values(self.model.layers)
+        self._set_use_cache(self.model.layers, False)
         
     def set_cache(self, use_cache, past_key_values):
-        self._set_use_cache(self.layers, use_cache)
-        self._set_past_key_values(self.layers, past_key_values)
+        self._set_use_cache(self.model.layers, use_cache)
+        self._set_past_key_values(self.model.layers, past_key_values)
 
     @classmethod
     def pipeline_layers(cls, config: CollieConfig):
@@ -301,44 +364,20 @@ class MossForCausalLM(CollieModelForCausalLM):
         """
         if isinstance(config, str):
             config = CollieConfig.from_pretrained(config)
-        if config.model_config.tie_word_embeddings:
-            return [TiedLayerSpec(
-                "embed_tokens",
-                dict_as_params(input_keys="input_ids", output_keys="hidden_states"),
-                tensor_parallel.VocabParallelEmbedding,
-                config.vocab_size,
-                config.hidden_size),
-                *[LayerSpec(MossLayer, config)
-                for _ in range(config.num_hidden_layers)],
-                LayerSpec(dict_as_params(input_keys="hidden_states", output_keys="hidden_states"), RMSNormalize,
-                        dim=config.hidden_size,
-                        eps=config.rms_norm_eps),
-                TiedLayerSpec(
-                "embed_tokens",
-                dict_as_params(input_keys="hidden_states", output_keys="logits"),
-                ColumnParallelLMHead,
-                config.hidden_size,
-                config.vocab_size,
-                bias=False)
-            ]
-        else:
-            return [LayerSpec(
-                dict_as_params(input_keys="input_ids", output_keys="hidden_states"),
-                tensor_parallel.VocabParallelEmbedding,
-                config.vocab_size,
-                config.hidden_size),
-                *[LayerSpec(MossLayer, config)
-                for _ in range(config.num_hidden_layers)],
-                LayerSpec(dict_as_params(input_keys="hidden_states", output_keys="hidden_states"), RMSNormalize,
-                        dim=config.hidden_size,
-                        eps=config.rms_norm_eps),
-                LayerSpec(
-                dict_as_params(input_keys="hidden_states", output_keys="logits"),
-                ColumnParallelLMHead,
-                config.hidden_size,
-                config.vocab_size,
-                bias=False)
-            ]
+
+        lm_head = TiedLayerSpec(
+            "embed_tokens",
+            dict_as_params(input_keys="hidden_states", output_keys="logits"),
+            ColumnParallelLMHead,
+            config.hidden_size,
+            config.vocab_size,
+            bias=False
+        )
+
+        return [
+            ("model", MossModel.pipeline_layers(config)),
+            ("lm_head", lm_head)
+        ]
 
     @staticmethod
     def load_parallel_state_dict(path: str, config: Union[CollieConfig, str],
@@ -347,8 +386,7 @@ class MossForCausalLM(CollieModelForCausalLM):
     def load_parallel_state_dict(path: str,
                                  config: Union[CollieConfig, str],
                                  process_exclusion: bool = False,
-                                 protocol: str = 'file',
-                                 format: str = 'hf', **kwargs):
+                                 protocol: str = 'file', **kwargs):
         """
         Load state_dict from ``path``.
 
@@ -358,7 +396,6 @@ class MossForCausalLM(CollieModelForCausalLM):
         :return: state_dict. Note that the state_dict should be processed
             properly to match the current rank.
         """
-        assert format in ["hf", "meta"], "Only support hf and meta format"
         if isinstance(config, str):
             config = CollieConfig.from_pretrained(config)
         io_driver = IODriver.from_protocol(protocol)
@@ -382,148 +419,70 @@ class MossForCausalLM(CollieModelForCausalLM):
                 if env.is_pipeline:
                     # 保存的是 json 格式
                     parts = env.pipeline_parts
-                if format == "hf":
-                    # 如果存在 pytorch_model.bin.index.json 文件的话，此时不同的 pp 进程可以按需加载自己需要的权重
-                    if io_driver.exists(os.path.join(path, "pytorch_model.bin.index.json")) and "COLLIE_PP_PARTS" in os.environ.keys():
-                        weight_map = json.loads(io_driver.load(os.path.join(path, "pytorch_model.bin.index.json"), mode="r"))["weight_map"]
-                        # layers 表示自己需要的层
-                        layers = list(range(parts[int(os.environ["COLLIE_PP_RANK"])], parts[int(os.environ["COLLIE_PP_RANK"]) + 1]))
-                        # 筛选出形似 model.layers.0 这样的层。包含两个条件：1. 有数字的层；2. 数字加一要在 layers 里面（因为最开始还有个 embedding 占一层）
-                        weights.extend([value for key, value in weight_map.items() \
-                            if len(key.split(".")) > 2 \
-                                and key.split(".")[2].isdigit() \
-                                    and (int(key.split(".")[2]) + 1) in layers])
-                        # 去重
-                        weights = list(set(weights))
-                        # 继续筛选，如果有 0 层，那么就要加载 embedding；如果有最后一层，那么就要加载 lm_head；如果有倒数第二层，那么就要加载 norm
-                        if 0 in layers:
-                            weights.append(weight_map["model.embed_tokens.weight"])
-                        if max(parts) - 1 in layers:
-                            weights.append(weight_map["lm_head.weight"])
-                        if max(parts) - 2 in layers:
-                            weights.append(weight_map["model.norm.weight"])
-                    else:
-                        # 如果没有 pytorch_model.bin.index.json 文件的话，那么就加载所有的权重
-                        weights = [weight for weight in io_driver.list(path) if weight.endswith(".bin")]
-                    with progress(weights, desc="Loading state dict", total=len(weights), disable=hide_progress) as pbar:
-                        for weight in pbar:
-                            part_state_dict = io_driver.load(os.path.join(path, weight), mode="rb")
-                            for key in list(part_state_dict.keys()):
-                                # 对 q_proj.weight 和 k_proj.weight 进行 reshape
-                                if key.endswith("q_proj.weight") or key.endswith("k_proj.weight"):
-                                    part_state_dict[key] = rearrange(
-                                        part_state_dict[key],
-                                        "(h two t) d -> h two t d",
-                                        h=config.num_attention_heads,
-                                        two=2).transpose(1, 2).reshape(
-                                            config.hidden_size,
-                                            config.hidden_size)
-                                part_state_dict[key.replace("model.", "")] = part_state_dict.pop(key)
-                            state_dict.update(part_state_dict)
-                            del part_state_dict
-                elif format == "meta":
-                    # meta 权重的格式，需要补充 inv_freq 的权重
-                    inv_freq = 1.0 / (10000.0 ** (torch.arange(0, (config.hidden_size // config.num_attention_heads),
-                                2).float() / (config.hidden_size // config.num_attention_heads)))
-                    # 根据 meta 中的 params.json 更新一下用户配置
-                    if io_driver.exists(os.path.join(path, "params.json")):
-                        params = json.loads(io_driver.load(os.path.join(path, "params.json"), mode="r"))
-                        for key, value in {
-                            "hidden_size": params["dim"],
-                            "intermediate_size": params["multiple_of"] * ((int(2 * 4 * config.hidden_size / 3) + params["multiple_of"] - 1) // params["multiple_of"]),
-                            "num_hidden_layers": params["n_layers"],
-                            "num_attention_heads": params["n_heads"],
-                            "rms_norm_eps": params["norm_eps"]
-                        }.items():
-                            setattr(config, key, value)
-                    # 权重全部加载
-                    weights = [weight for weight in io_driver.list(path) if (weight.endswith(".pt") or weight.endswith(".pth"))]
-                    # 因为 meta 的权重默认 按照张量并行分割，cat 的时候存在顺序问题，所以先排序一下
-                    weights = sorted(weights, key=lambda x: int(x.split(".")[1]))
-                    with progress(weights, desc="Loading state dict", total=len(weights), disable=hide_progress) as pbar:
-                        for weight in pbar:
-                            part_state_dict = io_driver.load(os.path.join(path, weight), mode="rb")
-                            for key in list(part_state_dict.keys()):
-                                # if key.startswith("layers"):
-                                #     layer = int(key.split(".")[1])
-                                #     # meta 权重的格式，需要补充 inv_freq 的权重
-                                #     part_state_dict[f"layers.{layer}.self_attn.rotary_emb.inv_freq"] = inv_freq
-                                raw_key = key
-                                key = key.replace("attention", "self_attn")
-                                key = key.replace("inner_self_attn.rope.freqs", "rotary_emb.inv_freq")
-                                key = key.replace("wo", "o_proj")
-                                key = key.replace("wq", "q_proj")
-                                key = key.replace("wk", "k_proj")
-                                key = key.replace("wv", "v_proj")
-                                key = key.replace("feed_forward", "mlp")
-                                key = key.replace("w1", "gate_proj")
-                                key = key.replace("w2", "down_proj")
-                                key = key.replace("w3", "up_proj")
-                                key = key.replace("self_attn_norm", "input_layernorm")
-                                key = key.replace("ffn_norm", "post_attention_layernorm")
-                                key = key.replace("tok_embeddings", "embed_tokens")
-                                key = key.replace("output", "lm_head")
-                                # 按照 hf 的格式更新字典
-                                part_state_dict[key] = part_state_dict.pop(raw_key)
-                            for key in list(part_state_dict.keys()):
-                                if not key in state_dict.keys():
-                                    state_dict[key] = part_state_dict[key]
-                                else:
-                                    # 组装一下
-                                    if key.endswith("q_proj.weight") \
-                                        or key.endswith("k_proj.weight") \
-                                            or key.endswith("v_proj.weight") \
-                                                or key.endswith("gate_proj.weight") \
-                                                    or key.endswith("up_proj.weight") \
-                                                        or key.endswith("lm_head.weight"):
-                                                            state_dict[key] = torch.cat((state_dict[key], part_state_dict[key]), dim=0)
-                                    if key.endswith("o_proj.weight") \
-                                        or key.endswith("down_proj.weight") \
-                                            or key.endswith("embed_tokens.weight"):
-                                                state_dict[key] = torch.cat((state_dict[key], part_state_dict[key]), dim=1)
-                            del part_state_dict
+                # 如果存在 pytorch_model.bin.index.json 文件的话，此时不同的 pp 进程可以按需加载自己需要的权重
+                if io_driver.exists(os.path.join(path, "pytorch_model.bin.index.json")) and "COLLIE_PP_PARTS" in os.environ.keys():
+                    weight_map = json.loads(io_driver.load(os.path.join(path, "pytorch_model.bin.index.json"), mode="r"))["weight_map"]
+                    # layers 表示自己需要的层
+                    layers = env.pipeline_layers_idx
+                    # 筛选出形似 model.layers.0 这样的层。包含两个条件：1. 有数字的层；2. 数字加一要在 layers 里面（因为最开始还有个 embedding 占一层）
+                    weights.extend([value for key, value in weight_map.items() \
+                        if len(key.split(".")) > 2 \
+                            and key.split(".")[2].isdigit() \
+                                and (int(key.split(".")[2]) + 1) in layers])
+                    # 去重
+                    weights = list(set(weights))
+                    # 继续筛选，如果有 0 层，那么就要加载 embedding；如果有最后一层，那么就要加载 lm_head；如果有倒数第二层，那么就要加载 norm
+                    if 0 in layers:
+                        weights.append(weight_map["model.embed_tokens.weight"])
+                    if max(parts) - 1 in layers:
+                        weights.append(weight_map["lm_head.weight"])
+                    if max(parts) - 2 in layers:
+                        weights.append(weight_map["model.norm.weight"])
+                else:
+                    # 如果没有 pytorch_model.bin.index.json 文件的话，那么就加载所有的权重
+                    weights = [weight for weight in io_driver.list(path) if weight.endswith(".bin")]
+                with progress(weights, desc="Loading state dict", total=len(weights), disable=hide_progress) as pbar:
+                    for weight in pbar:
+                        part_state_dict = io_driver.load(os.path.join(path, weight), mode="rb")
+                        for key in list(part_state_dict.keys()):
+                            # 对 q_proj.weight 和 k_proj.weight 进行 reshape
+                            if key.endswith("q_proj.weight") or key.endswith("k_proj.weight"):
+                                part_state_dict[key] = rearrange(
+                                    part_state_dict[key],
+                                    "(h two t) d -> h two t d",
+                                    h=config.num_attention_heads,
+                                    two=2).transpose(1, 2).reshape(
+                                        config.hidden_size,
+                                        config.hidden_size)
+                        state_dict.update(part_state_dict)
+                        del part_state_dict
                 if parts is not None:
                     # 这一步是 pp 的复筛
-                    layers = list(range(parts[int(os.environ["COLLIE_PP_RANK"])], parts[int(os.environ["COLLIE_PP_RANK"]) + 1]))
+                    layers = env.pipeline_layers_idx
                     for key in list(state_dict.keys()):
                         if key.startswith("layers"):
                             layer = int(key.split(".")[1])
-                            if layer + 1 in layers:
-                                state_dict[key.replace(f"layers.{layer}", f"{layer + 1}")] = state_dict.pop(key)
-                            else:
-                                # 形似 model.layers.0 这样的层，筛选掉数字加一不在 layers 里面得
+                            if layer + 1 not in layers:
                                 state_dict.pop(key)
                         if key.endswith("embed_tokens.weight"):
-                            if 0 in layers:
-                                if config.model_config.tie_word_embeddings:
-                                    state_dict["tied_modules.embed_tokens.weight"] = state_dict.pop(key)
-                                else:
-                                    state_dict["0.weight"] = state_dict.pop(key)
-                            else:
+                            if 0 not in layers:
                                 state_dict.pop(key)
                         if key == "norm.weight":
-                            if max(parts) - 2 in layers:
-                                state_dict[f"{max(parts) - 2}.weight"] = state_dict.pop(key)
-                            else:
+                            if max(parts) - 2 not in layers:
                                 state_dict.pop(key)
                         if key.endswith("lm_head.weight"):
-                            if max(parts) - 1 in layers:
-                                if config.model_config.tie_word_embeddings:
-                                    state_dict["tied_modules.embed_tokens.weight"] = state_dict.pop(key)
-                                else:
-                                    state_dict[f"{max(parts) - 1}.weight"] = state_dict.pop(key)
-                            else:
+                            if max(parts) - 1 not in layers:
                                 state_dict.pop(key)
                 # 根据用户配置的新的 tp size 进行分割
                 for key in list(state_dict.keys()):
-                    filte_list = ["q_proj.weight", "q_proj.weight", "k_proj.weight", "v_proj.weight", "gate_proj.weight", "up_proj.weight", "embed_tokens.weight", "lm_head.weight"]
-                    need_split = any([key.endswith(filte) for filte in filte_list])
-                    if env.pp_size > 1:
-                        # embedding 层和 lm_head 都需要切
-                        need_split = need_split or int(key.split(".")[0]) == max(parts) - 1
-                        need_split = need_split or int(key.split(".")[0]) == min(parts)
-                    if need_split:
-                        tensor = list(torch.chunk(state_dict[key], config.tp_size, dim=0))[int(os.environ.get("COLLIE_TP_RANK", "0"))].detach().clone()
+                    col_filter = [
+                        "q_proj.weight", "k_proj.weight", "v_proj.weight",
+                        "gate_proj.weight", "up_proj.weight",
+                        "embed_tokens.weight", "lm_head.weight"]
+                    col_split = any([key.endswith(filter) for filter in col_filter])
+                    
+                    if col_split:
+                        tensor = list(torch.chunk(state_dict[key], config.tp_size, dim=0))[env.tp_rank].detach().clone()
                         del state_dict[key]
                         if process_exclusion:
                             # CPU 内存回收（速度很慢）
@@ -531,7 +490,7 @@ class MossForCausalLM(CollieModelForCausalLM):
                         state_dict[key] = tensor
                     elif key.endswith("o_proj.weight") \
                         or key.endswith("down_proj.weight"):
-                            tensor = list(torch.chunk(state_dict[key], config.tp_size, dim=1))[int(os.environ.get("COLLIE_TP_RANK", "0"))].detach().clone()
+                            tensor = list(torch.chunk(state_dict[key], config.tp_size, dim=1))[env.tp_rank].detach().clone()
                             del state_dict[key]
                             if process_exclusion:
                                 # CPU 内存回收（速度很慢）
@@ -566,27 +525,6 @@ class MossForCausalLM(CollieModelForCausalLM):
                           config.hidden_size).transpose(1, 2).reshape(config.hidden_size,
                                                                     config.hidden_size)
         # gather to tp rank 0
-        if env.is_pipeline:
-            layers = env.pipeline_layers_idx
-            parts = env.pipeline_parts
-            for key in list(state_dict.keys()):
-                if key == "tied_modules.embed_tokens.weight":
-                    if 0 in layers:
-                        state_dict["model.embed_tokens.weight"] = state_dict.pop(key)
-                    elif max(layers) - 1 in layers:
-                        state_dict["lm_head.weight"] = state_dict.pop(key)
-                else:
-                    layer = int(key.split(".")[0])
-                    if layer == max(parts) - 2:
-                        state_dict[key.replace(f"{layer}.", "model.norm.")] = state_dict.pop(key)
-                    elif layer == max(parts) - 1:
-                        # lm_head
-                        state_dict[key.replace(f"{layer}.", "lm_head.")] = state_dict.pop(key)
-                    elif layer == 0:
-                        # embedding
-                        state_dict[key.replace(f"{layer}.", "model.embed_tokens.")] = state_dict.pop(key)
-                    else:
-                        state_dict[key.replace(f"{layer}.", f"model.layers.{layer - 1}.")] = state_dict.pop(key)
         if dist.is_initialized() and process_exclusion:
             # 如果启动了进程互斥，则要进行 pp_size 次循环
             rank_order = range(config.pp_size)
@@ -605,15 +543,15 @@ class MossForCausalLM(CollieModelForCausalLM):
                             tensor_list = [torch.zeros_like(state_dict[key]).to(state_dict[key].dtype).cuda() for _ in range(config.tp_size)]
                         dist.gather(state_dict[key].cuda(), dst=dst, gather_list=tensor_list, group=env.tp_group)
                         if env.tp_rank == 0:
-                            filter_list = [
+                            col_filter = [
                                 "q_proj.weight", "k_proj.weight",
                                 "v_proj.weight", "gate_proj.weight",
                                 "up_proj.weight", "embed_tokens.weight",
                                 "lm_head.weight"
                             ]
-                            need_split = any([key.endswith(filte) for filte in filter_list])
+                            col_split = any([key.endswith(filter) for filter in col_filter])
 
-                            if need_split:
+                            if col_split:
                                 state_dict[key] = concat_tensor(tensor_list, dim=0)
                                 if process_exclusion:
                                     # CPU 内存回收（速度很慢）

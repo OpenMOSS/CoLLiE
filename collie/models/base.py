@@ -46,6 +46,8 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
 
     """
     main_input_name = "input_ids"
+    base_model_prefix = ""
+    _can_generate = False
 
     def __init__(self, config: CollieConfig) -> None:
         super().__init__()
@@ -306,10 +308,14 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                 path=model_path_or_name, config=config,
                 process_exclusion=process_exclusion, **kwargs
             )
+        if isinstance(model, PipelineModel):
+            for key in list(state_dict.keys()):
+                key_pp = model.name_to_pipeline(key)
+                state_dict[key_pp] = state_dict.pop(key)
         # load checkpoint and dispatch
         for name, param in model.named_parameters():
             if name not in state_dict.keys():
-                logger.rank_zero_warning("Missing key: {name}!")
+                logger.rank_zero_warning(f"Missing key: {name}!")
                 continue
             contexts = []
             if is_zero3_enabled(config):
@@ -334,7 +340,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                             value=state_dict[name].data, dtype=config.model_config.torch_dtype
                         )
                     else:
-                        assert param.data.shape == state_dict[name].data.shape, f"The shape of the parameter corresponding to the `{name}` does not match!"
+                        assert param.data.shape == state_dict[name].data.shape, f"The shape of the parameter corresponding to the `{name}` does not match: {param.data.shape} vs {state_dict[name].data.shape}"
                         param.data = state_dict[name].data.to(config.model_config.torch_dtype).to(param.device)
         if config.peft_config.peft_type is not None:
             model = get_peft_model(model, config.peft_config)
@@ -624,6 +630,12 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
 
     def get_input_embedding(self):
         for name, module in self.named_children():
+            if isinstance(module, (nn.Embedding, tensor_parallel.VocabParallelEmbedding)):
+                return name, module
+        base_model = getattr(self, self.base_model_prefix, None)
+        if base_model is None:
+            return None, None
+        for name, module in base_model.named_children():
             if isinstance(module, (nn.Embedding, tensor_parallel.VocabParallelEmbedding)):
                 return name, module
         return None, None

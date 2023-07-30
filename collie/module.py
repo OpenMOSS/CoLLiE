@@ -15,8 +15,9 @@ import json
 import torch
 import warnings
 import inspect
+from collections import OrderedDict
 from types import MethodType
-from typing import Optional, List, Sequence, Dict, Any, Tuple
+from typing import Mapping, Optional, List, Sequence, Dict, Any, Tuple
 
 from torch import nn
 from torch import distributed as dist
@@ -25,13 +26,14 @@ from megatron.core.tensor_parallel import (ColumnParallelLinear,
                                            RowParallelLinear,
                                            VocabParallelEmbedding)
 from megatron.core import parallel_state
-from deepspeed.runtime.pipe.module import PipelineModule
+from deepspeed.runtime.pipe.module import PipelineModule, LayerSpec, TiedLayerSpec
 from deepspeed.runtime.pipe.topology import (PipeModelDataParallelTopology,
                                              PipelineParallelGrid)
 from deepspeed.runtime.engine import DeepSpeedEngine
 from deepspeed.runtime.activation_checkpointing import checkpointing
 from deepspeed.accelerator import get_accelerator
 from deepspeed.runtime.pipe.topology import ProcessTopology
+from deepspeed.runtime import utils as ds_utils
 from transformers.generation.utils import GenerationConfig, GenerationMixin
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
@@ -381,7 +383,7 @@ class PipelineGenerationMixin(GenerationMixin):
             if hasattr(layer, attr_name):
                 past_key_values.append(getattr(layer, attr_name))
         return tuple(past_key_values) if None not in past_key_values else None
-    
+
     def _clean_past_key_values(self, attr_name: str="past_key_values"):
         """ 清除所有层中的 `past_key_values`
         """
@@ -494,7 +496,7 @@ class PipelineModel(PipelineModule, PipelineGenerationMixin):
             logger.rank_zero_warning("The world size is not equal to the product of the parallel sizes set."
                                 f"{int(os.environ.get('WORLD_SIZE'))} != {pp_size} * {dp_size} * {tp_size}.")
             dp_size = int(os.environ.get('WORLD_SIZE')) // (tp_size * pp_size)
-            logger.rank_zero_warning("Set dp_size to {dp_size}.")
+            logger.rank_zero_warning(f"Set dp_size to {dp_size}.")
         topology = PipeModelDataParallelTopology(
             num_pp=pp_size, 
             num_dp=dp_size, 
@@ -509,7 +511,9 @@ class PipelineModel(PipelineModule, PipelineGenerationMixin):
         self.stage_id = self._topo.get_coord(self.global_rank).pipe
 
         # Initialize partition information
-        self._layer_specs = list(layers)
+        self._layer_prefix, self._layer_specs = self._flatten_layers(layers)
+        assert len(self._layer_prefix) == len(self._layer_specs)
+        assert len(self._layer_prefix) == len(set(self._layer_prefix))
         self._num_layers = len(self._layer_specs)
         self._local_start = 0
         self._local_stop = None
@@ -538,7 +542,78 @@ class PipelineModel(PipelineModule, PipelineGenerationMixin):
         self.inner_forward = False
         self.forward_type = "train" # train, eval, generate
         self.skip_input_embedding()
-        
+
+    def _flatten_layers(self, layers):
+        # layers: list of tuple/layer
+        _layers = []
+        _names = []
+        for i, layer in enumerate(layers):
+            if isinstance(layer, tuple):
+                assert len(layer) == 2, len(layer)
+                # name, layer or name, list[layer]
+                if isinstance(layer[1], list):
+                    _n, _l = self._flatten_layers(layer[1])
+                    _layers.extend(_l)
+                    _names.extend([f"{layer[0]}.{n}" for n in _n])
+                else:
+                    _names.append(str(layer[0]))
+                    _layers.append(layer[1])
+            else:
+                assert not isinstance(layer, list)
+                # func, Module, LayerSpec, TiedLayerSpec
+                _names.append(str(len(_names)))
+                _layers.append(layer)
+
+        return _names, _layers
+    
+    def name_to_pipeline(self, name):
+        for idx, prefix in enumerate(self._layer_prefix):
+            if not name.startswith(prefix + "."):
+                continue
+            _layer = self._layer_specs[idx]
+            if isinstance(_layer, TiedLayerSpec):
+                # {prefix}.weight -> tied_modules.{key}.weight
+                return name.replace(prefix, f"tied_modules.{_layer.key}", 1)
+            else:
+                return name.replace(prefix, str(idx), 1)
+
+    def name_from_pipeline(self, name, ):
+        name_split = name.split(".")
+        if name_split[0] == "tied_modules":
+            # 当前 rank 一个 TiedLayerSpec 对应的层可能不唯一，返回一个 list 或者 string
+            name_pp = []
+            tied_key = name_split[1]
+            name_pp_suffix = ".".join(name_split[2:])
+            for i in range(self._local_start, self._local_stop):
+                if not isinstance(self._layer_specs[i], TiedLayerSpec):
+                    continue
+                if self._layer_specs[i].key == tied_key:
+                    name_pp.append(f"{self._layer_prefix[i]}.{name_pp_suffix}")
+            return name_pp if len(name_pp) > 1 else name_pp[0]
+
+        idx = int(name_split[0])
+        name_split[0] = f"{self._layer_prefix[idx]}"
+        if isinstance(self._layer_specs[idx], TiedLayerSpec):
+            # tied_modules.{key}.weight -> {prefix}.weight
+            name_split.pop(1)
+        return ".".join(name_split)
+
+    def state_dict(self, *args, destination=None, prefix='', keep_vars=False):
+        if destination is None:
+            destination = OrderedDict()
+            destination._metadata = OrderedDict()
+        super().state_dict(*args, destination=destination, prefix="", keep_vars=keep_vars)
+        for key in list(destination.keys()):
+            key_pp = self.name_from_pipeline(key)
+            if isinstance(key_pp, list):
+                for _key_pp in key_pp:
+                    destination[prefix + _key_pp] = destination[key].detach().clone()
+                destination.pop(key)
+            else:
+                key_pp = prefix + key_pp
+                destination[key_pp] = destination.pop(key)
+        return destination
+
     def forward(self, *args, **kwargs):
         if not self.inner_forward:
             if self.forward_type == "generate":
