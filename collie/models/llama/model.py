@@ -18,7 +18,6 @@ import math
 from einops import rearrange
 
 from collie.log.logger import logger
-from collie.config import load_config
 from collie.config import CollieConfig
 from collie.utils import progress, env, dict_as_params, concat_tensor
 from collie.driver.io import IODriver
@@ -28,7 +27,6 @@ from collie.module import ColumnParallelLinearWithoutBias, RowParallelLinearWith
 from typing import Union, Optional, Tuple
 from collections import OrderedDict
 from transformers.modeling_utils import dtype_byte_size
-from transformers.modeling_utils import PretrainedConfig
 from transformers.modeling_outputs import CausalLMOutputWithPast, BaseModelOutputWithPast
 
 class RotaryPositionEmbedding(nn.Module):
@@ -194,8 +192,6 @@ class LlamaLayer(nn.Module):
                 qkv = torch.stack([query, key, value], dim=2)
                 output, _ = FlashAttention()(qkv, causal=True)
                 output = rearrange(output, "b n h d -> b n (h d)")
-                output = F.dropout(output, p=self.config.dropout,
-                                    training=self.training)
             else:
                 from flash_attn.flash_attn_interface import flash_attn_varlen_kvpacked_func
                 from flash_attn.bert_padding import unpad_input, pad_input
