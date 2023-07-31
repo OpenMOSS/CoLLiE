@@ -6,21 +6,14 @@ import time
 import argparse
 
 import torch
-from transformers import LlamaTokenizer, AutoTokenizer
-from transformers.generation.utils import GenerationConfig
-from peft import PromptTuningInit, PromptTuningConfig, TaskType, LoraConfig, PrefixTuningConfig, PromptEncoderConfig
+from peft import PromptTuningInit, PromptTuningConfig, TaskType, LoraConfig, PrefixTuningConfig, PromptEncoderConfig, AdaLoraConfig
+from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo
 
 from collie.models.llama.model import LlamaForCausalLM
 from collie import Callback
-from collie.utils import env
-from collie.controller import Trainer, EvaluatorForGeneration
-from collie.metrics.decode import DecodeMetric
+from collie.controller import Trainer
 from collie.config import CollieConfig
-from collie.optim import Adan, Lomo, Lion, SophiaG
 from collie.utils import env
-from collie import TGSMonitor, MemoryMonitor, LossMonitor, EvalMonitor, NetworkIOMonitor
-import wandb
-from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo
 
 os.environ['WANDB_MODE'] = 'disabled'
 nvmlInit()
@@ -65,7 +58,7 @@ config.dp_size = 1
 config.pp_size = args.pp_size
 config.train_epochs = 1
 config.train_micro_batch_size = 1
-config.gradient_accumulation_steps = 2
+config.gradient_accumulation_steps = 1
 config.use_flash = args.use_flash
 config.ds_config = {
     "bf16": {"enabled": True},
@@ -93,10 +86,10 @@ elif args.peft == "p-tuning":
 elif args.peft == "prompt-tuning":
     config.peft_config = PromptTuningConfig(
         task_type=TaskType.CAUSAL_LM,
-        prompt_tuning_init=PromptTuningInit.TEXT,
-        num_virtual_tokens=8,
-        prompt_tuning_init_text="Classify if the tweet is a complaint or not:",
-        tokenizer_name_or_path=args.model_name,
+        prompt_tuning_init=PromptTuningInit.RANDOM,
+        num_virtual_tokens=20,
+        # prompt_tuning_init_text="Memory profile for collie",
+        # tokenizer_name_or_path=args.model_name,
     )
 else:
     raise NotImplementedError
