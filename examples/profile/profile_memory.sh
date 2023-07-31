@@ -1,5 +1,5 @@
-#model_name="huggyllama/llama-13b"
-model_name="openlm-research/open_llama_7b_v2"
+model_name="huggyllama/llama-65b"
+#model_name="openlm-research/open_llama_3b"
 tp_size=4
 
 #for optim in "adam" "adan" "lion" "sophiag"; do
@@ -8,7 +8,7 @@ tp_size=4
 #  --model_name ${model_name} --use_flash 1 --optim ${optim} --tp_size ${tp_size} --pp_size 1
 #done
 
-pp_size=1
+pp_size=2
 
 for peft in "lora" "prefix-tuning" "p-tuning" "prompt-tuning"; do
   echo "Running ${model_name} with ${peft}"
