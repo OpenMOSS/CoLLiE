@@ -23,6 +23,7 @@ from collie.utils import progress, env, dict_as_params, concat_tensor
 from collie.driver.io import IODriver
 from collie.models.base import CollieModelForCausalLM
 from collie.module import ColumnParallelLinearWithoutBias, RowParallelLinearWithoutBias, ColumnParallelLMHead
+from collie.models.utils import flash_attention
 
 from typing import Union, Optional, Tuple
 from collections import OrderedDict
@@ -185,25 +186,7 @@ class LlamaLayer(nn.Module):
             self.past_key_values = torch.stack((key.permute([0, 2, 1, 3]), value.permute([0, 2, 1, 3])), dim=0)
         attention_mask = attention_mask if attention_mask is not None else torch.ones((query.shape[0], query.shape[1])).to(hidden_states.device)
         if self.config.use_flash:
-            import flash_attn
-            version, _, _ = flash_attn.__version__.split('.')
-            if int(version) < 2:
-                from flash_attn.flash_attention import FlashAttention
-                qkv = torch.stack([query, key, value], dim=2)
-                output, _ = FlashAttention()(qkv, causal=True)
-                output = rearrange(output, "b n h d -> b n (h d)")
-            else:
-                from flash_attn.flash_attn_interface import flash_attn_varlen_kvpacked_func
-                from flash_attn.bert_padding import unpad_input, pad_input
-                kv = torch.stack([key, value], dim=2)
-                q_unpad, indices, cu_seqlens_q, max_seqlen_q = unpad_input(query, attention_mask)
-                kv_unpad, indices, cu_seqlens_kv, max_seqlen_kv = unpad_input(kv, attention_mask)
-                output_unpad = flash_attn_varlen_kvpacked_func(
-                    q_unpad, kv_unpad, cu_seqlens_q, cu_seqlens_kv, max_seqlen_q, max_seqlen_kv, 0.0, softmax_scale=None, causal=True
-                )
-                output = pad_input(
-                    rearrange(output_unpad, "nnz h d -> nnz (h d)"), indices,  batch_size, start_pos + seq_len
-                )
+            output = flash_attention(query, key, value, attention_mask)
         else:
             query, key, value = query.permute(0, 2, 1, 3), key.permute(
                 0, 2, 1, 3), value.permute(0, 2, 1, 3)

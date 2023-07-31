@@ -17,23 +17,17 @@ from deepspeed.accelerator import get_accelerator
 import math
 from einops import rearrange
 
-try:
-    from flash_attn.flash_attention import FlashAttention
-except (ModuleNotFoundError, ImportError):
-    FlashAttention = None
-
 from collie.log.logger import logger
-from collie.config import load_config
 from collie.config import CollieConfig
 from collie.utils import progress, env, dict_as_params, concat_tensor
 from collie.driver.io import IODriver
 from collie.models.base import CollieModelForCausalLM
 from collie.module import ColumnParallelLinearWithoutBias, RowParallelLinearWithoutBias, ColumnParallelLMHead
+from collie.models.utils import flash_attention
 
 from typing import Union, Optional, Tuple
 from collections import OrderedDict
 from transformers.modeling_utils import dtype_byte_size
-from transformers.modeling_utils import PretrainedConfig
 from transformers.modeling_outputs import CausalLMOutputWithPast, BaseModelOutputWithPast
 
 class RotaryPositionEmbedding(nn.Module):
@@ -182,13 +176,7 @@ class InternLMLayer(nn.Module):
             self.past_key_values = torch.stack((key.permute([0, 2, 1, 3]), value.permute([0, 2, 1, 3])), dim=0)
         attention_mask = attention_mask if attention_mask is not None else torch.ones((query.shape[0], query.shape[1])).to(hidden_states.device)
         if self.config.use_flash:
-            assert FlashAttention is not None, \
-                "Detected flash_attn is not installed. See https://github.com/HazyResearch/flash-attention"
-            qkv = torch.stack([query, key, value], dim=2)
-            output, _ = FlashAttention()(qkv, key_padding_mask=attention_mask, causal=True)
-            output = rearrange(output, "b n h d -> b n (h d)")
-            output = F.dropout(output, p=self.config.dropout,
-                               training=self.training)
+            output = flash_attention(query, key, value, attention_mask)
         else:
             query, key, value = query.permute(0, 2, 1, 3), key.permute(
                 0, 2, 1, 3), value.permute(0, 2, 1, 3)
@@ -206,8 +194,8 @@ class InternLMLayer(nn.Module):
             output = torch.matmul(attention_score, value)
             output = output.transpose(1, 2).contiguous().view(
                 batch_size, seq_len + start_pos, -1)
-            output = F.dropout(output, p=self.config.dropout,
-                               training=self.training)
+        output = F.dropout(output, p=self.config.dropout,
+                           training=self.training)
         output = output[:, start_pos:, :]
         hidden_states = hidden_states + self.self_attn["o_proj"](output)
         _hidden_states = self.post_attention_layernorm(hidden_states)
