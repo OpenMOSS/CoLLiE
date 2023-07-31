@@ -339,7 +339,7 @@ class Moss003MoonModel(nn.Module):
         ])
         self.ln_f = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_epsilon)
 
-    def forward(self, input_ids, attention_mask=None, input_embeds=None,
+    def forward(self, input_ids, attention_mask=None, inputs_embeds=None,
                 **kwargs):
         batch_size = input_ids.shape[0]
         if attention_mask is not None:
@@ -350,7 +350,7 @@ class Moss003MoonModel(nn.Module):
             attention_mask = attention_mask[:, None, None, :]
             attention_mask = attention_mask.to(dtype)
             attention_mask = (1.0 - attention_mask) * torch.finfo(dtype).min
-        if input_embeds is None:
+        if inputs_embeds is None:
             inputs_embeds = self.wte(input_ids)
         hidden_states = self.drop(inputs_embeds)
 
@@ -432,7 +432,7 @@ class Moss003MoonForCausalLM(CollieModelForCausalLM):
         self.lm_head = ColumnParallelLinearWithoutBias(config.n_embd,
                                                        config.vocab_size)
 
-    def forward(self, input_ids, attention_mask=None, input_embeds=None,
+    def forward(self, input_ids, attention_mask=None, inputs_embeds=None,
                 past_key_values: Optional[Tuple[torch.Tensor]] = None,
                 **kwargs):
         if past_key_values is not None:
@@ -441,7 +441,7 @@ class Moss003MoonForCausalLM(CollieModelForCausalLM):
             self._clean_past_key_values(self.transformer.h)
         output = self.transformer(
             input_ids=input_ids, attention_mask=attention_mask,
-            input_embeds=input_embeds, **kwargs
+            inputs_embeds=inputs_embeds, **kwargs
         )
         hidden_states = output.last_hidden_state
         all_hidden_states = output.hidden_states
