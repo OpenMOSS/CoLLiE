@@ -1,5 +1,10 @@
+import os
+import json
+
 import torch
 from einops import rearrange
+
+from collie.log import logger
 
 
 def flash_attention(query, key, value, attention_mask):
@@ -32,3 +37,27 @@ def flash_attention(query, key, value, attention_mask):
             rearrange(output_unpad, "nnz h d -> nnz (h d)"), indices,  batch_size, seq_len
         )
     return output
+
+def merge_index_dict(path, file_list, driver):
+    """
+    合并分散的 index json
+    """
+    total_size = 0
+    weight_map = {}
+    for _file in file_list:
+        _file = os.path.join(path, _file)
+        if not driver.exists(_file):
+            logger.rank_zero_warning(f"Detect missing index file {_file}, skip merging.")
+            return
+        _index_dict = json.loads(driver.load(_file, mode="r"))
+        total_size += _index_dict["total_size"]
+        weight_map.update(_index_dict["weight_map"])
+        driver.delete(_file)
+    merged_dict = {
+        "metadata": {"total_size": total_size},
+        "weight_map": weight_map
+    }
+    driver.save(
+        json.dumps(merged_dict, indent=2, sort_keys=True) + "\n",
+        os.path.join(path, "pytorch_model.bin.index.json")
+    )

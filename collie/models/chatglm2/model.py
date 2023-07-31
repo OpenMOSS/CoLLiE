@@ -26,6 +26,7 @@ from collie.models.base import CollieModelForCausalLM
 from collie.driver.io import IODriver
 from collie.module import ColumnParallelLinearWithoutBias, RowParallelLinearWithoutBias, ColumnParallelLMHead
 from collie.utils import progress, env, dict_as_params, concat_tensor
+from collie.models.utils import merge_index_dict
 
 from typing import Any, Union, Optional
 from collections import OrderedDict
@@ -979,9 +980,10 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
                                 weight_map[name] = ckpt_name
                                 total_size += weight_size
                             index_dict = dict(total_size=total_size, weight_map=weight_map)
-                            tmp_index_file = os.path.join(path, "_tmp_index_{}.json")
+                            tmp_index_file = "_tmp_index_{}.json"
                             io_driver.save(
-                                json.dumps(index_dict), tmp_index_file.format(env.pp_rank)
+                                json.dumps(index_dict),
+                                os.path.join(path, tmp_index_file).format(env.pp_rank)
                             )
                         else:
                             ckpt_name = f"pytorch_model.bin"
@@ -994,19 +996,5 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
         if env.rank == 0 and env.is_pipeline:
             # merge
             tmp_index_files = [tmp_index_file.format(i) for i in range(config.pp_size)]
-            total_size = 0
-            weight_map = {}
-            for _file in tmp_index_files:
-                _index_dict = json.loads(io_driver.load(_file, mode="r"))
-                total_size += _index_dict["total_size"]
-                weight_map.update(_index_dict["weight_map"])
-                os.remove(_file)
-            merged_dict = {
-                "metadata": {"total_size": total_size},
-                "weight_map": weight_map
-            }
-            io_driver.save(
-                json.dumps(merged_dict, indent=2, sort_keys=True) + "\n",
-                os.path.join(path, "pytorch_model.bin.index.json")
-            )
+            merge_index_dict(path, tmp_index_files, io_driver)
         dist.barrier()

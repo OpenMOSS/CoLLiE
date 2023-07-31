@@ -20,6 +20,7 @@ from collie.models.base import CollieModelForCausalLM
 from collie.utils import env, progress
 from collie.utils.utils import dict_as_params
 from collie.config import CollieConfig
+from collie.models.utils import merge_index_dict
 from .utils import (apply_rotary_pos_emb, create_sinusoidal_positions,
                     set_index_dict, _state_dict_to_save, _state_dict_to_load,
                     _weight_name_in_current_rank)
@@ -612,9 +613,10 @@ class Moss003MoonForCausalLM(CollieModelForCausalLM):
             if env.is_pipeline:
                 ckpt_name = f"pytorch_model-{env.pp_rank+1:05d}-of-{config.pp_size:05d}.bin"
                 index_dict = set_index_dict(state_dict, ckpt_name)
-                tmp_index_file = os.path.join(path, "_tmp_index_{}.json")
+                tmp_index_file = "_tmp_index_{}.json"
                 io_driver.save(
-                    json.dumps(index_dict), tmp_index_file.format(env.pp_rank)
+                    json.dumps(index_dict),
+                    os.path.join(path, tmp_index_file).format(env.pp_rank)
                 )
             else:
                 ckpt_name = f"pytorch_model.bin"
@@ -625,20 +627,6 @@ class Moss003MoonForCausalLM(CollieModelForCausalLM):
         # Only save and merge on rank0
         if env.rank == 0 and env.is_pipeline:
             # merge
-            tmp_index_files = [tmp_index_file.format(i) for i in range(config.pp_size)]
-            total_size = 0
-            weight_map = {}
-            for _file in tmp_index_files:
-                _index_dict = json.loads(io_driver.load(_file, mode="r"))
-                total_size += _index_dict["total_size"]
-                weight_map.update(_index_dict["weight_map"])
-                io_driver.delete(_file)
-            merged_dict = {
-                "metadata": {"total_size": total_size},
-                "weight_map": weight_map
-            }
-            io_driver.save(
-                json.dumps(merged_dict, indent=2, sort_keys=True) + "\n",
-                os.path.join(path, "pytorch_model.bin.index.json")
-            )
+            tmp_index_files = [tmp_index.format(i) for i in range(config.pp_size)]
+            merge_index_dict(path, tmp_index_files, io_driver)
         dist.barrier()
