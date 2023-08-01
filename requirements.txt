@@ -16,5 +16,5 @@ wandb
 pandas
 psutil
 accelerate>=0.20.3
-bitsandbytes>=0.39.0
+bitsandbytes>=0.41.0
 scipy
