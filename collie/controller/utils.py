@@ -1,6 +1,8 @@
 import os
 import re
 
+from peft import PromptLearningConfig
+
 from collie.callbacks.callback_manager import CallbackManager
 from collie.utils.dist_utils import env
 
@@ -49,7 +51,7 @@ class TrainerEventTrigger:
     def on_evaluate_end(self, results):
         self.callback_manager.on_evaluate_end(self, results)
 
-def _merge_peft(path, prefix, model, io_driver):
+def _merge_peft(path, prefix, io_driver):
     """
     在 pp 情况下将分开保存的 peft 合并到同一个文件
     """
@@ -71,14 +73,19 @@ def _is_name_in_current_rank(name):
     layer_idx = int(search.group()[1:-1])
     return layer_idx in env.pipeline_layers_idx
 
-def _split_peft(state: dict, model, prefix: str):
+def _split_peft(state: dict, model):
     """
     在 pp 时选取当前 rank 的 key
     """
     if env.pp_size == 1:
         return state
+    if isinstance(model.active_peft_config, PromptLearningConfig):
+        prefix = "base_model."
+    else:
+        prefix = "base_model.model."
+    pipeline_model = model.get_base_model()
     for name in list(state.keys()):
-        name_pp = prefix + model.name_to_pipeline(name[len(prefix):])
+        name_pp = prefix + pipeline_model.name_to_pipeline(name[len(prefix):])
         if _is_name_in_current_rank(name_pp):
             state[name_pp] = state[name]
         state.pop(name)

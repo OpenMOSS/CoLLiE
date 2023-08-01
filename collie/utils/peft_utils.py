@@ -1,18 +1,18 @@
 import os
 import math
+import warnings
 
 import torch
-from types import MethodType
-from typing import Optional
+from deepspeed.runtime.zero import GatheredParameters
 from transformers import PreTrainedModel
 from peft import TaskType, PeftType, PromptEmbedding, \
     PromptEncoder, PrefixEncoder, PeftModel, PromptTuningInit, \
     PeftModelForCausalLM, PromptLearningConfig
 from peft.tuners.prefix_tuning import PrefixEncoder
-import warnings
+from transformers.utils import ContextManagers
 
 
-def patch_peft_model():
+def patch_peft_model(collie_config):
     def _setup_prompt_encoder(self, adapter_name):
         config = self.peft_config[adapter_name]
         self.prompt_encoder = torch.nn.ModuleDict({})
@@ -24,7 +24,18 @@ def patch_peft_model():
 
         if config.num_transformer_submodules is None:
             config.num_transformer_submodules = 2 if config.task_type == TaskType.SEQ_2_SEQ_LM else 1
-        self.word_embeddings = self.base_model.get_input_embedding()[1]
+        if isinstance(self.base_model, PreTrainedModel):
+            from .dist_utils import is_zero3_enabled
+            for named_param, value in list(self.base_model.named_parameters()):
+                contexts = []
+                if is_zero3_enabled(collie_config):
+                    contexts.append(GatheredParameters(value))
+                with ContextManagers(contexts):
+                    if value.shape[0] == self.base_model.config.vocab_size:
+                        self.word_embeddings = self.base_model.get_submodule(named_param.replace(".weight", ""))
+                        break
+        else:
+            self.word_embeddings = self.base_model.get_input_embedding()[1]
         if config.peft_type == PeftType.PROMPT_TUNING:
             prompt_encoder = PromptEmbedding(config, self.word_embeddings)
         elif config.peft_type == PeftType.P_TUNING:
@@ -43,7 +54,7 @@ def patch_peft_model():
         ).long()
     PeftModel._setup_prompt_encoder = _setup_prompt_encoder
 
-    def innter_forward(
+    def inner_forward(
         self,
         input_ids=None,
         attention_mask=None,
@@ -115,9 +126,9 @@ def patch_peft_model():
         if isinstance(self.get_base_model(), PipelineModel) and getattr(self.get_base_model(), "inner_forward"):
             return self.get_base_model()(*args, **kwargs)
         else:
-            return innter_forward(self, *args, **kwargs)
+            return inner_forward(self, *args, **kwargs)
     PeftModelForCausalLM.forward = outter_forward
-    
+
     def prepare_inputs_for_generation(self, *args, **kwargs):
         peft_config = self.active_peft_config
         model_kwargs = self.base_model_prepare_inputs_for_generation(*args, **kwargs)
@@ -207,11 +218,11 @@ def patch_prompt_tuning():
     PromptEmbedding.__init__ = __init__
 
 
-def patch_peft():
+def patch_peft(config):
     """
         改写 ``peft`` 的 `PeftModel` 和 `PromptEmbedding`。
 
         用于适应 **CoLLiE** 的训练和过程。
     """
-    patch_peft_model()
+    patch_peft_model(config)
     patch_prompt_tuning()

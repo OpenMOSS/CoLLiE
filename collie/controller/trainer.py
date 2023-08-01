@@ -373,12 +373,12 @@ class Trainer(TrainerEventTrigger):
                 trainer.engine.module.get_base_model().forward_type = "train"
             loss = trainer.engine.module(**batch)["loss"]
         else:
+            outputs = trainer.engine(**batch)
             # concat prompt labels for p-tuning
             if trainer.config.peft_config and trainer.config.peft_config.peft_type in ["PROMPT_TUNING", "P_TUNING"]:
                 batch_size = batch["input_ids"].shape[0]
                 prefix_labels = torch.full((batch_size, trainer.config.peft_config.num_virtual_tokens), -100).to(batch['labels'].device)
                 batch['labels'] = torch.cat((prefix_labels, batch['labels']), dim=1)
-            outputs = trainer.engine(**batch)
             loss = auto_param_call(trainer.loss_fn, {**batch, **outputs}, 
                                    signature_fn=trainer.loss_fn.forward if isinstance(trainer.loss_fn, nn.Module) else trainer.loss_fn)
             if not isinstance(trainer.optimizer, Lomo):
@@ -448,7 +448,6 @@ class Trainer(TrainerEventTrigger):
                     f" {list(self.model.peft_config.keys())} - got {selected_adapters}."
                 )
         io_driver = IODriver.from_protocol(protocol)
-        # TODO 支持原 peft 里那样多个 adapter 的保存和加载
         for adapter_name in selected_adapters:
             peft_config = self.model.peft_config[adapter_name]
             contexts = []
@@ -457,7 +456,10 @@ class Trainer(TrainerEventTrigger):
             )
             output_dir = os.path.join(path, adapter_name) if adapter_name != "default" else path
             io_driver.makedirs(output_dir, exist_ok=True)
-            named_parameters = {name: param for name, param in self.engine.module.named_parameters() if any([name.replace(f"{adapter_name}.", "") == k for k in state_dict.keys()])}
+            if isinstance(peft_config, PromptLearningConfig):
+                parameters = [self.model.prompt_encoder[adapter_name].embedding.weight]
+            else:
+                parameters = [param for name, param in self.engine.module.named_parameters() if any([name.replace(f"{adapter_name}.", "") == k for k in state_dict.keys()])]
             pp_save = env.pp_size > 1 and peft_config.peft_type in (PeftType.LORA, PeftType.ADALORA,  PeftType.PREFIX_TUNING)
             name_prefix = "adapter_model"
             if not pp_save:
@@ -465,13 +467,15 @@ class Trainer(TrainerEventTrigger):
             else:
                 name = f"{name_prefix}_{env.pp_rank}.bin"
             if is_zero3_enabled(self.config):
-                contexts.append(deepspeed.zero.GatheredParameters(list(named_parameters.values())))
+                contexts.append(deepspeed.zero.GatheredParameters(parameters))
                 # 加上以避免报错 assert not param.ds_active_sub_modules
+                # TODO
                 self._checkpoint_prologue()
             with ContextManagers(contexts):
                 if env.dp_rank == 0 or not is_zero3_enabled(self.config) and (pp_save or env.pp_rank == 0):
-                    for key in named_parameters.keys():
-                        state_dict[key.replace(f"{adapter_name}.", "")] = named_parameters[key].data
+                    # lora 和 p-tuning 是不需要的，看看 prompt tuning 的行为吧
+                    # for key in named_parameters.keys():
+                    #     state_dict[key.replace(f"{adapter_name}.", "")] = named_parameters[key].data
                     if env.dp_rank == 0 and env.tp_rank == 0:
                         io_driver.save(state_dict, os.path.join(path, name))
             if is_zero3_enabled(self.config):
@@ -520,11 +524,14 @@ class Trainer(TrainerEventTrigger):
         if loaded_peft_config.peft_type in (PeftType.LORA, PeftType.ADALORA,
                                      PeftType.PREFIX_TUNING):
             loaded_state_dict = _split_peft(loaded_state_dict, self.model)
-        named_parameters = {name: param for name, param in self.engine.module.named_parameters() if any([name.replace(f"{adapter_name}.", "") == k for k in loaded_state_dict.keys()])}
+        if isinstance(loaded_peft_config, PromptLearningConfig):
+            parameters = [self.model.prompt_encoder[adapter_name].embedding.weight]
+        else:
+            parameters = [param for name, param in self.engine.module.named_parameters() if any([name.replace(f"{adapter_name}.", "") == k for k in loaded_state_dict.keys()])]
 
         contexts = []
-        # if is_zero3_enabled(self.config):
-        #     contexts.append(deepspeed.zero.GatheredParameters(list(named_parameters.values()), modifier_rank=0))
+        if is_zero3_enabled(self.config):
+            contexts.append(deepspeed.zero.GatheredParameters(parameters, modifier_rank=0))
         with ContextManagers(contexts):
             if env.dp_rank == 0 or not is_zero3_enabled(self.config):
                 set_peft_model_state_dict(self.model, loaded_state_dict,
