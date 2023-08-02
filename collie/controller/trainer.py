@@ -258,8 +258,6 @@ class Trainer(TrainerEventTrigger):
                 lr_scheduler=self.lr_scheduler,
                 config=self.config
             )
-        self.config.train_micro_batch_size = self.engine.train_micro_batch_size_per_gpu()
-        self.config.gradient_accumulation_steps = self.engine.gradient_accumulation_steps()
         # train_dataloader
         if self.train_dataset is None:
             self.train_dataloader = None

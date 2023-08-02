@@ -235,6 +235,14 @@ class CollieConfig:
         if isinstance(self.quantization_config, str):
             self.quantization_config = BitsAndBytesConfig.from_dict(load_config(self.quantization_config))
         self.model_config.gradient_checkpointing = self.checkpointing
+        if "train_micro_batch_size_per_gpu" not in self.ds_config:
+            self.ds_config["train_micro_batch_size_per_gpu"] = self.train_micro_batch_size
+        else:
+            self.train_micro_batch_size = self.ds_config["train_micro_batch_size_per_gpu"]
+        if "gradient_accumulation_steps" not in self.ds_config:
+            self.ds_config["gradient_accumulation_steps"] = self.gradient_accumulation_steps
+        else:
+            self.gradient_accumulation_steps = self.ds_config["gradient_accumulation_steps"]
         assert isinstance(self.ds_config, dict), self.ds_config
         os.environ["COLLIE_SEED"] = str(self.seed)
 
