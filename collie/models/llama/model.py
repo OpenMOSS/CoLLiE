@@ -176,8 +176,9 @@ class LlamaLayer(nn.Module):
         else:
             start_pos = 0
         query, key = self.self_attn["rotary_emb"](query, key, seq_len, start_pos)
-        key = torch.repeat_interleave(key, dim=2, repeats=self.num_key_value_groups)
-        value = torch.repeat_interleave(value, dim=2, repeats=self.num_key_value_groups)
+        if self.num_key_value_groups > 1:
+            key = torch.repeat_interleave(key, dim=2, repeats=self.num_key_value_groups)
+            value = torch.repeat_interleave(value, dim=2, repeats=self.num_key_value_groups)
         if self.past_key_values is not None:
             query = torch.cat([self.past_key_values[0].permute([0, 2, 1, 3]), query], dim=1)
             key = torch.cat([self.past_key_values[0].permute([0, 2, 1, 3]), key], dim=1)
