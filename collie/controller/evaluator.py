@@ -108,7 +108,7 @@ class Evaluator:
             self.eval_dataloader = CollieDataLoader(
                 self.dataset, self.config.eval_batch_size,
                 self.config.gradient_accumulation_steps, shuffle=False,
-                collate_fn=self.collate_fn
+                collate_fn=self.collate_fn, num_workers=self.config.dataloader_num_workers
             )
             self.eval_steps = len(self.eval_dataloader)
         eval_dataloader = self.eval_dataloader

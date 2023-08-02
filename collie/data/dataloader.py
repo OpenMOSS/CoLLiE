@@ -117,7 +117,8 @@ class CollieDataLoader(object):
                                                last_batch)
             self.dataloader = DataLoader(self.dataset,
                                          batch_sampler=batch_sampler,
-                                         collate_fn=self.collate_fn)
+                                         collate_fn=self.collate_fn,
+                                         num_workers=self.num_workers)
             self.data = (x for x in self.dataloader)
 
             return self.dataloader

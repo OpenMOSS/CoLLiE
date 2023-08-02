@@ -155,6 +155,12 @@ class CollieConfig:
             "help": "Tries to not use more than 1x model size in CPU memory (including peak memory) while loading the model."
         }
     )
+    dataloader_num_workers: int = field(
+        default=0,
+        metadata={
+            "help": "Number of workers for dataloader."
+        }
+    )
     ds_config: Union[str, dict] = field(
         default="",
         metadata={

@@ -268,7 +268,8 @@ class Trainer(TrainerEventTrigger):
             self.train_dataloader = CollieDataLoader(
                 self.train_dataset, self.config.train_micro_batch_size,
                 self.config.gradient_accumulation_steps, shuffle=True,
-                collate_fn=self.train_dataset_collate_fn, drop_last=False
+                collate_fn=self.train_dataset_collate_fn, drop_last=False,
+                num_workers=self.config.dataloader_num_workers
             )
             self.steps_per_epoch = len(self.train_dataloader)
 
