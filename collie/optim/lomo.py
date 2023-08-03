@@ -162,7 +162,7 @@ class Lomo(Optimizer):
         if self.first_backward:
             self.first_backward = False
             if loss.dtype == torch.float16:
-                self.loss_scaler = DynamicLossScaler(self.loss_scale_args)
+                self.loss_scaler = DynamicLossScaler(**self.loss_scale_args)
                 if self.clip_grad_norm is None:
                     self.clip_grad_norm = 1.0
                     logger.rank_zero_warning(
