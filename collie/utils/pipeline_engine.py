@@ -10,7 +10,7 @@ from deepspeed.utils.timer import ThroughputTimer
 from deepspeed.utils import logger
 from peft import PeftModel
 
-from .utils import _split_batch, auto_param_call
+from .utils import _split_batch, auto_param_call, _split_past_key_values
 from .dist_utils import broadcast_tensor, env
 from ..module import PipelineModel
 
@@ -20,7 +20,14 @@ def is_even(number):
 class ColliePipelineEngine(PipelineEngine):
     def __init__(self, has_bool_tensors=False, *args, **kwargs):
         DeepSpeedEngine.__init__(self, *args, **kwargs)
-        assert isinstance(self.module, PipelineModule) or (isinstance(self.module, PeftModel) and isinstance(self.module.get_base_model(), PipelineModule)), "model must base PipelineModule"
+        if isinstance(self.module, PipelineModel):
+            pipeline_module = self.module
+        elif isinstance(self.module, PeftModel) and isinstance(self.module.get_base_model(), PipelineModel):
+            pipeline_module = self.module.get_base_model()
+        else:
+            raise TypeError("Model must base PipelineModule.")
+        # 防止被加入到 Module 的 _modules 里访问不到
+        object.__setattr__(self, "pipeline_module", pipeline_module)
 
         assert self.zero_optimization_stage() < 2, "ZeRO-2 and ZeRO-3 are incompatible with pipeline parallelism"
 
@@ -196,33 +203,32 @@ class ColliePipelineEngine(PipelineEngine):
                 for key, value in batch.items():
                     self.buffer_shape[key] = value.shape
                 self.reset_activation_shape()
+                # 输出的 key 也会发生变化，所以重置一下
+                self.pipe_buffers = {
+                    'inputs': [],
+                    'labels': [],
+                    'outputs': [],
+                    'output_tensors': [],
+                }
+                self.num_pipe_buffers = 0
 
     def train_batch(self, batch):
-        if isinstance(self.module, PipelineModel):
-            self.module.inner_forward = True
-            self.module.forward_type = "train"
-        if isinstance(self.module, PeftModel) and isinstance(self.module.get_base_model(), PipelineModel):
-            self.module.get_base_model().inner_forward = True
-            self.module.get_base_model().forward_type = "train"
+        self.pipeline_module.inner_forward = True
+        self.pipeline_module.forward_type = "train"
         # batch tuple, batch_size is micro_batch * accumulate_steps
         self.reset_buffer_shape(batch)
         batch = _split_batch(batch, self.train_micro_batch_size_per_gpu(),
                              self.gradient_accumulation_steps())
         data_iter = iter(batch)
         result = super().train_batch(data_iter)
-        if isinstance(self.module, PipelineModel):
-            self.module.inner_forward = False
-        if isinstance(self.module, PeftModel) and isinstance(self.module.get_base_model(), PipelineModel):
-            self.module.get_base_model().inner_forward = False
+
+        self.pipeline_module.inner_forward = False
         return result
     
     def eval_batch(self, batch):
-        if isinstance(self.module, PipelineModel):
-            self.module.inner_forward = True
-            self.module.forward_type = "eval"
-        if isinstance(self.module, PeftModel) and isinstance(self.module.get_base_model(), PipelineModel):
-            self.module.get_base_model().inner_forward = True
-            self.module.get_base_model().forward_type = "eval"
+        self.pipeline_module.inner_forward = True
+        self.pipeline_module.forward_type = "eval"
+
         self.reset_buffer_shape(batch)
         if self.total_loss is not None:
             total_loss = self.total_loss.detach().clone()
@@ -240,19 +246,14 @@ class ColliePipelineEngine(PipelineEngine):
         # Assume batch first
         logits = self.broadcast_logits(logits)
         self.total_loss = total_loss
-        if isinstance(self.module, PipelineModel):
-            self.module.inner_forward = False
-        if isinstance(self.module, PeftModel) and isinstance(self.module.get_base_model(), PipelineModel):
-            self.module.get_base_model().inner_forward = False
+
+        self.pipeline_module.inner_forward = False
         return logits
     
-    def generate_batch(self, batch, use_cache=True):
-        if isinstance(self.module, PipelineModel):
-            self.module.inner_forward = True
-            self.module.forward_type = "generate"
-        if isinstance(self.module, PeftModel) and isinstance(self.module.get_base_model(), PipelineModel):
-            self.module.get_base_model().inner_forward = True
-            self.module.get_base_model().forward_type = "generate"
+    def generate_batch(self, batch):
+        self.pipeline_module.inner_forward = True
+        self.pipeline_module.forward_type = "generate"
+
         self.reset_buffer_shape(batch)
 
         if self.total_loss is not None:
@@ -267,12 +268,10 @@ class ColliePipelineEngine(PipelineEngine):
             gradient_accumulation_steps = batch["inputs_embeds"].shape[0]
         else:
             raise ValueError("Batch must have at least one key of `input_ids` or `input_embeds`!")
-        if use_cache:
-            batch = [batch]
-        else:
-            batch = _split_batch(batch, 1, gradient_accumulation_steps)
+        batch = _split_batch(batch, 1, gradient_accumulation_steps)
+
         data_iter = iter(batch)
-        
+
         self._compute_loss = False
         logits = None
         # Curriculum learning could change activation shape
@@ -291,14 +290,14 @@ class ColliePipelineEngine(PipelineEngine):
         self.set_dataiterator(data_iter)
 
         # Do the work
-        if use_cache:
-            sched = schedule.InferenceSchedule(micro_batches=1,
-                                           stages=self.num_stages,
-                                           stage_id=self.stage_id)
-        else:
-            sched = schedule.InferenceSchedule(micro_batches=gradient_accumulation_steps,
-                                           stages=self.num_stages,
-                                           stage_id=self.stage_id)
+        # if use_cache:
+        #     sched = schedule.InferenceSchedule(micro_batches=1,
+        #                                    stages=self.num_stages,
+        #                                    stage_id=self.stage_id)
+        # else:
+        sched = schedule.InferenceSchedule(micro_batches=gradient_accumulation_steps,
+                                        stages=self.num_stages,
+                                        stage_id=self.stage_id)
 
         # prevent dead-lock with multiple evals sequence
         dist.barrier()
@@ -320,10 +319,8 @@ class ColliePipelineEngine(PipelineEngine):
         # Assume batch first
         logits = self.broadcast_logits(logits)
         self.total_loss = total_loss
-        if isinstance(self.module, PipelineModel):
-            self.module.inner_forward = False
-        if isinstance(self.module, PeftModel) and isinstance(self.module.get_base_model(), PipelineModel):
-            self.module.get_base_model().inner_forward = False
+
+        self.pipeline_module.inner_forward = False
         return logits
     
     def broadcast_logits(self, logits):
@@ -343,7 +340,10 @@ class ColliePipelineEngine(PipelineEngine):
             # 广播 dict
             logits = {}
             for key in _logits.keys():
-                logits[key] = torch.cat(_logits[key], dim=0).cuda()
+                dim = 0
+                if key == "new_past_key_values":
+                    dim = 2
+                logits[key] = torch.cat(_logits[key], dim=dim).cuda()
                 # key
                 encode = list(key.encode())
                 key_tensor = torch.LongTensor(data=encode).to(self.device)
@@ -397,8 +397,6 @@ class ColliePipelineEngine(PipelineEngine):
         # Zero out the gradients each time we use the tensor because only the data in
         # tensor changes across batches
         self._zero_grads(inputs)
-        # if buffer_id >= 1:
-        #     import pdb; pdb.set_trace()
         outputs = super(PipelineEngine, self).forward(inputs)
 
         # Reset activation checkpointing buffers.
@@ -689,7 +687,7 @@ class ColliePipelineEngine(PipelineEngine):
             return recv_dict
 
         else:
-            raise NotImplementedError(f'Could not receive type {type(recv_type)}')
+            raise NotImplementedError(f'Could not receive type {recv_type}')
 
     def _exec_send_activations(self, buffer_id):
         if self.wall_clock_breakdown():

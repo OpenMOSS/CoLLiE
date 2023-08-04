@@ -58,30 +58,6 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         # transformers 的 GenerateMixin 要求 config 必须为 PretrainedConfig，备份一下 collie 的配置
         self.collie_config = config
 
-    def _get_past_key_values(self, layers: Sequence[nn.Module], attr_name: str="past_key_values"):
-        past_key_values = []
-        for layer in layers:
-            assert hasattr(layer, attr_name), f"{layer} does not have {attr_name}"
-            past_key_values.append(getattr(layer, attr_name))
-        return tuple(past_key_values) if None not in past_key_values else None
-
-    def _clean_past_key_values(self, layers: Sequence[nn.Module], attr_name: str="past_key_values"):
-        for layer in layers:
-            if hasattr(layer, attr_name):
-                object.__setattr__(layer, attr_name, None)
-
-    def _set_past_key_values(self, 
-                             layers: Sequence[nn.Module], 
-                             past_key_values: Tuple[torch.Tensor], 
-                             attr_name: str="past_key_values"):
-        if past_key_values is None:
-            self._clean_past_key_values(layers, attr_name)
-            return
-        past_key_values = iter(past_key_values)
-        for layer in layers:
-            if hasattr(layer, attr_name):
-                object.__setattr__(layer, attr_name, next(past_key_values))
-
     def _get_hidden_states(self, layers: Sequence[nn.Module], attr_name: str="hidden_states"):
         all_hidden_states = []
         for layer in layers:
@@ -113,11 +89,8 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         生成函数。用法同 ``huggingface``。
         """
         res = super().generate(*args, **kwargs)
-        self.clean()
+        self.clean_cache()
         return res
-
-    def clean():
-        raise NotImplementedError
 
     @classmethod
     def from_config(cls, config: Union[CollieConfig, str], **kwargs):
@@ -210,23 +183,20 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
     @abstractmethod
     def clean_cache(self):
         """
-        清理 ``past_key_values`` 和 ``hidden_states`` 状态的函数。
+        清理 ``use_cache`` 和 ``hidden_states`` 状态的函数。
         """
         raise NotImplementedError(
             "`clean_cache` should be implemented to clear caches for generation."
         )
 
     @abstractmethod
-    def set_cache(self, use_cache, past_key_values):
+    def set_cache(self, use_cache):
         """
-        设置 ``use_cache`` 和 ``past_key_values`` 的函数。
+        设置 ``use_cache`` 的函数。
 
         :param use_cache: 是否在生成时使用缓存的 ``past_key_values``。如果为
             ``True`` 则会保存前向传播过程中 Attention 的 key 和 value 用于下一次
             生成。可以参考 :meth:`_set_use_cache` 的代码来设置。
-        :param past_key_values: 本次生时传入的 key 和 value。如果为 ``None`` 则
-            可以参考 :meth:`_clean_past_key_values` 清除所有的缓存，否则可以参考
-            :meth:`_set_past_key_values` 来设置 ``past_key_values``。
         """
         raise NotImplementedError(
             "`set_cache` should be implemented to set caches for generation."
@@ -381,9 +351,9 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         生成过程中更新输入和 cache 状态的函数，包含设置 use_cache 和 past_key_values
         以及更新输入两个过程。
         """
-        self.set_cache(use_cache, past_key_values)
+        self.set_cache(use_cache)
         if past_key_values is not None:
-            if None in past_key_values:
+            if not isinstance(past_key_values, torch.Tensor) and None in past_key_values:
                 past_key_values = None
         return self.prepare_inputs(
             input_ids=input_ids, attention_mask=attention_mask,

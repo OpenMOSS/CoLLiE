@@ -48,6 +48,18 @@ def concat_tensor(tensor_list, dim=0):
     ret = torch.cat(tensor_list_cpu, dim=dim)
     return ret
 
+def stack_tensor(tensor_list, dim=0):
+    """
+    叠加 ``tensor_list`` 中的张量，并且在叠加时将张量转移到 cpu 上来避免显存的增加。
+
+    :return: 叠加后位于 cpu 上的张量
+    """
+    tensor_list_cpu = [t.detach().cpu().clone() for t in tensor_list]
+    tensor_list.clear()
+    # del tensor_list
+    ret = torch.stack(tensor_list_cpu, dim=dim)
+    return ret
+
         
 class progress:
     """包装了 ``rich`` 进度条的类。
@@ -184,13 +196,36 @@ class progress:
                         advance=advance, description=desc, visible=visible,
                         refresh=refresh, post_desc=post_desc)
             
+def _split_past_key_values(past_key_values, micro_batch_size, micro_batch_num):
+    if micro_batch_num == 1:
+        return (past_key_values,)
+    past_kv_split = [() for _ in range(micro_batch_num)]
+    for layer_past in past_key_values:
+        if isinstance(layer_past, (tuple, list)):
+            assert len(layer_past) == 2
+        else:
+            # prefix tuning 的 past key values 是个 tensor
+            assert isinstance(layer_past, torch.Tensor)
+            assert layer_past.shape[0] == 2
+        key_split = torch.split(layer_past[0], micro_batch_size)
+        value_split = torch.split(layer_past[1], micro_batch_size)
+        assert len(key_split) == micro_batch_num, len(key_split)
+        assert len(value_split) == micro_batch_num, len(value_split)
+        for i in range(micro_batch_num):
+            past_kv_split[i] += ((key_split[i], value_split[i]),)
+    return tuple(past_kv_split)
+
+
 def _split_dict(inputs, micro_batch_size, micro_batch_num):
     inputs_split = {}
     for key in list(inputs.keys()):
+        dim = 0
+        if key == "past_key_values":
+            dim = 2
         if isinstance(inputs[key], torch.Tensor):
-            inputs_split[key] = torch.split(inputs[key], micro_batch_size)
+            inputs_split[key] = torch.split(inputs[key], micro_batch_size, dim)
         elif isinstance(inputs[key], Sequence):
-            inputs_split[key] = [torch.split(input_, micro_batch_size) for input_ in inputs[key]]
+            inputs_split[key] = [torch.split(input_, micro_batch_size, dim) for input_ in inputs[key]]
             inputs_split[key] = list(zip(*inputs_split[key]))
     inputs_split = [{key: value[i] for key, value in inputs_split.items()} for i in range(micro_batch_num)]
     return inputs_split
