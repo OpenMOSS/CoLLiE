@@ -20,6 +20,7 @@ class CollieDataLoader(object):
     :param shuffle:
     :param accumulation_steps:
     :param collate_fn:
+    :param num_workers:
     :param sampler:
     :param drop_last: 当最后一个 batch 样本数不足时是否丢弃。在流水线情况下如果为
         ``False``，则会补齐最后一个 batch。
