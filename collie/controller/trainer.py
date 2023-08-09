@@ -21,7 +21,7 @@ import torch.distributed as dist
 from torch.optim.lr_scheduler import _LRScheduler
 from deepspeed.runtime.engine import DeepSpeedSchedulerCallable
 from transformers.modeling_utils import PreTrainedModel
-from peft import PeftModel, PeftConfig, get_peft_model_state_dict, set_peft_model_state_dict, PeftType, PromptLearningConfig, PEFT_TYPE_TO_CONFIG_MAPPING
+from peft import PeftModel, get_peft_model_state_dict, set_peft_model_state_dict, PeftType, PromptLearningConfig, PEFT_TYPE_TO_CONFIG_MAPPING
 from transformers import PreTrainedTokenizerBase
 from transformers.utils import ContextManagers
 
@@ -29,16 +29,17 @@ from collie.config import CollieConfig
 from collie.module import PipelineGenerationMixin, GPTLMLoss, PipelineModel
 from collie.driver.io import IODriver
 from collie.log import logger
-from collie.utils import progress, env, setup_ds_engine, BaseProvider, is_zero3_enabled, \
+from collie.utils import progress, env, setup_ds_engine, is_zero3_enabled, \
     BaseMonitor, _MultiMonitors, ColliePadder, auto_param_call
 from collie.optim import Lomo
 from collie.models.base import CollieModelForCausalLM
-from .evaluator import Evaluator
-from .server import Server
 from collie.data import CollieDataLoader
 from collie.callbacks.callback import Callback
+
 from collie.callbacks.callback_manager import CallbackManager, prepare_callback
 from .utils import TrainerEventTrigger, _merge_peft, _split_peft
+from .evaluator import Evaluator
+from .server import Server
 
 class Trainer(TrainerEventTrigger):
     r"""
