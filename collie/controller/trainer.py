@@ -459,7 +459,7 @@ class Trainer(TrainerEventTrigger):
                 parameters = [self.model.prompt_encoder[adapter_name].embedding.weight]
             else:
                 parameters = [param for name, param in self.engine.module.named_parameters() if any([name.replace(f"{adapter_name}.", "") == k for k in state_dict.keys()])]
-            pp_save = env.pp_size > 1 and peft_config.peft_type in (PeftType.LORA, PeftType.ADALORA,  PeftType.PREFIX_TUNING)
+            pp_save = env.pp_size > 1 and peft_config.peft_type in (PeftType.LORA, PeftType.ADALORA)
             name_prefix = "adapter_model"
             if not pp_save:
                 name = f"{name_prefix}.bin"
@@ -516,12 +516,11 @@ class Trainer(TrainerEventTrigger):
         else:
             loaded_peft_config.inference_mode = not is_trainable
         self.model.add_adapter(adapter_name, loaded_peft_config)
-        self.model.cuda()
+        self.model.to("cuda", self.config.torch_dtype)
         name = f"adapter_model.bin"
         assert io_driver.exists(os.path.join(path, name)), f"{name} does not exist."
         loaded_state_dict = io_driver.load(os.path.join(path, name), mode="rb")
-        if loaded_peft_config.peft_type in (PeftType.LORA, PeftType.ADALORA,
-                                     PeftType.PREFIX_TUNING):
+        if loaded_peft_config.peft_type in (PeftType.LORA, PeftType.ADALORA):
             loaded_state_dict = _split_peft(loaded_state_dict, self.model)
         if isinstance(loaded_peft_config, PromptLearningConfig):
             parameters = [self.model.prompt_encoder[adapter_name].embedding.weight]

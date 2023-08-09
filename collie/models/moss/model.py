@@ -174,12 +174,23 @@ class MossBlock(nn.Module):
             start_pos = 0
         query, key = self.self_attn["rotary_emb"](query, key, seq_len, start_pos)
         if layer_past is not None:
-            query = torch.cat([layer_past[0].permute([0, 2, 1, 3]), query], dim=1)
-            key = torch.cat([layer_past[0].permute([0, 2, 1, 3]), key], dim=1)
+            # past_key: batch_size, num_heads, seq_len, head_dim
+            past_key = layer_past[0].reshape(*layer_past[0].shape[:-1], 2, -1)\
+                                    .permute(0, 2, 1, 4, 3) \
+                                    .reshape(batch_size, start_pos,
+                                             self.config.num_attention_heads,
+                                             -1)
+            query = torch.cat([past_key, query], dim=1)
+            key = torch.cat([past_key, key], dim=1)
             value = torch.cat([layer_past[1].permute([0, 2, 1, 3]), value], dim=1)
         new_layer_past = None
         if self.use_cache and not self.training:
-            new_layer_past = torch.stack((key.permute([0, 2, 1, 3]), value.permute([0, 2, 1, 3])), dim=0)
+            # 调整成和 hf 兼容的格式，方便 prefix tuning
+            present_key = key.reshape(*key.shape[:-1], -1, 2) \
+                             .permute(0, 2, 1, 4, 3) \
+                             .reshape(batch_size,
+                                      self.config.num_attention_heads,
+                                      seq_len + start_pos, -1)
         attention_mask = attention_mask if attention_mask is not None else torch.ones((query.shape[0], query.shape[1])).to(hidden_states.device)
         if self.config.use_flash:
             output = flash_attention(query, key, value, attention_mask)
@@ -227,6 +238,7 @@ class MossBlock(nn.Module):
                 new_past_key_values = new_layer_past
             else:
                 new_past_key_values = concat_tensor([new_past_key_values, new_layer_past]).to(new_layer_past.device)
+            inputs["new_past_key_values"] = new_past_key_values
 
         return inputs
     

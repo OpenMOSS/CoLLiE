@@ -220,8 +220,10 @@ class PipelineGenerationMixin(GenerationMixin):
                 # stack 起来
                 stack_past_key_values = [None for _ in range(len(past_key_values))]
                 for i, layer_past in enumerate(past_key_values):
-                    assert not isinstance(layer_past, torch.Tensor), type(layer_past)
-                    stack_past_key_values[i] = stack_tensor(layer_past)
+                    if not isinstance(layer_past, torch.Tensor):
+                        stack_past_key_values[i] = stack_tensor(layer_past)
+                    else:
+                        stack_past_key_values[i] = layer_past
                 del past_key_values
                 past_key_values = stack_tensor(stack_past_key_values)
             inputs["past_key_values"] = past_key_values
@@ -276,12 +278,19 @@ class PipelineGenerationMixin(GenerationMixin):
             inputs["position_ids"] = position_ids
         if inputs_embeds is not None:
             inputs["inputs_embeds"] = inputs_embeds
+        if past_key_values is not None:
+            # prefix tuning
+            # TODO 这里先按照输入的 past key values 是没有 split 版本的处理
+            if not isinstance(past_key_values, torch.Tensor):
+                # stack 起来
+                past_key_values = torch.stack(past_key_values)
+            inputs["past_key_values"] = past_key_values
         inputs["labels"] = labels
-        loss = self.engine_container[-1].train_batch(inputs, past_key_values)
+        loss = self.engine_container[-1].train_batch(inputs)
         return CausalLMOutputWithPast(
             loss=loss,
             logits=None,
-            past_key_values=self._get_past_key_values(),
+            past_key_values=None,
             hidden_states=None,
             attentions=None
         )
@@ -311,8 +320,10 @@ class PipelineGenerationMixin(GenerationMixin):
                 # stack 起来
                 stack_past_key_values = [None for _ in range(len(past_key_values))]
                 for i, layer_past in enumerate(past_key_values):
-                    assert not isinstance(layer_past, torch.Tensor), type(layer_past)
-                    stack_past_key_values[i] = stack_tensor(layer_past)
+                    if not isinstance(layer_past, torch.Tensor):
+                        stack_past_key_values[i] = stack_tensor(layer_past)
+                    else:
+                        stack_past_key_values[i] = layer_past
                 del past_key_values
                 past_key_values = stack_tensor(stack_past_key_values)
             inputs["past_key_values"] = past_key_values
