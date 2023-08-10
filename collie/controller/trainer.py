@@ -21,7 +21,7 @@ import torch.distributed as dist
 from torch.optim.lr_scheduler import _LRScheduler
 from deepspeed.runtime.engine import DeepSpeedSchedulerCallable
 from transformers.modeling_utils import PreTrainedModel
-from peft import PeftModel, PeftConfig, get_peft_model_state_dict, set_peft_model_state_dict, PeftType, PromptLearningConfig, PEFT_TYPE_TO_CONFIG_MAPPING
+from peft import PeftModel, get_peft_model_state_dict, set_peft_model_state_dict, PeftType, PromptLearningConfig, PEFT_TYPE_TO_CONFIG_MAPPING
 from transformers import PreTrainedTokenizerBase
 from transformers.utils import ContextManagers
 
@@ -29,16 +29,17 @@ from collie.config import CollieConfig
 from collie.module import PipelineGenerationMixin, GPTLMLoss, PipelineModel
 from collie.driver.io import IODriver
 from collie.log import logger
-from collie.utils import progress, env, setup_ds_engine, BaseProvider, is_zero3_enabled, \
+from collie.utils import progress, env, setup_ds_engine, is_zero3_enabled, \
     BaseMonitor, _MultiMonitors, ColliePadder, auto_param_call
 from collie.optim import Lomo
 from collie.models.base import CollieModelForCausalLM
-from .evaluator import Evaluator
-from .server import Server
 from collie.data import CollieDataLoader
 from collie.callbacks.callback import Callback
+
 from collie.callbacks.callback_manager import CallbackManager, prepare_callback
 from .utils import TrainerEventTrigger, _merge_peft, _split_peft
+from .evaluator import Evaluator
+from .server import Server
 
 class Trainer(TrainerEventTrigger):
     r"""
@@ -258,8 +259,6 @@ class Trainer(TrainerEventTrigger):
                 lr_scheduler=self.lr_scheduler,
                 config=self.config
             )
-        self.config.train_micro_batch_size = self.engine.train_micro_batch_size_per_gpu()
-        self.config.gradient_accumulation_steps = self.engine.gradient_accumulation_steps()
         # train_dataloader
         if self.train_dataset is None:
             self.train_dataloader = None
@@ -461,7 +460,7 @@ class Trainer(TrainerEventTrigger):
                 parameters = [self.model.prompt_encoder[adapter_name].embedding.weight]
             else:
                 parameters = [param for name, param in self.engine.module.named_parameters() if any([name.replace(f"{adapter_name}.", "") == k for k in state_dict.keys()])]
-            pp_save = env.pp_size > 1 and peft_config.peft_type in (PeftType.LORA, PeftType.ADALORA,  PeftType.PREFIX_TUNING)
+            pp_save = env.pp_size > 1 and peft_config.peft_type in (PeftType.LORA, PeftType.ADALORA)
             name_prefix = "adapter_model"
             if not pp_save:
                 name = f"{name_prefix}.bin"
@@ -518,12 +517,11 @@ class Trainer(TrainerEventTrigger):
         else:
             loaded_peft_config.inference_mode = not is_trainable
         self.model.add_adapter(adapter_name, loaded_peft_config)
-        self.model.cuda()
+        self.model.to("cuda", self.config.torch_dtype)
         name = f"adapter_model.bin"
         assert io_driver.exists(os.path.join(path, name)), f"{name} does not exist."
         loaded_state_dict = io_driver.load(os.path.join(path, name), mode="rb")
-        if loaded_peft_config.peft_type in (PeftType.LORA, PeftType.ADALORA,
-                                     PeftType.PREFIX_TUNING):
+        if loaded_peft_config.peft_type in (PeftType.LORA, PeftType.ADALORA):
             loaded_state_dict = _split_peft(loaded_state_dict, self.model)
         if isinstance(loaded_peft_config, PromptLearningConfig):
             parameters = [self.model.prompt_encoder[adapter_name].embedding.weight]

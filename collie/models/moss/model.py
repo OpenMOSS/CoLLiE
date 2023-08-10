@@ -74,8 +74,9 @@ class RMSNormalize(nn.Module):
         return hidden_states * self.weight
 
 class MossBlock(nn.Module):
-    def __init__(self, config: CollieConfig) -> None:
+    def __init__(self, config: CollieConfig, layer_idx) -> None:
         super().__init__()
+        self.idx = layer_idx
         self.config = config
         self.self_attn = nn.ModuleDict(
             {
@@ -144,16 +145,20 @@ class MossBlock(nn.Module):
         )
         # 务必保持变量名一致
         self.use_cache = self.config.model_config.use_cache
-        self.past_key_values = None
         self.hidden_states = None
 
     def _forward(self, 
                  hidden_states: torch.Tensor,
-                 attention_mask: Optional[torch.Tensor] = None, **kwargs):
+                 attention_mask: Optional[torch.Tensor] = None,
+                 past_key_values: Optional[torch.Tensor] = None,
+                 **kwargs):
         if not self.training:
             self.hidden_states = hidden_states
         else:
             self.hidden_states = None
+        layer_past = None
+        if past_key_values is not None:
+            layer_past = past_key_values[self.idx]
         assert hidden_states.ndim == 3, f"hidden_states.shape must be (B, N, H), but got {hidden_states.shape}"
         batch_size, seq_len, _ = hidden_states.shape
         head_dim = self.config.hidden_size // self.config.num_attention_heads
@@ -163,17 +168,29 @@ class MossBlock(nn.Module):
         query, key, value = rearrange(query, "b n (h d) -> b n h d", d=head_dim), \
             rearrange(key, "b n (h d) -> b n h d", d=head_dim), \
             rearrange(value, "b n (h d) -> b n h d", d=head_dim)
-        if self.past_key_values is not None:
-            start_pos = self.past_key_values.shape[3]
+        if layer_past is not None:
+            start_pos = layer_past[0].shape[2]
         else:
             start_pos = 0
         query, key = self.self_attn["rotary_emb"](query, key, seq_len, start_pos)
-        if self.past_key_values is not None:
-            query = torch.cat([self.past_key_values[0].permute([0, 2, 1, 3]), query], dim=1)
-            key = torch.cat([self.past_key_values[0].permute([0, 2, 1, 3]), key], dim=1)
-            value = torch.cat([self.past_key_values[1].permute([0, 2, 1, 3]), value], dim=1)
+        if layer_past is not None:
+            # past_key: batch_size, num_heads, seq_len, head_dim
+            past_key = layer_past[0].reshape(*layer_past[0].shape[:-1], 2, -1)\
+                                    .permute(0, 2, 1, 4, 3) \
+                                    .reshape(batch_size, start_pos,
+                                             self.config.num_attention_heads,
+                                             -1)
+            query = torch.cat([past_key, query], dim=1)
+            key = torch.cat([past_key, key], dim=1)
+            value = torch.cat([layer_past[1].permute([0, 2, 1, 3]), value], dim=1)
+        new_layer_past = None
         if self.use_cache and not self.training:
-            self.past_key_values = torch.stack((key.permute([0, 2, 1, 3]), value.permute([0, 2, 1, 3])), dim=0)
+            # 调整成和 hf 兼容的格式，方便 prefix tuning
+            present_key = key.reshape(*key.shape[:-1], -1, 2) \
+                             .permute(0, 2, 1, 4, 3) \
+                             .reshape(batch_size,
+                                      self.config.num_attention_heads,
+                                      seq_len + start_pos, -1)
         attention_mask = attention_mask if attention_mask is not None else torch.ones((query.shape[0], query.shape[1])).to(hidden_states.device)
         if self.config.use_flash:
             output = flash_attention(query, key, value, attention_mask)
@@ -201,17 +218,28 @@ class MossBlock(nn.Module):
         _hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = hidden_states + F.dropout(self.mlp["down_proj"](F.silu(self.mlp["gate_proj"](
             _hidden_states)) * self.mlp["up_proj"](_hidden_states)), p=self.config.dropout, training=self.training)
-        return hidden_states
+        return hidden_states, new_layer_past
 
     def forward(self, inputs: dict):
         if self.config.checkpointing and self.training:
-            inputs["hidden_states"] = torch.utils.checkpoint.checkpoint(
+            hidden_states, new_layer_past = torch.utils.checkpoint.checkpoint(
                 self._forward,
                 inputs["hidden_states"],
-                inputs.get("attention_mask", None)
+                inputs.get("attention_mask", None),
+                inputs.get("past_key_values", None)
             )
         else:
-            inputs["hidden_states"] = self._forward(**inputs)
+            hidden_states, new_layer_past = self._forward(**inputs)
+        inputs["hidden_states"] = hidden_states
+        new_past_key_values = inputs.get("new_past_key_values", None)
+        if new_layer_past is not None:
+            new_layer_past.unsqueeze_(0)
+            if new_past_key_values is None:
+                new_past_key_values = new_layer_past
+            else:
+                new_past_key_values = concat_tensor([new_past_key_values, new_layer_past]).to(new_layer_past.device)
+            inputs["new_past_key_values"] = new_past_key_values
+
         return inputs
     
 
@@ -223,7 +251,7 @@ class MossModel(nn.Module):
             config.vocab_size, config.hidden_size
         )
         self.layers = nn.ModuleList(
-            [MossBlock(self.config) for _ in range(self.config.num_hidden_layers)])
+            [MossBlock(self.config, i) for i in range(self.config.num_hidden_layers)])
         self.norm = RMSNormalize(
             dim=self.config.hidden_size,
             eps=self.config.rms_norm_eps
@@ -241,6 +269,8 @@ class MossModel(nn.Module):
             inputs["hidden_states"] = kwargs['inputs_embeds']
         else:
             inputs["hidden_states"] = self.embed_tokens(inputs["input_ids"])
+        if past_key_values is not None:
+            inputs["past_key_values"] = past_key_values
         all_hidden_states = ()
         for layer in self.layers:
             all_hidden_states += (inputs["hidden_states"],)
@@ -248,9 +278,14 @@ class MossModel(nn.Module):
         inputs["hidden_states"] = self.norm(inputs["hidden_states"])
         all_hidden_states += (inputs["hidden_states"], )
 
+        past_key_values = None
+        if "new_past_key_values" in inputs:
+            past_key_values = inputs["new_past_key_values"]
+
         return BaseModelOutputWithPast(
             last_hidden_state=inputs["hidden_states"],
-            hidden_states=all_hidden_states
+            hidden_states=all_hidden_states,
+            past_key_values=past_key_values
         )
     
     @classmethod
@@ -282,8 +317,8 @@ class MossModel(nn.Module):
             )
         
         layers = [
-            LayerSpec(MossBlock, config)
-            for _ in range(config.num_hidden_layers)
+            LayerSpec(MossBlock, config, i)
+            for i in range(config.num_hidden_layers)
         ]
         norm = LayerSpec(
             dict_as_params(input_keys="hidden_states",
@@ -319,29 +354,23 @@ class MossForCausalLM(CollieModelForCausalLM):
                 attention_mask: Optional[torch.Tensor] = None, 
                 past_key_values: Optional[Tuple[torch.Tensor]] = None,
                 **kwargs):
-        if past_key_values is not None:
-            self._set_past_key_values(self.model.layers, past_key_values)
-        else:
-            self._clean_past_key_values(self.model.layers)
         output = self.model(input_ids=input_ids, attention_mask=attention_mask,
-                            **kwargs)
+                            past_key_values=past_key_values, **kwargs)
         logits = self.lm_head(output.last_hidden_state)
         return CausalLMOutputWithPast(
             loss=None,
             logits=logits,
-            past_key_values=self._get_past_key_values(self.model.layers),
+            past_key_values=output.past_key_values,
             hidden_states=output.hidden_states,
             attentions=None
         )
 
-    def clean(self):
+    def clean_cache(self):
         self._clean_hidden_states([*self.model.layers, self.lm_head])
-        self._clean_past_key_values(self.model.layers)
         self._set_use_cache(self.model.layers, False)
         
-    def set_cache(self, use_cache, past_key_values):
+    def set_cache(self, use_cache):
         self._set_use_cache(self.model.layers, use_cache)
-        self._set_past_key_values(self.model.layers, past_key_values)
 
     @classmethod
     def pipeline_layers(cls, config: CollieConfig):

@@ -76,10 +76,6 @@ def setup_ds_engine(
     :param lr_scheduler: 学习率调度器
     :return: DeepSpeed 引擎、优化器、dataloader (为 None)、学习率调度器
     """
-    if "train_micro_batch_size_per_gpu" not in config.ds_config.keys():
-        config.ds_config["train_micro_batch_size_per_gpu"] = config.train_micro_batch_size
-    if "gradient_accumulation_steps" not in config.ds_config.keys():
-        config.ds_config["gradient_accumulation_steps"] = config.gradient_accumulation_steps
     if config.pp_size != 1 or config.tp_size != 1:
         from collie.models import CollieModelForCausalLM
         from collie.module import PipelineModel

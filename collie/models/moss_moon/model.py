@@ -18,7 +18,7 @@ from collie.module import (ColumnParallelLinearWithoutBias,
 from collie.driver.io import IODriver
 from collie.models.base import CollieModelForCausalLM
 from collie.utils import env, progress
-from collie.utils.utils import dict_as_params
+from collie.utils.utils import dict_as_params, stack_tensor, concat_tensor
 from collie.config import CollieConfig
 from collie.models.utils import merge_index_dict
 from .utils import (apply_rotary_pos_emb, create_sinusoidal_positions,
@@ -118,7 +118,6 @@ class MossAttention(nn.Module):
         # Mask heads if we want to
         if head_mask is not None:
             attn_weights = attn_weights * head_mask
-
         attn_output = torch.matmul(attn_weights, value)
 
         return attn_output, attn_weights
@@ -170,15 +169,15 @@ class MossAttention(nn.Module):
         else:
             key = apply_rotary_pos_emb(key, sin, cos)
             query = apply_rotary_pos_emb(query, sin, cos)
-
+        
         if layer_past is not None:
             past_key = layer_past[0]
             past_value = layer_past[1]
             key = torch.cat((past_key, key), dim=1)
-            value = torch.cat((past_value, value), dim=1)
+            value = torch.cat((past_value, value), dim=1).to(value.dtype)
 
         if use_cache is True:
-            present = (key, value)
+            present = stack_tensor([key, value]).to(key.device)
         else:
             present = None
 
@@ -232,7 +231,6 @@ class MossBlock(nn.Module):
         self.idx = layer_idx
 
         self.use_cache = False
-        self.past_key_values = None
         self.hidden_states = None
 
     def _forward(
@@ -270,19 +268,21 @@ class MossBlock(nn.Module):
     def forward(self, inputs):
         hidden_states = inputs["hidden_states"]
         attention_mask = inputs.get("attention_mask", None)
+        past_key_values = inputs.get("past_key_values", None)
+        new_past_key_values = inputs.get("new_past_key_values", None)
+        if past_key_values is not None:
+            layer_past = past_key_values[self.idx]
+        else:
+            layer_past = None
         if not self.training:
             self.hidden_states = hidden_states
-        use_cache = not self.training and self.use_cache
-        end_pos = hidden_states.shape[1]
-        if end_pos != 1:
-            self.past_key_values = None
-        if not use_cache and self.past_key_values is not None:
-            self.past_key_values = None
 
-        if self.past_key_values is None or self.training:
+        end_pos = hidden_states.shape[1]
+
+        if past_key_values is None:
             past_length = 0
         else:
-            past_length = self.past_key_values[0].size(1)
+            past_length = past_key_values[0][0].size(1)
         position_ids = inputs.get("position_ids", None)
         if position_ids is None:
             position_ids = torch.arange(
@@ -290,6 +290,7 @@ class MossBlock(nn.Module):
             position_ids = position_ids.unsqueeze(0).view(-1, end_pos)
 
         if self.config.gradient_checkpointing and self.training:
+            self.use_cache = False
 
             def create_custom_forward(module):
                 def custom_forward(*inputs):
@@ -309,14 +310,21 @@ class MossBlock(nn.Module):
             outputs = self._forward(
                 hidden_states,
                 position_ids=position_ids,
-                layer_past=self.past_key_values,
+                layer_past=layer_past,
                 attention_mask=attention_mask,
                 head_mask=None,
-                use_cache=use_cache
+                use_cache=self.use_cache
             )
 
-        if use_cache:
-            self.past_key_values = outputs[1]
+        if self.use_cache:
+            present = outputs[1].unsqueeze(0)
+            # 1, 2, bsz, seqlen, ...
+            if new_past_key_values is None:
+                # 第一层
+                new_past_key_values = present
+            else:
+                # 后续几层
+                new_past_key_values = concat_tensor([new_past_key_values, present]).to(present.device)
 
         # hidden_states
         output = {"hidden_states": outputs[0]}
@@ -324,6 +332,10 @@ class MossBlock(nn.Module):
             output["attention_mask"] = attention_mask
         if position_ids is not None:
             output["positions_ids"] = position_ids
+        if past_key_values is not None:
+            output["past_key_values"] = past_key_values
+        if new_past_key_values is not None:
+            output["new_past_key_values"] = new_past_key_values
         
         return output
 
@@ -340,7 +352,7 @@ class Moss003MoonModel(nn.Module):
         self.ln_f = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_epsilon)
 
     def forward(self, input_ids, attention_mask=None, inputs_embeds=None,
-                **kwargs):
+                past_key_values=None, **kwargs):
         batch_size = input_ids.shape[0]
         if attention_mask is not None:
             if batch_size <= 0:
@@ -355,18 +367,25 @@ class Moss003MoonModel(nn.Module):
         hidden_states = self.drop(inputs_embeds)
 
         all_hidden_states = ()
+        input_dict = {
+            "hidden_states": hidden_states,
+            "attention_mask": attention_mask,
+            "past_key_values": past_key_values
+        }
         for i, l in enumerate(self.h):
-            all_hidden_states += (hidden_states,)
-            hidden_states = l(
-                {"hidden_states": hidden_states,
-                 "attention_mask": attention_mask}
-            )["hidden_states"]
+            all_hidden_states += (input_dict["hidden_states"],)
+            input_dict.update(l(input_dict))
 
-        hidden_states = self.ln_f(hidden_states)
+        hidden_states = self.ln_f(input_dict["hidden_states"])
         all_hidden_states += (hidden_states,)
 
+        past_key_values = None
+        if "new_past_key_values" in input_dict:
+            past_key_values = input_dict["new_past_key_values"]
+
         return BaseModelOutputWithPast(
-            last_hidden_state=hidden_states, hidden_states=all_hidden_states
+            last_hidden_state=hidden_states, hidden_states=all_hidden_states,
+            past_key_values=past_key_values
         )
     
     @classmethod
@@ -435,13 +454,10 @@ class Moss003MoonForCausalLM(CollieModelForCausalLM):
     def forward(self, input_ids, attention_mask=None, inputs_embeds=None,
                 past_key_values: Optional[Tuple[torch.Tensor]] = None,
                 **kwargs):
-        if past_key_values is not None:
-            self._set_past_key_values(self.transformer.h, past_key_values)
-        else:
-            self._clean_past_key_values(self.transformer.h)
         output = self.transformer(
             input_ids=input_ids, attention_mask=attention_mask,
-            inputs_embeds=inputs_embeds, **kwargs
+            inputs_embeds=inputs_embeds, past_key_values=past_key_values,
+            **kwargs
         )
         hidden_states = output.last_hidden_state
         all_hidden_states = output.hidden_states
@@ -449,18 +465,13 @@ class Moss003MoonForCausalLM(CollieModelForCausalLM):
         return CausalLMOutputWithPast(
             loss=None,
             logits=logits,
-            past_key_values=self._get_past_key_values(self.transformer.h),
+            past_key_values=output.past_key_values,
             hidden_states=all_hidden_states,
             attentions=None
         )
 
-    def set_cache(self, use_cache: bool = False,
-                  past_key_values: Optional[list] = None,):
+    def set_cache(self, use_cache: bool = False):
         self._set_use_cache(self.transformer.h, use_cache)
-        if past_key_values is None:
-            self._clean_past_key_values(self.transformer.h)
-        else:
-            self._set_past_key_values(self.transformer.h, past_key_values)
 
     def prepare_inputs(self, 
                        input_ids: torch.Tensor,
@@ -477,15 +488,14 @@ class Moss003MoonForCausalLM(CollieModelForCausalLM):
             # create position_ids on the fly for batch generation
             position_ids = attention_mask.long().cumsum(-1) - 1
             position_ids.masked_fill_(attention_mask == 0, 1)
-            if past_key_values:
+            if past_key_values is not None:
                 position_ids = position_ids[:, -1].unsqueeze(-1)
         return {"input_ids": input_ids, "attention_mask": attention_mask,
                 "use_cache": use_cache, "position_ids": position_ids,
                 "past_key_values": past_key_values}
     
-    def clean(self):
+    def clean_cache(self):
         self._clean_hidden_states([*self.transformer.h, self.lm_head])
-        self._clean_past_key_values(self.transformer.h)
         self._set_use_cache(self.transformer.h, False)
 
     @classmethod
@@ -496,7 +506,6 @@ class Moss003MoonForCausalLM(CollieModelForCausalLM):
         transformer = Moss003MoonModel.pipeline_layers(config)
         lm_head = dict_as_params("hidden_states", "logits")(
             ColumnParallelLMHead, config.n_embd, config.vocab_size,
-            bias=False
         )
 
         layers = [
@@ -627,6 +636,6 @@ class Moss003MoonForCausalLM(CollieModelForCausalLM):
         # Only save and merge on rank0
         if env.rank == 0 and env.is_pipeline:
             # merge
-            tmp_index_files = [tmp_index.format(i) for i in range(config.pp_size)]
+            tmp_index_files = [tmp_index_file.format(i) for i in range(config.pp_size)]
             merge_index_dict(path, tmp_index_files, io_driver)
         dist.barrier()

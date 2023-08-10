@@ -41,9 +41,6 @@ def patch_peft_model(collie_config):
         elif config.peft_type == PeftType.P_TUNING:
             prompt_encoder = PromptEncoder(config)
         elif config.peft_type == PeftType.PREFIX_TUNING:
-            from collie.module import PipelineModel
-            if isinstance(self.base_model, PipelineModel):
-                config.num_layers = len([layer for layer in self.base_model.layers if hasattr(layer, "past_key_values")])
             prompt_encoder = PrefixEncoder(config)
         else:
             raise ValueError("Not supported")
@@ -154,6 +151,8 @@ def patch_peft_model(collie_config):
                             )
                             for past_key_value_tuple in past_key_values
                         )
+                    elif isinstance(past_key_values, torch.Tensor):
+                        past_key_values = past_key_values.to(self.base_model_torch_dtype)
                     else:
                         past_key_values = tuple(
                             past_key_value.to(self.base_model_torch_dtype) for past_key_value in past_key_values

@@ -38,7 +38,7 @@ from transformers.generation.utils import GenerationConfig, GenerationMixin
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from collie.log import logger
-from collie.utils import env, broadcast_tensor, setup_ds_engine
+from collie.utils import env, broadcast_tensor, setup_ds_engine, stack_tensor, concat_tensor
 
 class ColumnParallelLinearWithoutBias(ColumnParallelLinear):
     """重写 ``megatron`` 提供的列并行全连接层以去掉结果中的 ``bias``。
@@ -176,7 +176,6 @@ class PipelineGenerationMixin(GenerationMixin):
         self.engine_container[-1].eval()
         self.forward_type = "generate"
         res = super().generate(*args, **kwargs)
-        self._clean_past_key_values()
         self._clean_hidden_states()
         # contrastive learning
         if self.is_contrastive_search:
@@ -215,11 +214,21 @@ class PipelineGenerationMixin(GenerationMixin):
             inputs["position_ids"] = position_ids
         if inputs_embeds is not None:
             inputs["inputs_embeds"] = inputs_embeds
-        if past_key_values is None:
-            self._clean_past_key_values()
-        else:
-            self._set_past_key_values(past_key_values)
-        outputs = self.engine_container[-1].generate_batch(inputs, use_cache)
+        if past_key_values is not None:
+            # TODO 这里先按照输入的 past key values 是没有 split 版本的处理
+            if not isinstance(past_key_values, torch.Tensor):
+                # stack 起来
+                stack_past_key_values = [None for _ in range(len(past_key_values))]
+                for i, layer_past in enumerate(past_key_values):
+                    if not isinstance(layer_past, torch.Tensor):
+                        stack_past_key_values[i] = stack_tensor(layer_past)
+                    else:
+                        stack_past_key_values[i] = layer_past
+                del past_key_values
+                past_key_values = stack_tensor(stack_past_key_values)
+            inputs["past_key_values"] = past_key_values
+
+        outputs = self.engine_container[-1].generate_batch(inputs)
         hidden_states = self._get_hidden_states()
         if self.is_contrastive_search:
             # contrastive search 时每个 stage 拿到的 last_hidden_states
@@ -235,10 +244,17 @@ class PipelineGenerationMixin(GenerationMixin):
                 last_hidden_states, src=src, group=env.pp_group
             )
             hidden_states.append(last_hidden_states)
+        
+        # 还原 past key values
+        if "new_past_key_values" in outputs:
+            past_key_values = outputs["new_past_key_values"]
+        else:
+            past_key_values = None
+
         return CausalLMOutputWithPast(
             loss=None,
             logits=outputs["logits"],
-            past_key_values=self._get_past_key_values(),
+            past_key_values=past_key_values,
             hidden_states=hidden_states,
             attentions=None
         )
@@ -262,16 +278,19 @@ class PipelineGenerationMixin(GenerationMixin):
             inputs["position_ids"] = position_ids
         if inputs_embeds is not None:
             inputs["inputs_embeds"] = inputs_embeds
-        if past_key_values is None:
-            self._clean_past_key_values()
-        else:
-            self._set_past_key_values(past_key_values)
+        if past_key_values is not None:
+            # prefix tuning
+            # TODO 这里先按照输入的 past key values 是没有 split 版本的处理
+            if not isinstance(past_key_values, torch.Tensor):
+                # stack 起来
+                past_key_values = torch.stack(past_key_values)
+            inputs["past_key_values"] = past_key_values
         inputs["labels"] = labels
         loss = self.engine_container[-1].train_batch(inputs)
         return CausalLMOutputWithPast(
             loss=loss,
             logits=None,
-            past_key_values=self._get_past_key_values(),
+            past_key_values=None,
             hidden_states=None,
             attentions=None
         )
@@ -295,31 +314,32 @@ class PipelineGenerationMixin(GenerationMixin):
             inputs["position_ids"] = position_ids
         if inputs_embeds is not None:
             inputs["inputs_embeds"] = inputs_embeds
-        if past_key_values is None:
-            self._clean_past_key_values()
-        else:
-            self._set_past_key_values(past_key_values)
+        if past_key_values is not None:
+            # TODO 这里先按照输入的 past key values 是没有 split 版本的处理
+            if not isinstance(past_key_values, torch.Tensor):
+                # stack 起来
+                stack_past_key_values = [None for _ in range(len(past_key_values))]
+                for i, layer_past in enumerate(past_key_values):
+                    if not isinstance(layer_past, torch.Tensor):
+                        stack_past_key_values[i] = stack_tensor(layer_past)
+                    else:
+                        stack_past_key_values[i] = layer_past
+                del past_key_values
+                past_key_values = stack_tensor(stack_past_key_values)
+            inputs["past_key_values"] = past_key_values
+
         inputs["labels"] = labels
         outputs = self.engine_container[-1].eval_batch(inputs)
         hidden_states = self._get_hidden_states()
-        if self.is_contrastive_search:
-            # contrastive search 时每个 stage 拿到的 last_hidden_states
-            # 不一样，所以广播出去
-            src = self.engine_container[-1].grid.stage_to_global(self.engine_container[-1].num_stages - 1)
-            if hidden_states is not None:
-                last_hidden_states = hidden_states[-1]
-            else:
-                # 防止流水线段数过多时某些 stage 没有分到 block
-                hidden_states = []
-                last_hidden_states = None
-            last_hidden_states = broadcast_tensor(
-                last_hidden_states, src=src, group=env.pp_group
-            )
-            hidden_states.append(last_hidden_states)
+        # 还原 past key values
+        if "new_past_key_values" in outputs:
+            past_key_values = outputs["new_past_key_values"]
+        else:
+            past_key_values = None
         return CausalLMOutputWithPast(
             loss=None,
             logits=outputs["logits"],
-            past_key_values=self._get_past_key_values(),
+            past_key_values=past_key_values,
             hidden_states=hidden_states,
             attentions=None
         )
@@ -333,13 +353,13 @@ class PipelineGenerationMixin(GenerationMixin):
                                       **kwargs):
         self._set_use_cache(use_cache)
         if past_key_values is not None:
-            if None in past_key_values:
+            if not isinstance(past_key_values, torch.Tensor) and None in past_key_values:
                 past_key_values = None
         return self.engine_container[-1].module.prepare_inputs(
             input_ids=input_ids, inputs_embeds=inputs_embeds, past_key_values=past_key_values,
             attention_mask=attention_mask, use_cache=use_cache, **kwargs
         )
-        
+
     def _validate_model_kwargs(self, model_kwargs: Dict[str, Any]):
         """Validates model kwargs for generation. Generate argument typos will also be caught here."""
         # Excludes arguments that are handled before calling any model function
@@ -374,30 +394,6 @@ class PipelineGenerationMixin(GenerationMixin):
         """ 从流水线 `engine` 中找到所有的层
         """
         self.layers = self.forward_funcs
-    
-    def _get_past_key_values(self, attr_name: str="past_key_values"):
-        """ 从所有层中获取 `past_key_values`
-        """
-        past_key_values = []
-        for layer in self.layers:
-            if hasattr(layer, attr_name):
-                past_key_values.append(getattr(layer, attr_name))
-        return tuple(past_key_values) if None not in past_key_values else None
-
-    def _clean_past_key_values(self, attr_name: str="past_key_values"):
-        """ 清除所有层中的 `past_key_values`
-        """
-        for layer in self.layers:
-            if hasattr(layer, attr_name):
-                object.__setattr__(layer, attr_name, None)
-                
-    def _set_past_key_values(self, past_key_values: List[List[torch.Tensor]], attr_name: str="past_key_values"):
-        """ 设置所有层中的 `past_key_values`
-        """
-        past_key_values = iter(past_key_values)
-        for layer in self.layers:
-            if hasattr(layer, attr_name):
-                object.__setattr__(layer, attr_name, next(past_key_values))
             
     def _get_hidden_states(self, attr_name: str="hidden_states"):
         """ 从所有层中获取 `hidden_states`
