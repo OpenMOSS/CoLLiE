@@ -402,11 +402,12 @@ class Trainer(TrainerEventTrigger):
                         loss = auto_param_call(trainer.loss_fn, {**batch, **outputs}, 
                                                signature_fn=trainer.loss_fn.forward if isinstance(trainer.loss_fn, nn.Module) else trainer.loss_fn)
                 if trainer.lr_scheduler is not None:
-                    trainer.lr_scheduler.step()
                     lr = trainer.lr_scheduler.get_last_lr()[0]
                 else:
                     lr = trainer.optimizer.lr
                 trainer.optimizer.fused_backward(loss, lr)
+                if trainer.lr_scheduler is not None:
+                    trainer.lr_scheduler.step()
                 if trainer.optimizer.zero3_enabled:
                     trainer.engine.optimizer.get_param_coordinator(training=True).reset_step()
         return loss.detach().cpu().item()
