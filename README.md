@@ -108,10 +108,13 @@ CoLLiE 基于 *DeepSpeed* 和 *PyTorch*，为大型语言模型提供协作式�
 ## 评测
 
 ### 显存占用
+使用张量并行测试了批量大小为 1，序列长度为 2048，梯度累计步数为 2 下显存占用情况，结果如下：
+
 <img src="docs/assets/images/mem_req.png" width="400px">
 
 ### 吞吐量
 在 A100 和 RTX-3090 上测试了不同批量大小下使用 Adam 优化器的吞吐量，结果如下：
+
 <img src="docs/assets/images/throughput.png" width="800px">
 
 ## 安装

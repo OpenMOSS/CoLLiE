@@ -98,10 +98,15 @@ It primarily includes the following four features:
 ## Evaluation
 
 ### Memory Requirements
+
+The memory requirements are profiled with tensor parallelism.
+The results with batch size 1, sequence length 2048 and gradient accumulation steps 2 are shown below:
+
 <img src="docs/assets/images/mem_req.png" width="400px">
 
 ### Throughput
 The throughput of using Adam optimizer with different batch sizes on A100 and RTX-3090 is shown below:
+
 <img src="docs/assets/images/throughput.png" width="800px">
 
 ## Installation
