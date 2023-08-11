@@ -98,7 +98,7 @@ It primarily includes the following four features:
 ## Evaluation
 
 ### Memory Requirements
-<img src="docs/assets/images/mem_req.png" width="600px">
+<img src="docs/assets/images/mem_req.png" width="400px">
 
 ### Throughput
 The throughput of using Adam optimizer with different batch sizes on A100 and RTX-3090 is shown below:

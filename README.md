@@ -108,7 +108,7 @@ CoLLiE 基于 *DeepSpeed* 和 *PyTorch*，为大型语言模型提供协作式�
 ## 评测
 
 ### 显存占用
-<img src="docs/assets/images/mem_req.png" width="600px">
+<img src="docs/assets/images/mem_req.png" width="400px">
 
 ### 吞吐量
 在 A100 和 RTX-3090 上测试了不同批量大小下使用 Adam 优化器的吞吐量，结果如下：
