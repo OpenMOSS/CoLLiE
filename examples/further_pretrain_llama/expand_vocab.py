@@ -30,13 +30,9 @@ config.ds_config = {
             "group": "further_pretrain_llama"
         }
     },
-    # "zero_optimization": {
-    #     "stage": 1,
-    # }
 }
 # 合并词表
-llama_tokenizer = LlamaTokenizer.from_pretrained(
-    "/mnt/petrelfs/zhangshuo/model/llama-7b-hf")
+llama_tokenizer = LlamaTokenizer.from_pretrained("decapoda-research/llama-7b-hf")
 chinese_sp_model = spm.SentencePieceProcessor()
 chinese_sp_model.Load("./chinese_sp.model")
 llama_spm = sp_pb2_model.ModelProto()
@@ -72,8 +68,7 @@ ratio = 0.01
 eval_dataset, train_dataset = dataset[:int(
     len(dataset) * ratio)], dataset[int(len(dataset) * ratio):]
 # 准备模型并调整 embedding 层大小，设置只训练 embedding 和 lm_head 层，加速收敛
-model = LlamaForCausalLM.from_pretrained(
-    "/mnt/petrelfs/zhangshuo/model/llama-7b-hf", config=config)
+model = LlamaForCausalLM.from_pretrained("decapoda-research/llama-7b-hf", config=config)
 model.resize_token_embeddings(len(llama_tokenizer) + 7)  # 取个整
 for p in model.parameters():
     p.requires_grad = False

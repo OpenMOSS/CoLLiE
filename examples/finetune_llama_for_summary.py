@@ -1,5 +1,5 @@
 import sys
-sys.path.append("../")
+sys.path.append("..")
 from typing import Dict
 
 import argparse
@@ -78,8 +78,7 @@ eval_dataset = CollieDatasetForGeneration(data_bundle['dev'],
                                                tokenizer=tokenizer)
 
 # Prepare model
-model = LlamaForCausalLM.from_pretrained(
-    "decapoda-research/llama-7b-hf", config=config)
+model = LlamaForCausalLM.from_pretrained("decapoda-research/llama-7b-hf", config=config)
 optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5)
 lr_scheduler = torch.optim.lr_scheduler.StepLR(
     optimizer=optimizer, step_size=1, gamma=0.9

@@ -47,16 +47,14 @@ eval_dataset_bleu = [
     } for sample in load_dataset("iwslt2017", name="iwslt2017-fr-en", split="train[100:150]")
 ]
 # Prepare model
-model = ChatGLMForCausalLM.from_pretrained(
-    "/mnt/petrelfs/zhangshuo/model/chatglm-6b", config=config)
+model = ChatGLMForCausalLM.from_pretrained("THUDM/chatglm-6b", config=config)
 optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5)
 # lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
 #     optimizer=optimizer, T_max=config.train_epochs * len(train_dataset) / (config.train_micro_batch_size * config.gradient_accumulation_steps))
 lr_scheduler = torch.optim.lr_scheduler.StepLR(
     optimizer=optimizer, step_size=1, gamma=0.9
 )
-tokenizer = AutoTokenizer.from_pretrained(
-    "THUDM/chatglm-6b", trust_remote_code=True)
+tokenizer = AutoTokenizer.from_pretrained("THUDM/chatglm-6b", trust_remote_code=True)
 # 默认的tokenizer不会把[gMASK]当作一个token，所以需要手动添加
 tokenizer.unique_no_split_tokens.append("[gMASK]")
 # Convert to CoLLie Dataset
@@ -118,4 +116,3 @@ trainer = Trainer(
     evaluators=[evaluator_ppl, evaluator_bleu]
 )
 trainer.train()
-# trainer.save_checkpoint(path="/mnt/petrelfs/zhangshuo/model/test_save_checkpoint", mode="model")
