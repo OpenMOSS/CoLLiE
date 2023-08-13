@@ -8,8 +8,12 @@ CoLLiE (Collaborative Tuning of Large Language Models in an Efficient Way)，一
 
 
 [![Github Repo Stars](https://img.shields.io/github/stars/openlmlab/collie?style=social)](https://github.com/openlmlab/collie/stargazers)
+[![GitHub](https://img.shields.io/github/license/OpenLMLab/collie)]()
 [![Doc](https://img.shields.io/badge/Website-Doc-blue)](https://openlmlab-collie.readthedocs.io/zh_CN/latest/)
 [![HuggingFace badge](https://img.shields.io/badge/%F0%9F%A4%97HuggingFace-Join-yellow)](https://huggingface.co/openlmlab)
+[![GitHub Workflow Status (with event)](https://img.shields.io/github/actions/workflow/status/OpenLMLab/collie/python-publish.yml)](https://pypi.org/project/collie-lm/)
+[![GitHub commit activity (branch)](https://img.shields.io/github/commit-activity/w/OpenLMLab/collie)](https://github.com/OpenLMLab/collie/commits/main)
+[![GitHub issues](https://img.shields.io/github/issues/OpenLMLab/collie)](https://github.com/OpenLMLab/collie/issues)
 
 <h4 align="center">
   <p>
@@ -21,6 +25,7 @@ CoLLiE (Collaborative Tuning of Large Language Models in an Efficient Way)，一
 
 ## 新闻
 - [2023/08] 评测结果新增[显存占用与模型大小的关系](#显存占用)和[吞吐量](#吞吐量)。
+- [2023/07] 发布Python包`collie-lm`。您可以在[PyPI](https://pypi.org/project/collie-lm/#history)中查看更多细节！
 
 ## 目录
 <ul>
@@ -118,9 +123,21 @@ CoLLiE 基于 *DeepSpeed* 和 *PyTorch*，为大型语言模型提供协作式�
 <img src="docs/assets/images/throughput.png" width="800px">
 
 ## 安装
+在安装前，你需要确保：
+* PyTorch >= 1.13
+* CUDA >= 11.6 
+* Linux OS
+### PyPI安装
+你可以简单地通过PyPI安装，命令如下：
 ```bash
-pip install git+https://github.com/OpenLMLab/collie.git
+pip install collie-lm
 ```
+### 源码安装
+```bash
+git clone https://github.com/OpenLMLab/collie
+python setup.py install
+```
+
 ## Docker安装
 
 ## 使用

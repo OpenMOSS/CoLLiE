@@ -20,6 +20,7 @@ CoLLiE (Collaborative Tuning of Large Language Models in an Efficient Way) is a 
 
 ## Latest News
 - [2023/08] [Memory requirements](#memory-requirements) and [throughput](#throughput) are added to Evaluation.
+- [2023/07] Release python package collie-lm(1.0.2). You can find more detials in [PyPI](https://pypi.org/project/collie-lm/#history).
 
 ## Table of Contents
 <ul>
