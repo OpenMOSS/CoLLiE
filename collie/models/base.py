@@ -287,8 +287,8 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                 if getattr(config.quantization_config, "load_in_4bit", False) or \
                     config.quantization_config.load_in_8bit:
                         set_module_quantized_tensor_to_device(
-                            module=model, 
-                            tensor_name=name, 
+                            module=model,
+                            tensor_name=name,
                             device="cpu" if param.device == torch.device("meta") else param.device,
                             value=state_dict.get(name, torch.empty_like(param.data).to(param.dtype)).data
                         )
@@ -296,7 +296,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                     if param.device == torch.device("meta"):
                         set_module_tensor_to_device(
                             module=model, tensor_name=name, device="cpu" if param.device == torch.device("meta") else param.device,
-                            value=state_dict.get(name, torch.empty_like(param.data).to(param.dtype)).data, 
+                            value=state_dict.get(name, torch.empty_like(param.data).to(param.dtype)).data,
                             dtype=config.model_config.torch_dtype
                         )
                     else:
@@ -546,8 +546,11 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                 start_pos_new = 0
                 end_pos_new = 0
             if is_zero3_enabled(self.collie_config):
-                with deepspeed.zero.GatheredParameters([new_lm_head.weight, lm_head.weight] + \
-                    [new_lm_head.bias, lm_head.bias] if lm_head.bias is not None else [], modifier_rank=0):
+                with deepspeed.zero.GatheredParameters(
+                        [new_lm_head.weight, lm_head.weight] + [new_lm_head.bias, lm_head.bias]
+                        if lm_head.bias is not None else [new_lm_head.weight, lm_head.weight],
+                        modifier_rank=0
+                ):
                     if env.tp_size > 1 and isinstance(new_lm_head, tensor_parallel.ColumnParallelLinear):
                         weights_list = [lm_head.weight.clone().cuda() for _ in range(env.tp_size)]
                         dist.all_gather(weights_list, lm_head.weight.cuda(), group=parallel_state.get_tensor_model_parallel_group())
