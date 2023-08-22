@@ -162,7 +162,7 @@ class CollieConfig:
         }
     )
     ds_config: Union[str, dict] = field(
-        default="",
+        default_factory=lambda: {},
         metadata={
             "help": "DeepSpeed configuration file."
         }
@@ -174,13 +174,13 @@ class CollieConfig:
         }
     )
     peft_config: PeftConfig = field(
-        default_factory=lambda:PeftConfig(),
+        default_factory=lambda: PeftConfig(),
         metadata={
             "help": "PEFT configuration."
         }
     )
     quantization_config: BitsAndBytesConfig = field(
-        default_factory=lambda:BitsAndBytesConfig(),
+        default_factory=lambda: BitsAndBytesConfig(),
         metadata={
             "help": "Configuration parameters for the `bitsandbytes` library"
         }
@@ -191,7 +191,7 @@ class CollieConfig:
         """
         加载预训练模型的设置。
 
-        :param path: 预训练模型设置的路径，支持本地路径或 ``huggingface`` 上的仓库
+        :param name_or_path: 预训练模型设置的路径，支持本地路径或 ``huggingface`` 上的仓库
             名称。
         :param kwargs: 其它的设置。可以通过该参数设置 ``pp_size``、``dp_size`` 等
             训练参数和 ``vocab_size`` 等关于模型的参数。
