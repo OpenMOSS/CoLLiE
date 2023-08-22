@@ -12,8 +12,10 @@ from collie.module import GPTLMLoss
 from collie.config import CollieConfig
 from collie.data import CollieDataLoader
 from collie.log import logger
-from collie.utils import env, setup_distribution
+from collie.utils import env, setup_distribution, ColliePadder
 from collie.controller import Trainer
+from collie.optim import Lomo
+from tests.helpers import create_ds_config, import_class
 
 def compare(d1, d2, key=""):
     assert type(d1) == type(d2), f"Key: {key}, {type(d1)} vs {type(d2)}"
@@ -32,58 +34,6 @@ def compare(d1, d2, key=""):
         assert torch.allclose(d1, d2), \
             f"Key: {key}, d1: {d1}, d2:{d2}"
 
-DS_CONFIG = {
-    "fp16": {
-        "enabled": True
-    },
-    "zero_allow_untested_optimizer": True,
-    "zero_force_ds_cpu_optimizer": False,
-
-    "optimizer": {
-        "type": "Adam",
-        "params": {
-            "lr": 2e-5,
-            "weight_decay": 0.1
-        }
-    },
-
-    "zero_optimization": {
-        "stage": 1,
-        # "offload_optimizer": {
-        #     "device": "cpu",
-        #     "pin_memory": False
-        # }
-    },
-    "steps_per_print": 2000,
-}
-
-def init(pretrained_model, format, dp_size, tp_size, pp_size):
-    config = CollieConfig.from_pretrained(
-        pretrained_model, tp_size=tp_size, dp_size=dp_size, pp_size=pp_size, 
-        train_epochs=1, eval_per_n_steps=0, eval_per_n_epochs=0,
-        train_micro_batch_size=2, gradient_accumulation_steps=4,
-        eval_batch_size=1, ds_config=DS_CONFIG, trust_remote_code=True
-    )
-    # tokenizer and dataset
-    tokenizer = AutoTokenizer.from_pretrained(pretrained_model, trust_remote_code=True)
-    train_sample = tokenizer("Collie is a python package for finetuning large language models.", return_tensors="pt").input_ids.squeeze(0)
-    eval_sample = tokenizer("Collie is", return_tensors="pt").input_ids.squeeze(0)[:-1,]
-    train_dataset = [(train_sample, train_sample) for _ in range(400)]
-
-    if format == "collie":
-        model = Moss003MoonForCausalLM.from_pretrained(pretrained_model, config=config)
-    elif format == "hf":
-        setup_distribution(config)
-        model = AutoModelForCausalLM.from_pretrained(pretrained_model)
-    else:
-        raise NotImplementedError
-
-    trainer = Trainer(
-        model, config, loss_fn=GPTLMLoss(-100),
-        train_dataset=train_dataset
-    )
-    return config, trainer, eval_sample
-
 def save_checkpoint(trainer, eval_sample, config, ckpt_dir, format):
     """
     保存 checkpoint，同时将 optimizer state 和 eval_sample 的 logits 
@@ -92,11 +42,19 @@ def save_checkpoint(trainer, eval_sample, config, ckpt_dir, format):
     logger.info("Save checkpoint")
     trainer.save_checkpoint(ckpt_dir)
     # optimizer 和 logits
-    state_dict_before = trainer.engine.optimizer.state_dict()
+    if trainer.optimizer is not None:
+        state_dict_before = trainer.optimizer.state_dict()
+    else:
+        state_dict_before = trainer.engine.optimizer.state_dict()
     client_state = {}
+    eval_dataset = [{
+        "input_ids": eval_sample,
+        "labels": eval_sample
+    }]
     dataloader = CollieDataLoader(
-        [(eval_sample, eval_sample)], config.eval_batch_size,
+        eval_dataset, config.eval_batch_size,
         config.gradient_accumulation_steps, shuffle=False,
+        collate_fn=ColliePadder(), num_workers=0
     )
     trainer.engine.eval()
     if config.pp_size == 1:
@@ -104,7 +62,9 @@ def save_checkpoint(trainer, eval_sample, config, ckpt_dir, format):
     else:
         # accu * evalbatch_size, seqlen(2), vocabsize
         # 所以取第一个
-        client_state["logits"] = trainer.engine.eval_batch(next(iter(dataloader))).detach().cpu()[0]
+        trainer.engine.module.forward_type = "eval"
+        client_state["logits"] = trainer.engine.module(**next(iter(dataloader)))["logits"].detach().cpu()[0]
+        trainer.engine.module.forward_type = "train"
     client_state["format"] = format
     torch.save(state_dict_before, f"zero_save_dp{env.dp_rank}_tp{env.tp_rank}_pp{env.pp_rank}")
     if env.rank == 0:
@@ -112,27 +72,32 @@ def save_checkpoint(trainer, eval_sample, config, ckpt_dir, format):
 
     env.barrier()
 
-def check_weights(trainer, config, ckpt_dir, eval_sample):
+def check_weights(trainer, config, ckpt_dir, eval_sample, hf_model):
     """
     只加载 ckpt_dir 的权重，检查 eval_sample 的 logits是否一致。
     """
     logger.info("Check model weights")
+    env.barrier()
     client_state = torch.load("logits")
     logits_before = client_state["logits"]
     # huggingface 模型
-    hf_model = AutoModelForCausalLM.from_pretrained(ckpt_dir).cuda()
-    hf_logits = hf_model(eval_sample.cuda()).logits.detach().cpu()
-    if not torch.allclose(hf_logits.to(logits_before), logits_before, 0, 1e-4):
+    hf_model.eval()
+    hf_logits = hf_model(eval_sample.cuda()).logits.detach().cpu().to(logits_before)
+    if not torch.allclose(hf_logits, logits_before, 0, 1e-2):
         logger.info(
             f"The logits from {ckpt_dir} is not equal to logits from "
             f"huggingface model: {logits_before} \n vs \n {hf_logits}"
         )
-    del hf_model
     # collie 包裹的模型
     trainer.load_model(ckpt_dir)
+    eval_dataset = [{
+        "input_ids": eval_sample,
+        "labels": eval_sample
+    }]
     dataloader = CollieDataLoader(
-        [(eval_sample, eval_sample)], config.eval_batch_size,
+        eval_dataset, config.eval_batch_size,
         config.gradient_accumulation_steps, shuffle=False,
+        collate_fn=ColliePadder(), num_workers=0
     )
     trainer.engine.eval()
     if config.pp_size == 1:
@@ -140,11 +105,14 @@ def check_weights(trainer, config, ckpt_dir, eval_sample):
     else:
         # accu * evalbatch_size, seqlen(2), vocabsize
         # 所以取第一个
-        logits = trainer.engine.eval_batch(next(iter(dataloader))).detach().cpu()[0]
-    if not torch.allclose(logits.to(logits_before), logits_before, 0, 1e-4):
+        trainer.engine.module.forward_type = "eval"
+        logits = trainer.engine.module(**next(iter(dataloader)))["logits"].detach().cpu()[0]
+        trainer.engine.module.forward_type = "train"
+    logits = logits.to(logits_before)
+    if not torch.allclose(logits, logits_before, 0, 1e-2):
         logger.info(
             f"The logits from {ckpt_dir} is not equal to logits from "
-            f"loaded collie model: {logits_before} \n vs \n {hf_logits}"
+            f"loaded collie model: {logits_before} \n vs \n {logits}"
         )
 
 def check_checkpoint(trainer, config, ckpt_dir):
@@ -156,12 +124,17 @@ def check_checkpoint(trainer, config, ckpt_dir):
     logger.info("Check optimizer state")
     trainer.load_checkpoint(ckpt_dir)
     env.barrier()
-    state_dict = trainer.engine.optimizer.state_dict()
+    # TODO 不同tp的optimizer会不一致
+    if trainer.optimizer is not None:
+        state_dict = trainer.optimizer.state_dict()
+    else:
+        state_dict = trainer.engine.optimizer.state_dict()
     state_dict_before = torch.load(f"zero_save_dp{env.dp_rank}_tp{env.tp_rank}_pp{env.pp_rank}")
     # 测试 optimizer state_dict
     compare(state_dict_before, state_dict)
 
-def test_checkpoint(pretrained_model, ckpt_dir, zero_stage, format, load, dp_size, tp_size, pp_size):
+def test_checkpoint(model_type, pretrained_model, ckpt_dir, zero_stage,
+                    format, load, dp_size, tp_size, pp_size, lomo):
     """
     模型保存后再加载进行验证
 
@@ -178,16 +151,56 @@ def test_checkpoint(pretrained_model, ckpt_dir, zero_stage, format, load, dp_siz
         pp_size = 1
     if pp_size != 1:
         zero_stage = 1
-    DS_CONFIG["zero_optimization"]["stage"] = zero_stage
-    config, trainer, eval_sample = init(pretrained_model, format, dp_size,
-                                        tp_size, pp_size)
+
+    # 初始化
+    if load:
+        # 加载 huggingface
+        hf_model = AutoModelForCausalLM.from_pretrained(
+            ckpt_dir, trust_remote_code=True, torch_dtype=torch.float16
+        )
+    if lomo:
+        ds_config = create_ds_config(fp16=True, zero=zero_stage, offload=True, optimizer=None)
+    else:
+        ds_config = create_ds_config(fp16=True, zero=zero_stage, offload=True, optimizer="Adam", lr=2e-5)
+    config = CollieConfig.from_pretrained(
+        pretrained_model, tp_size=tp_size, dp_size=dp_size, pp_size=pp_size, 
+        train_epochs=1, eval_per_n_steps=0, eval_per_n_epochs=0,
+        train_micro_batch_size=2, gradient_accumulation_steps=4,
+        eval_batch_size=1, ds_config=ds_config, trust_remote_code=True,
+        use_flash=False
+    )
+    # tokenizer and dataset
+    tokenizer = AutoTokenizer.from_pretrained(pretrained_model, trust_remote_code=True)
+    train_sample = tokenizer("Collie is a python package for finetuning large language models.", return_tensors="pt").input_ids.squeeze(0)
+    eval_sample = tokenizer("Collie is", return_tensors="pt").input_ids.squeeze(0)[:-1,]
+    train_dataset = [{"input_ids": train_sample, "labels": train_sample} for _ in range(200)]
+
+    if format == "collie":
+        model = import_class(model_type).from_pretrained(pretrained_model, config=config)
+    elif format == "hf":
+        setup_distribution(config)
+        model = AutoModelForCausalLM.from_pretrained(pretrained_model)
+    else:
+        raise NotImplementedError
+
+    if lomo:
+        optimizer = Lomo(model, lr=2e-5, clip_grad_norm=1.0)
+    else:
+        optimizer = None
+
+    trainer = Trainer(
+        model, config, loss_fn=GPTLMLoss(-100),
+        train_dataset=train_dataset, optimizer=optimizer
+    )
     
     if not load:
-        # trainer.train()
+        trainer.train()
         save_checkpoint(trainer, eval_sample, config, ckpt_dir, format)
     else:
+        hf_model = hf_model.cuda()
         # 加载
-        check_weights(trainer, config, ckpt_dir, eval_sample)
+        check_weights(trainer, config, ckpt_dir, eval_sample, hf_model)
+        del hf_model
         env.barrier()
         client_state = torch.load("logits")
         format_before = client_state["format"]
@@ -195,21 +208,21 @@ def test_checkpoint(pretrained_model, ckpt_dir, zero_stage, format, load, dp_siz
             check_checkpoint(trainer, config, ckpt_dir)
 
 if __name__ == "__main__":
-    # pretrained_model = "Salesforce/codegen-350M-mono"
-    pretrained_model = "/mnt/petrelfs/xingshuhao.dispatch/.cache/huggingface/hub/models--Salesforce--codegen-350M-mono/snapshots/40b7a3b6e99e73bdb497a14b740e7167b3413c74"
-    ckpt_dir = "3dckpt"
-    dp_size = 2
-    tp_size = 2
-    pp_size = 1
-    zero_stage = 3
-    ## 用 collie 的模型保存
-    # kwargs = dict(format="collie", load=False)
-    ## 用 hf 的模型传入 collie 保存
-    kwargs = dict(format="hf", load=False)
-    ## 用 collie 的模型加载
-    kwargs = dict(format="collie", load=True)
-    ## 用 hf 模型传入 collie 加载
-    # kwargs = dict(format="hf", load=True)
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--folder", default="_ckpt", type=str)
+    parser.add_argument("--model_path", type=str)
+    parser.add_argument("--model_type", type=str)
+    parser.add_argument("--dp_size", type=int)
+    parser.add_argument("--tp_size", type=int)
+    parser.add_argument("--pp_size", type=int)
+    parser.add_argument("--zero", default=1, type=int)
+    parser.add_argument("--load", action="store_true")
+    parser.add_argument("--format", default=1, type=str)
+    parser.add_argument("--lomo", action="store_true")
+    args = parser.parse_args()
 
-    test_checkpoint(pretrained_model, ckpt_dir, zero_stage, dp_size=dp_size,
-                    tp_size=tp_size, pp_size=pp_size, **kwargs)
+    test_checkpoint(args.model_type, args.model_path, args.folder, args.zero,
+                    dp_size=args.dp_size, tp_size=args.tp_size,
+                    pp_size=args.pp_size, format=args.format, load=args.load,
+                    lomo=args.lomo)

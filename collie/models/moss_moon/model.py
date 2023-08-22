@@ -38,6 +38,7 @@ class MossAttention(nn.Module):
             torch.tril(torch.ones((max_positions, max_positions), dtype=torch.bool)).view(
                 1, 1, max_positions, max_positions
             ),
+            persistent=False,
         )
 
         self.attn_dropout = nn.Dropout(config.attn_pdrop)

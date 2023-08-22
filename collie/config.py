@@ -196,10 +196,11 @@ class CollieConfig:
         :param kwargs: 其它的设置。可以通过该参数设置 ``pp_size``、``dp_size`` 等
             训练参数和 ``vocab_size`` 等关于模型的参数。
         """
-        cfg = cls()
+        self_kwargs = {}
         for key in list(kwargs.keys()):
             if key in cls.__annotations__.keys():
-                setattr(cfg, key, kwargs.pop(key))
+                self_kwargs[key] = kwargs.pop(key)
+        cfg = cls(**self_kwargs)
         cfg.model_config = AutoConfig.from_pretrained(name_or_path, **kwargs)
 
         return cfg
@@ -220,6 +221,8 @@ class CollieConfig:
     def __setattr__(self, name: str, value: Any) -> None:
         if name in self.__annotations__.keys():
             super().__setattr__(name, value)
+            if name == "ds_config":
+                self._setup_deepspeed()
         else:
             setattr(self.model_config, name, value)
 
@@ -235,14 +238,7 @@ class CollieConfig:
         if isinstance(self.quantization_config, str):
             self.quantization_config = BitsAndBytesConfig.from_dict(load_config(self.quantization_config))
         self.model_config.gradient_checkpointing = self.checkpointing
-        if "train_micro_batch_size_per_gpu" not in self.ds_config:
-            self.ds_config["train_micro_batch_size_per_gpu"] = self.train_micro_batch_size
-        else:
-            self.train_micro_batch_size = self.ds_config["train_micro_batch_size_per_gpu"]
-        if "gradient_accumulation_steps" not in self.ds_config:
-            self.ds_config["gradient_accumulation_steps"] = self.gradient_accumulation_steps
-        else:
-            self.gradient_accumulation_steps = self.ds_config["gradient_accumulation_steps"]
+        self._setup_deepspeed()
         assert isinstance(self.ds_config, dict), self.ds_config
         os.environ["COLLIE_SEED"] = str(self.seed)
 
@@ -261,6 +257,16 @@ class CollieConfig:
             assert self.peft_config.peft_type != PeftType.LORA, "Tensor parallelism is not compatible with LoRa"
             assert not self.quantization_config.load_in_4bit and not self.quantization_config.load_in_8bit, \
                 "Tensor parallelism is not compatible with int8 quantization and int4 quantization"
+
+    def _setup_deepspeed(self):
+        if "train_micro_batch_size_per_gpu" not in self.ds_config:
+            self.ds_config["train_micro_batch_size_per_gpu"] = self.train_micro_batch_size
+        else:
+            self.train_micro_batch_size = self.ds_config["train_micro_batch_size_per_gpu"]
+        if "gradient_accumulation_steps" not in self.ds_config:
+            self.ds_config["gradient_accumulation_steps"] = self.gradient_accumulation_steps
+        else:
+            self.gradient_accumulation_steps = self.ds_config["gradient_accumulation_steps"]
 
 def load_config(path: str):
     content = {}

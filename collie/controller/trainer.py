@@ -183,7 +183,7 @@ class Trainer(TrainerEventTrigger):
         if self.eval_dataset is not None:
             assert eval_fn is not None, "eval_fn should not be None when eval_dataset is not None."
             evaluator = Evaluator(model=self.model, dataset=eval_dataset, metrics=metrics, eval_fn=eval_fn,
-                config=config, collate_fn=eval_dataset_collate_fn, data_provider=None)
+                config=config, collate_fn=eval_dataset_collate_fn)
             evaluator.monitor = self.monitor
             evaluators.append(evaluator)
         for evaluator in evaluators:
@@ -552,24 +552,21 @@ class Trainer(TrainerEventTrigger):
         self.on_save_model()
         if isinstance(self.engine.module, CollieModelForCausalLM) or isinstance(self.engine.module, PipelineModel):
             if is_zero3_enabled(self.config):
+                state_dict = {}
                 self._checkpoint_prologue()
-                with deepspeed.zero.GatheredParameters(list(self.engine.module.parameters(recurse=True))):
-                    self.engine.module.save_parallel_state_dict(
-                        state_dict=self.engine.module.state_dict(),
-                        path=path,
-                        config=self.config,
-                        process_exclusion=process_exclusion,
-                        protocol=protocol
-                    )
+                for name, param in self.engine.module.named_parameters():
+                    with deepspeed.zero.GatheredParameters(param):
+                        state_dict[name] = param.detach().cpu()
                 self._checkpoint_epilogue()
             else:
-                self.engine.module.save_parallel_state_dict(
-                    state_dict=self.engine.module.state_dict(),
-                    path=path,
-                    config=self.config,
-                    process_exclusion=process_exclusion,
-                    protocol=protocol
-                )
+                state_dict = self.engine.module.state_dict()
+            self.engine.module.save_parallel_state_dict(
+                state_dict=state_dict,
+                path=path,
+                config=self.config,
+                process_exclusion=process_exclusion,
+                protocol=protocol
+            )
         elif isinstance(self.engine.module, PreTrainedModel):
             if is_zero3_enabled(self.config):
                 self._checkpoint_prologue()
@@ -607,20 +604,22 @@ class Trainer(TrainerEventTrigger):
                     )
                 )
         elif isinstance(self.engine.module, PreTrainedModel):
+            index = None
+            if io_driver.exists(os.path.join(path, "pytorch_model.bin.index.json")):
+                weight_map = json.loads(io_driver.load(os.path.join(path, "pytorch_model.bin.index.json"), mode="r"))["weight_map"]
+                index = OrderedDict()
+                for key, value in weight_map.items():
+                    if value not in index.keys():
+                        index[value] = [key]
+                    else:
+                        index[value].append(key)
             if is_zero3_enabled(self.config):
-                index = None
-                if io_driver.exists(os.path.join(path, "pytorch_model.bin.index.json")):
-                    weight_map = json.loads(io_driver.load(os.path.join(path, "pytorch_model.bin.index.json"), mode="r"))["weight_map"]
-                    index = OrderedDict()
-                    for key, value in weight_map.items():
-                        if value not in index.keys():
-                            index[value] = [key]
-                        else:
-                            index[value].append(key)
                 self._checkpoint_prologue()
                 if index is not None:
                     for key, value in index.items():
-                        with deepspeed.zero.GatheredParameters([self.engine.module.state_dict()[attr] for attr in value], modifier_rank=0):
+                        # 用 state dict 会没办法 gather
+                        param_list = [p for n, p in self.engine.module.named_parameters() if n in value]
+                        with deepspeed.zero.GatheredParameters(param_list, modifier_rank=0):
                             if env.dp_rank == 0:
                                 state_dict = io_driver.load(os.path.join(path, key), mode="br")
                                 for attr in value:
@@ -632,22 +631,13 @@ class Trainer(TrainerEventTrigger):
                             self.engine.module.load_state_dict(state_dict)
                 self._checkpoint_epilogue()
             else:
-                index = None
-                if io_driver.exists(os.path.join(path, "pytorch_model.bin.index.json")):
-                    weight_map = json.loads(io_driver.load(os.path.join(path, "pytorch_model.bin.index.json"), mode="r"))["weight_map"]
-                    index = OrderedDict()
-                    for key, value in weight_map.items():
-                        if value not in index.keys():
-                            index[value] = [key]
-                        else:
-                            index[value].append(key)
                 if index is not None:
                     for key, value in index.items():
                         state_dict = io_driver.load(os.path.join(path, key), mode="br")
                         for attr in value:
                             self.engine.module.state_dict()[attr].copy_(state_dict[attr])
                 else:
-                    state_dict = reduce(lambda x, y: {**x, **y}, [io_driver.load(file) for file in glob.glob(os.path.join(path, "*.bin"))])
+                    state_dict = reduce(lambda x, y: {**x, **y}, [io_driver.load(file, mode="rb") for file in glob.glob(os.path.join(path, "*.bin"))])
                     self.engine.module.load_state_dict(state_dict)
 
     def save_checkpoint(self, path: str, process_exclusion: bool = False, **kwargs):...
@@ -689,7 +679,7 @@ class Trainer(TrainerEventTrigger):
                     global_samples=engine.global_samples,
                     callback_states=callback_states)
 
-        if env.rank == 0 or engine.zero_optimization_partition_weights():
+        if env.dp_rank == 0 or engine.zero_optimization_partition_weights():
             io_driver.save(state, os.path.join(path, self.checkpoint_file))
 
         if engine.save_zero_checkpoint:
@@ -726,7 +716,7 @@ class Trainer(TrainerEventTrigger):
         if engine.zero_optimization_partition_weights():
             ckpt_file = self.checkpoint_file
         else:
-            ckpt_file = "collie_dp0_pp0_tp0.pt"
+            ckpt_file = f"collie_dp0_pp{env.pp_rank}_tp{env.tp_rank}.pt"
         checkpoint = io_driver.load(os.path.join(path, ckpt_file), "b")
 
         # Prepare for checkpoint load by ensuring all parameters are partitioned
