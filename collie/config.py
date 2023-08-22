@@ -221,8 +221,6 @@ class CollieConfig:
     def __setattr__(self, name: str, value: Any) -> None:
         if name in self.__annotations__.keys():
             super().__setattr__(name, value)
-            if name == "ds_config":
-                self._setup_deepspeed()
         else:
             setattr(self.model_config, name, value)
 
@@ -257,16 +255,6 @@ class CollieConfig:
             assert self.peft_config.peft_type != PeftType.LORA, "Tensor parallelism is not compatible with LoRa"
             assert not self.quantization_config.load_in_4bit and not self.quantization_config.load_in_8bit, \
                 "Tensor parallelism is not compatible with int8 quantization and int4 quantization"
-
-    def _setup_deepspeed(self):
-        if "train_micro_batch_size_per_gpu" not in self.ds_config:
-            self.ds_config["train_micro_batch_size_per_gpu"] = self.train_micro_batch_size
-        else:
-            self.train_micro_batch_size = self.ds_config["train_micro_batch_size_per_gpu"]
-        if "gradient_accumulation_steps" not in self.ds_config:
-            self.ds_config["gradient_accumulation_steps"] = self.gradient_accumulation_steps
-        else:
-            self.gradient_accumulation_steps = self.ds_config["gradient_accumulation_steps"]
 
 def load_config(path: str):
     content = {}
