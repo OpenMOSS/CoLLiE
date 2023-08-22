@@ -470,7 +470,7 @@ def dict_as_params(input_keys: Union[str, Sequence[str]], output_keys: Union[str
             if isinstance(output_keys, str):
                 dict_inputs[output_keys] = outputs
                 for k, v in dict_inputs.items():
-                    if k != output_keys:
+                    if k != output_keys and k != "past_key_values":
                         dict_inputs[k] = v.detach()
             elif isinstance(output_keys, Sequence):
                 assert isinstance(outputs, Sequence) and len(outputs) == len(output_keys), \
@@ -478,7 +478,7 @@ def dict_as_params(input_keys: Union[str, Sequence[str]], output_keys: Union[str
                 for k, v in zip(output_keys, outputs):
                     dict_inputs[k] = v
                 for k, v in dict_inputs.items():
-                    if k not in output_keys:
+                    if k not in output_keys and k != "past_key_values":
                         dict_inputs[k] = v.detach()
             else:
                 raise ValueError(f"output_keys should be str or Sequence[str], but got {type(output_keys)}")

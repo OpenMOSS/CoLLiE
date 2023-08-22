@@ -102,6 +102,10 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         """
         if isinstance(config, str):
             config = CollieConfig.from_pretrained(config, **kwargs)
+        if 'train_micro_batch_size_per_gpu' in config.ds_config:
+            assert config.ds_config['train_micro_batch_size_per_gpu'] == config.train_micro_batch_size, \
+                "train_micro_batch_size_per_gpu in ds_config should be the same as train_micro_batch_size"
+        config.ds_config['train_micro_batch_size_per_gpu'] = config.train_micro_batch_size
         setup_distribution(config)
         model_cls = cls._get_model_cls(config)
         model = None
