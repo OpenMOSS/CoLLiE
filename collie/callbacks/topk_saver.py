@@ -66,7 +66,7 @@ class Saver:
         """
         folder = os.path.join(self.save_folder, folder_name)
         save_fn = getattr(trainer, self.save_fn_name)
-        save_fn(folder, self.process_exclusion, **self.kwargs)
+        save_fn(path=folder, process_exclusion=self.process_exclusion, **self.kwargs)
 
         return folder
     

@@ -3,21 +3,14 @@ sys.path.append("..")
 
 from rich.traceback import install
 from collie import Trainer, EvaluatorForPerplexity, LlamaForCausalLM, CollieConfig, PPLMetric, AccuracyMetric, DecodeMetric, CollieDatasetForTraining, CollieDatasetForGeneration, \
-    LossMonitor, TGSMonitor, MemoryMonitor, EvalMonitor, GradioProvider, EvaluatorForGeneration, LRMonitor, BleuMetric, DashProvider, Server
-from transformers import LlamaTokenizer, GenerationConfig
-from datasets import load_dataset
-import torch
-
-
-install()
-
-config = CollieConfig.from_pretrained(
-    "/mnt/petrelfs/zhangshuo/model/llama-7b-hf")
-config.tp_size = 4
-config.train_micro_batch_size = 128
-config.eval_batch_size = 256
-config.gradient_accumulation_steps = 1
-config.eval_per_n_epochs = 3
+    LossMonitor, TGSMonitor, MemoryMonitor, EvalMonitor, GradioProvider, EvaluatorForGeneration, LRMonitor, BleuMetric, DashProvider
+    
+config = CollieConfig.from_pretrained("decapoda-research/llama-7b-hf")
+config.pp_size = 8
+config.train_micro_batch_size = 1
+config.eval_batch_size = 1
+config.gradient_accumulation_steps = 128
+config.eval_per_n_epochs = 1
 config.train_epochs = 10
 config.use_flash = True
 config.ds_config = {
@@ -55,16 +48,12 @@ eval_dataset_bleu = [
     } for sample in load_dataset("iwslt2017", name="iwslt2017-fr-en", split="train[100:150]")
 ]
 # Prepare model
-model = LlamaForCausalLM.from_pretrained(
-    "/mnt/petrelfs/zhangshuo/model/llama-7b-hf", config=config)
+model = LlamaForCausalLM.from_pretrained("decapoda-research/llama-7b-hf", config=config)
 optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5)
-# lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-#     optimizer=optimizer, T_max=config.train_epochs * len(train_dataset) / (config.train_micro_batch_size * config.gradient_accumulation_steps))
 lr_scheduler = torch.optim.lr_scheduler.StepLR(
     optimizer=optimizer, step_size=1, gamma=0.9
 )
-tokenizer = LlamaTokenizer.from_pretrained(
-    "/mnt/petrelfs/zhangshuo/model/llama-7b-hf", add_eos_token=False, add_bos_token=False)
+tokenizer = LlamaTokenizer.from_pretrained("decapoda-research/llama-7b-hf", add_eos_token=False, add_bos_token=False)
 # Convert to CoLLie Dataset
 train_dataset = CollieDatasetForTraining(train_dataset,
                                          tokenizer=tokenizer)

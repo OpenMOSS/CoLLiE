@@ -3,17 +3,11 @@
 """
 import sys
 sys.path.append('..')
-
-import os
-import json
-import torch
-
 from transformers import AutoTokenizer
 
 from collie.config import CollieConfig
 
 from collie.data import CollieDatasetForTraining
-from collie.data import CollieDataLoader
 
 from collie.optim.lomo import Lomo
 
@@ -23,10 +17,8 @@ from collie.controller.evaluator import EvaluatorForPerplexity, EvaluatorForGene
 from collie.models.moss_moon import Moss003MoonForCausalLM
 
 from collie.utils.monitor import StepTimeMonitor, TGSMonitor, MemoryMonitor, LossMonitor, EvalMonitor
-from collie.metrics import DecodeMetric, PPLMetric, BleuMetric
+from collie.metrics import DecodeMetric, PPLMetric
 from collie.module import GPTLMLoss
-
-from collie.utils import env
 
 # 1. 设置路径
 # 1.1 预训练模型路径

@@ -1,14 +1,15 @@
 """
-一个使用CoLLie对LLaMA基座进行全参量Instruct Tuning，从而得到Alpaca的实例。
+一个使用CoLLie对LLaMA基座进行Prompt tuning的实例。
 """
+import os
 import sys
-sys.path.append('../../')
-sys.path.append("/mnt/petrelfs/gutianle/Megatron-LM/")
+sys.path.append('../..')
 import json
 import torch
 
 from transformers import LlamaTokenizer
 from transformers.generation.utils import GenerationConfig
+from peft import get_peft_model
 
 from collie.config import CollieConfig
 
@@ -19,29 +20,51 @@ from collie.controller.trainer import Trainer
 from collie.controller.evaluator import EvaluatorForPerplexity, EvaluatorForGeneration
 
 from collie.models.llama.model import LlamaForCausalLM
+from collie.utils.dist_utils import setup_distribution
+
 from collie.utils.monitor import StepTimeMonitor, TGSMonitor, MemoryMonitor, LossMonitor, EvalMonitor
 from collie.metrics import DecodeMetric, PPLMetric, BleuMetric
 from collie.module import GPTLMLoss
 
+from peft import (
+    get_peft_config,
+    get_peft_model,
+    PromptTuningInit,
+    PromptTuningConfig,
+    TaskType,
+    PromptEncoderConfig,
+    PeftType
+)
+
 # 1. 设置路径
 # 1.1 预训练模型路径
 pretrained_model = 'decapoda-research/llama-7b-hf'
-# 1.2 数据集路径
-data_path = 'alpaca.json'
-# 1.3 Eval的decode结果保存路径
+# 1.2 Eval的decode结果保存路径
 save_path = './result'
 
 # 2. 设置配置
 # 2.1 加载配置
 config = CollieConfig.from_pretrained(pretrained_model)
 # 2.2 添加配置
-config.tp_size = 2
-config.dp_size = 2
+config.tp_size = 1
+config.dp_size = 4
 config.pp_size = 1
 config.train_epochs = 1
-config.train_micro_batch_size = 8
+config.train_micro_batch_size = 1
 config.eval_batch_size = 32
 config.eval_per_n_steps = 100
+config.checkpointing = False
+config.peft_config = PromptTuningConfig(
+    task_type = TaskType.CAUSAL_LM,
+    prompt_tuning_init = PromptTuningInit.TEXT,
+    num_virtual_tokens = 8,
+    token_dim = 4096,
+    num_attention_heads = 32,
+    num_layers = 32,
+    num_transformer_submodules = None,
+    prompt_tuning_init_text="Classify if the tweet is a complaint or not:",
+    tokenizer_name_or_path=pretrained_model
+)
 config.ds_config = {
     "fp16": {"enabled": True},
     "monitor_config": {
@@ -58,12 +81,19 @@ config.ds_config = {
 tokenizer = LlamaTokenizer.from_pretrained(pretrained_model, padding_side="left")
 
 # 4. 加载数据集
-dataset = CollieDatasetForTraining.from_json(data_path, tokenizer=tokenizer)
-train_dataset = dataset[:-32]
-eval_dataset = dataset[-32:]
+train_dataset = [
+    {
+        'input': 'The movie is terrible. ',
+        'output': 'Yes.'
+    } for _ in range(100)
+]
+train_dataset = CollieDatasetForTraining(train_dataset, tokenizer)
+eval_dataset = train_dataset[:32]
 
 # 5. 加载预训练模型
 model = LlamaForCausalLM.from_config(config)
+model = get_peft_model(model, config.peft_config)
+print(model.print_trainable_parameters())
 
 # 6. 设置优化器
 optimizer = torch.optim.Adam(model.parameters(), lr=2e-5)
@@ -117,4 +147,4 @@ trainer = Trainer(
 # 10. 训练/验证
 trainer.train()
 
-#  Command CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --rdzv_backend=c10d --rdzv_endpoint=localhost:29402 --nnodes=1 --nproc_per_node=4 train.py
+#  Command CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --rdzv_backend=c10d --rdzv_endpoint=localhost:29402 --nnodes=1 --nproc_per_node=4 finetune_llama_prompt_tuning.py
