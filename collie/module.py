@@ -610,6 +610,13 @@ class PipelineModel(PipelineModule, PipelineGenerationMixin):
                 destination[key_pp] = destination.pop(key)
         return destination
 
+    def load_state_dict(self, state_dict: Mapping[str, Any],
+                        strict: bool = True):
+        for key in list(state_dict.keys()):
+            key_pp = self.name_to_pipeline(key)
+            state_dict[key_pp] = state_dict.pop(key)
+        super().load_state_dict(state_dict, strict)
+
     def forward(self, *args, **kwargs):
         if not self.inner_forward:
             if self.forward_type == "generate":
