@@ -474,9 +474,6 @@ class Trainer(TrainerEventTrigger):
                 self._checkpoint_prologue()
             with ContextManagers(contexts):
                 if env.dp_rank == 0 or not is_zero3_enabled(self.config) and (pp_save or env.pp_rank == 0):
-                    # lora 和 p-tuning 是不需要的，看看 prompt tuning 的行为吧
-                    # for key in named_parameters.keys():
-                    #     state_dict[key.replace(f"{adapter_name}.", "")] = named_parameters[key].data
                     if env.dp_rank == 0 and env.tp_rank == 0:
                         io_driver.save(state_dict, os.path.join(path, name))
             if is_zero3_enabled(self.config):

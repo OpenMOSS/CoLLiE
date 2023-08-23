@@ -84,6 +84,11 @@ def setup_ds_engine(
             assert isinstance(model.get_base_model(), (CollieModelForCausalLM, PipelineModel)), "Currently pipeline or tensor parallelism only supports Collie models."
         else:
             assert isinstance(model, (CollieModelForCausalLM, PipelineModel)), "Currently pipeline or tensor parallelism only supports Collie models."
+    if "train_micro_batch_size_per_gpu" not in config.ds_config.keys():
+        config.ds_config["train_micro_batch_size_per_gpu"] = config.train_micro_batch_size
+    if "gradient_accumulation_steps" not in config.ds_config.keys():
+        config.ds_config["gradient_accumulation_steps"] = config.gradient_accumulation_steps
+    print(config.ds_config)
     engine, optimizer, _, lr_scheduler = initialize(
         model=model,
         optimizer=optimizer,
@@ -92,6 +97,8 @@ def setup_ds_engine(
         mpu=parallel_state if config.pp_size == 1 else None,
         config=config.ds_config
     )
+    config.train_micro_batch_size = engine.train_micro_batch_size_per_gpu()
+    config.gradient_accumulation_steps = engine.gradient_accumulation_steps()
     return engine, optimizer, _, lr_scheduler
 
 def _decompose_slurm_nodes(s):
