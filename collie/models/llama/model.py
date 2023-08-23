@@ -189,7 +189,7 @@ class LlamaLayer(nn.Module):
             past_key = layer_past[0].reshape(*layer_past[0].shape[:-1], 2, -1)\
                                     .permute(0, 2, 1, 4, 3) \
                                     .reshape(batch_size, start_pos,
-                                             self.num_key_value_heads, -1)
+                                             self.num_heads, -1)
             query = torch.cat([past_key, query], dim=1)
             key = torch.cat([past_key, key], dim=1)
             value = torch.cat([layer_past[1].permute([0, 2, 1, 3]), value], dim=1)
@@ -198,7 +198,7 @@ class LlamaLayer(nn.Module):
             # 调整成和 hf 兼容的格式，方便 prefix tuning
             present_key = key.reshape(*key.shape[:-1], -1, 2) \
                              .permute(0, 2, 1, 4, 3) \
-                             .reshape(batch_size, self.num_key_value_heads,
+                             .reshape(batch_size, self.num_heads,
                                       seq_len + start_pos, -1)
             new_layer_past = torch.stack((present_key, value.permute([0, 2, 1, 3])), dim=0)
         attention_mask = attention_mask if attention_mask is not None else torch.ones((query.shape[0], query.shape[1])).to(hidden_states.device)
