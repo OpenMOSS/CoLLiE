@@ -556,10 +556,14 @@ class Trainer(TrainerEventTrigger):
                 self._checkpoint_prologue()
                 for name, param in self.engine.module.named_parameters():
                     with deepspeed.zero.GatheredParameters(param):
-                        state_dict[name] = param.detach().cpu()
+                        if env.dp_rank == 0:
+                            state_dict[name] = param.detach().cpu()
                 self._checkpoint_epilogue()
             else:
-                state_dict = self.engine.module.state_dict()
+                if env.dp_rank == 0:
+                    state_dict = self.engine.module.state_dict()
+                else:
+                    state_dict = {}
             self.engine.module.save_parallel_state_dict(
                 state_dict=state_dict,
                 path=path,
