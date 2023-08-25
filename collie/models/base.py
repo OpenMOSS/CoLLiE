@@ -618,7 +618,8 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         return lm_head_name, lm_head
 
     def set_input_embedding(self, name, embedding):
-        self.add_module(name, embedding)
+        base_model = getattr(self, self.base_model_prefix, self)
+        base_model.add_module(name, embedding)
 
     def set_lm_head(self, name, lm_head):
         self.add_module(name, lm_head)
