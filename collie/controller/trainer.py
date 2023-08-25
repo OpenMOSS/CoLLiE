@@ -20,6 +20,7 @@ from torch import nn
 import torch.distributed as dist
 from torch.optim.lr_scheduler import _LRScheduler
 from deepspeed.runtime.engine import DeepSpeedSchedulerCallable
+from deepspeed.runtime.zero.parameter_offload import DeepSpeedZeRoOffload
 from transformers.modeling_utils import PreTrainedModel
 from peft import PeftModel, get_peft_model_state_dict, set_peft_model_state_dict, PeftType, PromptLearningConfig, PEFT_TYPE_TO_CONFIG_MAPPING
 from transformers import PreTrainedTokenizerBase
@@ -474,6 +475,9 @@ class Trainer(TrainerEventTrigger):
                 self._checkpoint_prologue()
             with ContextManagers(contexts):
                 if env.dp_rank == 0 or not is_zero3_enabled(self.config) and (pp_save or env.pp_rank == 0):
+                    state_dict = get_peft_model_state_dict(
+                        self.model, adapter_name=adapter_name
+                    )
                     if env.dp_rank == 0 and env.tp_rank == 0:
                         io_driver.save(state_dict, os.path.join(path, name))
             if is_zero3_enabled(self.config):
@@ -514,8 +518,18 @@ class Trainer(TrainerEventTrigger):
             raise ValueError("Cannot set a prompt learning adapter to trainable when loading pretrained adapter.")
         else:
             loaded_peft_config.inference_mode = not is_trainable
-        self.model.add_adapter(adapter_name, loaded_peft_config)
-        self.model.to("cuda", self.config.torch_dtype)
+        # 这里在engine影初始化了之后再添加好像确实会出问题
+        if loaded_peft_config.peft_type != self.engine.module.peft_type:
+            raise ValueError(
+                f"Cannot combine adapters with different peft types. "
+                f"Found {self.engine.module.peft_type} and "
+                f"{loaded_peft_config.peft_type}."
+            )
+        if adapter_name not in self.engine.module.peft_config:
+            raise ValueError(
+                f"Adapter `{adapter_name}` is not found in current "
+                "model, please check your checkpoint."
+            )
         name = f"adapter_model.bin"
         assert io_driver.exists(os.path.join(path, name)), f"{name} does not exist."
         loaded_state_dict = io_driver.load(os.path.join(path, name), mode="rb")
@@ -790,7 +804,7 @@ class Trainer(TrainerEventTrigger):
         # 故进行判断
         if not self.engine.zero_optimization_partition_weights():
             return
-        if isinstance(self.optimizer, Lomo):
+        if isinstance(self.engine.optimizer, DeepSpeedZeRoOffload):
             param_offload = self.engine.optimizer
         else:
             param_offload = self.engine.optimizer.parameter_offload
@@ -799,7 +813,7 @@ class Trainer(TrainerEventTrigger):
     def _checkpoint_epilogue(self):
         if not self.engine.zero_optimization_partition_weights():
             return
-        if isinstance(self.optimizer, Lomo):
+        if isinstance(self.engine.optimizer, DeepSpeedZeRoOffload):
             persistent_params = self.engine.optimizer.persistent_parameters
         else:
             persistent_params = self.engine.optimizer.parameter_offload.persistent_parameters
