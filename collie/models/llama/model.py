@@ -198,7 +198,7 @@ class LlamaLayer(nn.Module):
             # 调整成和 hf 兼容的格式，方便 prefix tuning
             present_key = key.reshape(*key.shape[:-1], -1, 2) \
                              .permute(0, 2, 1, 4, 3) \
-                             .reshape(batch_size, self.num_heads,
+                             .reshape(batch_size, self.num_heads // self.config.tp_size,
                                       seq_len + start_pos, -1)
             new_layer_past = torch.stack((present_key, value.permute([0, 2, 1, 3])), dim=0)
         attention_mask = attention_mask if attention_mask is not None else torch.ones((query.shape[0], query.shape[1])).to(hidden_states.device)
