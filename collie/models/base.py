@@ -275,38 +275,50 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
             for key in list(state_dict.keys()):
                 key_pp = model.name_to_pipeline(key)
                 state_dict[key_pp] = state_dict.pop(key)
+        context_zero3_init = []
+        if is_zero3_enabled(config):
+            context_zero3_init.append(deepspeed.zero.Init(
+                data_parallel_group=parallel_state.get_data_parallel_group(),
+                config_dict_or_path=config.ds_config
+            ))
         # load checkpoint and dispatch
-        for name, param in model.named_parameters():
-            if name not in state_dict.keys() and (not is_zero3_enabled(config) or env.dp_rank == 0):
-                logger.rank_zero_warning(f"Missing key: {name}!")
-                continue
-            contexts = []
-            if is_zero3_enabled(config):
-                contexts.append(deepspeed.zero.GatheredParameters(param, modifier_rank=0))
-                contexts.append(deepspeed.zero.Init(
-                    data_parallel_group=parallel_state.get_data_parallel_group(),
-                    config_dict_or_path=config.ds_config  # config is necessary for bf16
-                ))
-            with ContextManagers(contexts):
-                if getattr(config.quantization_config, "load_in_4bit", False) or \
-                    config.quantization_config.load_in_8bit:
-                        set_module_quantized_tensor_to_device(
-                            module=model,
-                            tensor_name=name,
-                            device="cpu" if param.device == torch.device("meta") else param.device,
-                            value=state_dict.get(name, torch.empty_like(param.data).to(param.dtype)).data
-                        )
-                else:
-                    if param.device == torch.device("meta"):
-                        set_module_tensor_to_device(
-                            module=model, tensor_name=name, device="cpu" if param.device == torch.device("meta") else param.device,
-                            value=state_dict.get(name, torch.empty_like(param.data).to(param.dtype)).data,
-                            dtype=config.model_config.torch_dtype
-                        )
+        with ContextManagers(context_zero3_init):
+            for name, param in model.named_parameters():
+                if name not in state_dict.keys() and (not is_zero3_enabled(config) or env.dp_rank == 0):
+                    logger.rank_zero_warning(f"Missing key: {name}!")
+                    continue
+                contexts = []
+                if is_zero3_enabled(config):
+                    contexts.append(deepspeed.zero.GatheredParameters(param, modifier_rank=0))
+                with ContextManagers(contexts):
+                    if getattr(config.quantization_config, "load_in_4bit", False) or \
+                        config.quantization_config.load_in_8bit:
+                            set_module_quantized_tensor_to_device(
+                                module=model,
+                                tensor_name=name,
+                                device="cpu" if param.device == torch.device("meta") else param.device,
+                                value=state_dict.get(
+                                    name,
+                                    config.init_method(torch.empty_like(param.data)).to(param.dtype)
+                                ).data
+                            )
                     else:
-                        if name in state_dict:
-                            assert param.data.shape == state_dict[name].data.shape, f"The shape of the parameter corresponding to the `{name}` does not match: {param.data.shape} vs {state_dict[name].data.shape}"
-                        param.data = state_dict.get(name, torch.empty_like(param.data).to(param.dtype)).data.to(config.model_config.torch_dtype).to(param.device)
+                        if param.device == torch.device("meta"):
+                            set_module_tensor_to_device(
+                                module=model, tensor_name=name, device="cpu" if param.device == torch.device("meta") else param.device,
+                                value=state_dict.get(
+                                    name,
+                                    config.init_method(torch.empty_like(param.data)).to(param.dtype)
+                                ).data,
+                                dtype=config.model_config.torch_dtype
+                            )
+                        else:
+                            if name in state_dict:
+                                assert param.data.shape == state_dict[name].data.shape, f"The shape of the parameter corresponding to the `{name}` does not match: {param.data.shape} vs {state_dict[name].data.shape}"
+                            param.data = state_dict.get(
+                                name,
+                                config.init_method(torch.empty_like(param.data))
+                            ).data.to(config.model_config.torch_dtype).to(param.device)
         if config.peft_config.peft_type is not None:
             model = get_peft_model(model, config.peft_config)
             model.print_trainable_parameters()
