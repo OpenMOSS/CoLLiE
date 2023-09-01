@@ -2,6 +2,8 @@ import gc
 import json
 import math
 import os
+from collections import OrderedDict
+from typing import Any, Optional, Union
 
 import torch
 import torch.distributed as dist
@@ -13,15 +15,6 @@ from einops import rearrange
 from megatron.core import parallel_state, tensor_parallel
 from torch import Tensor, nn
 from torch.nn.modules.module import Module
-
-try:
-    from flash_attn.flash_attention import FlashAttention
-except (ModuleNotFoundError, ImportError):
-    FlashAttention = None
-
-from collections import OrderedDict
-from typing import Any, Optional, Union
-
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.modeling_utils import PretrainedConfig, dtype_byte_size
 
@@ -35,6 +28,12 @@ from collie.module import (
     RowParallelLinearWithoutBias,
 )
 from collie.utils import concat_tensor, dict_as_params, env, progress
+
+# try:
+#     from flash_attn.flash_attention import FlashAttention
+# except (ModuleNotFoundError, ImportError):
+#     FlashAttention = None
+
 
 # class RotaryPositionEmbedding(nn.Module):
 #     def __init__(self, head_dim: int) -> None:
