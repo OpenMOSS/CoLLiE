@@ -57,6 +57,8 @@ def flash_attention(query, key, value, attention_mask):
     return output
 
 
+# Index dict merging is now handled by pp rank 0 without tmp file.
+# This function is deprecated.
 # def merge_index_dict(path, file_list, driver):
 #     """
 #     合并分散的 index json

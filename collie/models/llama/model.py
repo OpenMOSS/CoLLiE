@@ -24,7 +24,7 @@ from collie.config import CollieConfig
 from collie.driver.io import IODriver
 from collie.log.logger import logger
 from collie.models.base import CollieModelForCausalLM
-from collie.models.utils import flash_attention, merge_index_dict
+from collie.models.utils import flash_attention
 from collie.module import (
     ColumnParallelLinearWithoutBias,
     ColumnParallelLMHead,
@@ -807,9 +807,7 @@ class LlamaForCausalLM(CollieModelForCausalLM):
                                 io_driver.save(
                                     json.dumps(merged_dict, indent=2, sort_keys=True)
                                     + "\n",
-                                    os.path.join(
-                                        path, "pytorch_model.bin.index.json"
-                                    ),
+                                    os.path.join(path, "pytorch_model.bin.index.json"),
                                 )
 
                         else:
