@@ -801,6 +801,6 @@ class InternLMForCausalLM(CollieModelForCausalLM):
                         io_driver.save(state_dict, ckpt_path)
                 if dist.is_initialized() and process_exclusion:
                     dist.barrier()
-        dist.barrier()
         if env.rank == 0:
             config.save_pretrained(path, protocol=protocol)
+        dist.barrier()
