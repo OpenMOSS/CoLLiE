@@ -97,7 +97,7 @@ class CollieConfig:
     )
     dropout: float = field(default=0.0, metadata={"help": "Dropout probability."})
     init_method: Callable = field(
-        default_factory=lambda: torch.nn.init.uniform_,
+        default_factory=lambda: torch.nn.init.normal_,
         metadata={
             "help": "Initialization method. Possible values are 'none', 'normal', 'xavier_normal', "
             "'xavier_uniform', 'kaiming_normal', 'kaiming_uniform', 'orthogonal', 'sparse', "

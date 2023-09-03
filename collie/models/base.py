@@ -144,6 +144,23 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                 object.__setattr__(model, method.__name__, types.MethodType(method, model))
         if kwargs.get("init_params", True):
             for name, param in model.named_parameters():
+                skip = False
+                keep = []
+                if config.pp_size != 1:
+                    real_name = model.name_from_pipeline(name)
+                    if hasattr(model_cls,'keep'):
+                        keep = model_cls.keep
+                else:
+                    real_name = name
+                    if hasattr(model,'keep'):
+                        keep = model.keep
+                
+                for key_word in keep:
+                    if real_name.count(key_word):
+                        skip = True
+                        break
+                if skip:
+                    continue
                 contexts = []
                 if is_zero3_enabled(config):
                     contexts.append(deepspeed.zero.GatheredParameters(param, modifier_rank=0))
@@ -151,15 +168,40 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                         data_parallel_group=parallel_state.get_data_parallel_group(),
                         config_dict_or_path=config.ds_config  # config is necessary for bf16
                     ))
+                
                 with ContextManagers(contexts):
                     if param.device == torch.device("meta"):
                         set_module_tensor_to_device(
-                            module=model, tensor_name=name, device="cpu" if param.device == torch.device("meta") else param.device,
-                            value=config.init_method(torch.empty((*param.data.size(),),dtype=config.model_config.torch_dtype)),
-                            dtype=config.model_config.torch_dtype
+                            module=model, tensor_name=name, device="cpu",
+                            value=config.init_method(torch.empty((*param.data.size(),),dtype=config.model_config.torch_dtype,device="cpu"),std=0.02),
+                            dtype=config.model_config.torch_dtype,
                         )
                     else:
-                        param.data = config.init_method(torch.zeros_like(param.data)).to(config.model_config.torch_dtype).to(param.device)
+                        param.data = config.init_method(torch.zeros_like(param.data),std=0.02).to(config.model_config.torch_dtype).to(param.device)
+            # 对于keep的还没有初始化，得重新初始化
+            if config.pp_size == 1:
+                for name, layer in model.named_modules():
+                    skip = False
+                    keep = []
+                    real_name = name
+                    if hasattr(model,'keep'):
+                        keep = model.keep
+                
+                    for key_word in keep:
+                        if real_name.count(key_word):
+                            skip = True
+                            break
+                    if skip:
+                        if not hasattr(layer,'reinitialize_weight') or  not hasattr(layer,'weight'):
+                             raise AttributeError("在非Pipeline情况被定义的keep的modules需要有weight属性和reinitialize_weight函数")
+                        set_module_tensor_to_device(
+                            module=model, tensor_name=name+".weight", device="cpu",
+                            value=layer.reinitialize_weight(),
+                            dtype=config.model_config.torch_dtype,
+                        )
+            
+
+                    
         if kwargs.get("get_peft", True) and config.peft_config.peft_type is not None:
             model = get_peft_model(model, config.peft_config)
             model.print_trainable_parameters()
@@ -179,6 +221,8 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         #         model.dtype = ds_dtype
         #         model.config = config.model_config
         #         model = model.to(ds_dtype)
+        if "init_params" in kwargs and kwargs["init_params"]==False:
+            return model, model_cls
         return model
 
     def __new__(cls, config: CollieConfig, **kwargs):
@@ -240,7 +284,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                 config.quantization_config.load_in_8bit):
                 config.model_config.torch_dtype = torch.float16
         # Actually build the model and do not init the params
-        model = cls.from_config(config, init_params=False, get_peft=False)
+        model, model_cls = cls.from_config(config, init_params=False, get_peft=False)
         model = model.to(config.model_config.torch_dtype)
         # quantization
         if getattr(config.quantization_config, "load_in_4bit", False) or \
@@ -275,54 +319,88 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
             for key in list(state_dict.keys()):
                 key_pp = model.name_to_pipeline(key)
                 state_dict[key_pp] = state_dict.pop(key)
-        context_zero3_init = []
-        if is_zero3_enabled(config):
-            context_zero3_init.append(deepspeed.zero.Init(
-                data_parallel_group=parallel_state.get_data_parallel_group(),
-                config_dict_or_path=config.ds_config
-            ))
+
+
+
         # load checkpoint and dispatch
-        with ContextManagers(context_zero3_init):
-            for name, param in model.named_parameters():
-                if name not in state_dict.keys() and (not is_zero3_enabled(config) or env.dp_rank == 0):
-                    logger.rank_zero_warning(f"Missing key: {name}!")
-                    continue
-                contexts = []
-                if is_zero3_enabled(config):
-                    contexts.append(deepspeed.zero.GatheredParameters(param, modifier_rank=0))
-                with ContextManagers(contexts):
-                    if getattr(config.quantization_config, "load_in_4bit", False) or \
-                        config.quantization_config.load_in_8bit:
-                            set_module_quantized_tensor_to_device(
-                                module=model,
-                                tensor_name=name,
-                                device="cpu" if param.device == torch.device("meta") else param.device,
-                                value=state_dict.get(
-                                    name,
-                                    config.init_method(torch.empty_like(param.data)).to(param.dtype)
-                                ).data
-                            )
+        for name, param in model.named_parameters():
+            special = False
+            keep = []
+            if config.pp_size != 1:
+                real_name = model.name_from_pipeline(name)
+                if hasattr(model_cls, 'keep'):
+                    keep = model_cls.keep
+            else:
+                real_name = name
+                if hasattr(model, 'keep'):
+                    keep = model.keep
+
+            for key_word in keep:
+                if real_name.count(key_word):
+                    special = True
+                    break
+            if name not in state_dict.keys() and (not is_zero3_enabled(config) or env.dp_rank == 0):
+                logger.warning(f"Missing key: {real_name}!")
+            # 如果是特殊的这些并且找不到，那就后续统一处理，PP的后续不用处理了
+            if special and name not in state_dict.keys():
+                continue
+            contexts = []
+            if is_zero3_enabled(config):
+                contexts.append(deepspeed.zero.GatheredParameters(param, modifier_rank=0))
+                contexts.append(deepspeed.zero.Init(
+                    data_parallel_group=parallel_state.get_data_parallel_group(),
+                    config_dict_or_path=config.ds_config  # config is necessary for bf16
+                ))
+            with ContextManagers(contexts):
+                value = state_dict.get(name, config.init_method(torch.zeros_like(param.data,device="cpu"),std=0.02).to(config.model_config.torch_dtype),)
+                if getattr(config.quantization_config, "load_in_4bit", False) or \
+                    config.quantization_config.load_in_8bit:
+                        set_module_quantized_tensor_to_device(
+                            module=model,
+                            tensor_name=name,
+                            device="cpu",
+                            value=value,
+                        )
+                else:
+                    if param.device == torch.device("meta"):
+                        set_module_tensor_to_device(
+                            module=model, tensor_name=name, device="cpu",
+                            value=value,
+                            dtype=config.model_config.torch_dtype
+                        )
                     else:
-                        if param.device == torch.device("meta"):
-                            set_module_tensor_to_device(
-                                module=model, tensor_name=name, device="cpu" if param.device == torch.device("meta") else param.device,
-                                value=state_dict.get(
-                                    name,
-                                    config.init_method(torch.empty_like(param.data)).to(param.dtype)
-                                ).data,
-                                dtype=config.model_config.torch_dtype
-                            )
-                        else:
-                            if name in state_dict:
-                                assert param.data.shape == state_dict[name].data.shape, f"The shape of the parameter corresponding to the `{name}` does not match: {param.data.shape} vs {state_dict[name].data.shape}"
-                            param.data = state_dict.get(
-                                name,
-                                config.init_method(torch.empty_like(param.data))
-                            ).data.to(config.model_config.torch_dtype).to(param.device)
+                        if name in state_dict:
+                            assert param.data.shape == state_dict[name].data.shape, f"The shape of the parameter corresponding to the `{name}` does not match: {param.data.shape} vs {state_dict[name].data.shape}"
+                        param.data = value.to(param.device)
+        # 对于keep的没有在dict中的，且是special的，得重新初始化
+        if config.pp_size == 1:
+            for name, layer in model.named_modules():
+                special = False
+                keep = []
+                real_name = name
+                if hasattr(model,'keep'):
+                    keep = model.keep
+            
+                for key_word in keep:
+                    if real_name.count(key_word):
+                        special = True
+                        break
+                if special and name+".weight" not in state_dict:
+                    # print("ININ")
+                    if not hasattr(layer,'reinitialize_weight') or  not hasattr(layer,'weight'):
+                            raise AttributeError("在非Pipeline情况被定义的keep的modules需要有weight属性和reinitialize_weight函数")
+                    # print(layer)
+                    set_module_tensor_to_device(
+                        module=model, tensor_name=name+".weight", device="cpu",
+                        value=layer.reinitialize_weight(),
+                        dtype=config.model_config.torch_dtype,
+                    )
+                    # layer.weight.data = .to(config.model_config.torch_dtype)
         if config.peft_config.peft_type is not None:
             model = get_peft_model(model, config.peft_config)
             model.print_trainable_parameters()
         return model
+
 
     @classmethod
     def pipeline_layers(cls, config: Union[CollieConfig, str]):

@@ -64,6 +64,9 @@ class RotaryPositionEmbedding(nn.Module):
 
 
 class RMSNormalize(nn.Module):
+    def reinitialize_weight(self,):
+        return torch.ones(self.weight.shape, dtype=torch.float,device="cpu")
+    
     def __init__(self, dim=None, dtype=torch.float, eps=1e-5, weight=None):
         super(RMSNormalize, self).__init__()
         if weight is not None:
@@ -400,6 +403,7 @@ class LlamaModel(nn.Module):
 
 class LlamaForCausalLM(CollieModelForCausalLM):
     base_model_prefix = "model"
+    keep = ['norm']
 
     def __init__(self, config: CollieConfig) -> None:
         super().__init__(config)
