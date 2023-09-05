@@ -161,7 +161,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                         )
                     else:
                         param.data = config.init_method(torch.zeros_like(param.data), std=config.initializer_range).to(config.model_config.torch_dtype).to(param.device)
-            # 对于有post_init的重新初始化
+            # 对于post_init重新初始化
             for name, layer in model.named_modules():
                 if hasattr(layer,'post_init'):
                     layer.post_init(module=model, tensor_name=name+".weight", dtype=config.model_config.torch_dtype)
