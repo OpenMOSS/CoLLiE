@@ -144,23 +144,6 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                 object.__setattr__(model, method.__name__, types.MethodType(method, model))
         if kwargs.get("init_params", True):
             for name, param in model.named_parameters():
-                skip = False
-                keep = []
-                if config.pp_size != 1:
-                    real_name = model.name_from_pipeline(name)
-                    if hasattr(model_cls,'keep'):
-                        keep = model_cls.keep
-                else:
-                    real_name = name
-                    if hasattr(model,'keep'):
-                        keep = model.keep
-                
-                for key_word in keep:
-                    if real_name.count(key_word):
-                        skip = True
-                        break
-                if skip:
-                    continue
                 contexts = []
                 if is_zero3_enabled(config):
                     contexts.append(deepspeed.zero.GatheredParameters(param, modifier_rank=0))
@@ -173,32 +156,15 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                     if param.device == torch.device("meta"):
                         set_module_tensor_to_device(
                             module=model, tensor_name=name, device="cpu",
-                            value=config.init_method(torch.empty((*param.data.size(),),dtype=config.model_config.torch_dtype,device="cpu"),std=0.02),
+                            value=config.init_method(torch.empty((*param.data.size(),), dtype=config.model_config.torch_dtype,device="cpu"), std=config.initializer_range),
                             dtype=config.model_config.torch_dtype,
                         )
                     else:
-                        param.data = config.init_method(torch.zeros_like(param.data),std=0.02).to(config.model_config.torch_dtype).to(param.device)
-            # 对于keep的还没有初始化，得重新初始化
-            if config.pp_size == 1:
-                for name, layer in model.named_modules():
-                    skip = False
-                    keep = []
-                    real_name = name
-                    if hasattr(model,'keep'):
-                        keep = model.keep
-                
-                    for key_word in keep:
-                        if real_name.count(key_word):
-                            skip = True
-                            break
-                    if skip:
-                        if not hasattr(layer,'reinitialize_weight') or  not hasattr(layer,'weight'):
-                             raise AttributeError("在非Pipeline情况被定义的keep的modules需要有weight属性和reinitialize_weight函数")
-                        set_module_tensor_to_device(
-                            module=model, tensor_name=name+".weight", device="cpu",
-                            value=layer.reinitialize_weight(),
-                            dtype=config.model_config.torch_dtype,
-                        )
+                        param.data = config.init_method(torch.zeros_like(param.data), std=config.initializer_range).to(config.model_config.torch_dtype).to(param.device)
+            # 对于有post_init的重新初始化
+            for name, layer in model.named_modules():
+                if hasattr(layer,'post_init'):
+                    layer.post_init(module=model, tensor_name=name+".weight", dtype=config.model_config.torch_dtype)
             
 
                     
@@ -221,8 +187,6 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         #         model.dtype = ds_dtype
         #         model.config = config.model_config
         #         model = model.to(ds_dtype)
-        if "init_params" in kwargs and kwargs["init_params"]==False:
-            return model, model_cls
         return model
 
     def __new__(cls, config: CollieConfig, **kwargs):
@@ -284,7 +248,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                 config.quantization_config.load_in_8bit):
                 config.model_config.torch_dtype = torch.float16
         # Actually build the model and do not init the params
-        model, model_cls = cls.from_config(config, init_params=False, get_peft=False)
+        model = cls.from_config(config, init_params=False, get_peft=False)
         model = model.to(config.model_config.torch_dtype)
         # quantization
         if getattr(config.quantization_config, "load_in_4bit", False) or \
@@ -321,29 +285,10 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                 state_dict[key_pp] = state_dict.pop(key)
 
 
-
         # load checkpoint and dispatch
         for name, param in model.named_parameters():
-            special = False
-            keep = []
-            if config.pp_size != 1:
-                real_name = model.name_from_pipeline(name)
-                if hasattr(model_cls, 'keep'):
-                    keep = model_cls.keep
-            else:
-                real_name = name
-                if hasattr(model, 'keep'):
-                    keep = model.keep
-
-            for key_word in keep:
-                if real_name.count(key_word):
-                    special = True
-                    break
             if name not in state_dict.keys() and (not is_zero3_enabled(config) or env.dp_rank == 0):
-                logger.warning(f"Missing key: {real_name}!")
-            # 如果是特殊的这些并且找不到，那就后续统一处理，PP的后续不用处理了
-            if special and name not in state_dict.keys():
-                continue
+                logger.warning(f"Missing key: {name}!")
             contexts = []
             if is_zero3_enabled(config):
                 contexts.append(deepspeed.zero.GatheredParameters(param, modifier_rank=0))
@@ -352,7 +297,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                     config_dict_or_path=config.ds_config  # config is necessary for bf16
                 ))
             with ContextManagers(contexts):
-                value = state_dict.get(name, config.init_method(torch.zeros_like(param.data,device="cpu"),std=0.02).to(config.model_config.torch_dtype),)
+                value = state_dict.get(name, config.init_method(torch.zeros_like(param.data,device="cpu"), std=config.initializer_range).to(config.model_config.torch_dtype),)
                 if getattr(config.quantization_config, "load_in_4bit", False) or \
                     config.quantization_config.load_in_8bit:
                         set_module_quantized_tensor_to_device(
@@ -372,30 +317,11 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                         if name in state_dict:
                             assert param.data.shape == state_dict[name].data.shape, f"The shape of the parameter corresponding to the `{name}` does not match: {param.data.shape} vs {state_dict[name].data.shape}"
                         param.data = value.to(param.device)
-        # 对于keep的没有在dict中的，且是special的，得重新初始化
-        if config.pp_size == 1:
-            for name, layer in model.named_modules():
-                special = False
-                keep = []
-                real_name = name
-                if hasattr(model,'keep'):
-                    keep = model.keep
-            
-                for key_word in keep:
-                    if real_name.count(key_word):
-                        special = True
-                        break
-                if special and name+".weight" not in state_dict:
-                    # print("ININ")
-                    if not hasattr(layer,'reinitialize_weight') or  not hasattr(layer,'weight'):
-                            raise AttributeError("在非Pipeline情况被定义的keep的modules需要有weight属性和reinitialize_weight函数")
-                    # print(layer)
-                    set_module_tensor_to_device(
-                        module=model, tensor_name=name+".weight", device="cpu",
-                        value=layer.reinitialize_weight(),
-                        dtype=config.model_config.torch_dtype,
-                    )
-                    # layer.weight.data = .to(config.model_config.torch_dtype)
+        # post_init初始化
+        for name, layer in model.named_modules():
+            if hasattr(layer, 'post_init') and name+".weight" not in state_dict.keys():
+                layer.post_init(module=model, tensor_name=name+".weight", dtype=config.model_config.torch_dtype)
+        
         if config.peft_config.peft_type is not None:
             model = get_peft_model(model, config.peft_config)
             model.print_trainable_parameters()
@@ -592,7 +518,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                             = embedding.weight.data[start_pos_old:end_pos_old, :]
                         if end_pos_new < (new_num_tokens // env.tp_size):
                             init_method = self.collie_config.init_method
-                            init_method(new_embedding.weight[end_pos_new:new_num_tokens // env.tp_size, :])
+                            init_method(new_embedding.weight[end_pos_new:new_num_tokens // env.tp_size, :], std=self.collie_config.initializer_range)
             else:
                 if env.tp_size > 1 and isinstance(new_embedding, tensor_parallel.VocabParallelEmbedding):
                     weights_list = [embedding.weight.clone().cuda() for _ in range(env.tp_size)]
@@ -602,7 +528,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                     = embedding.weight.data[start_pos_old:end_pos_old, :]
                 if end_pos_new < (new_num_tokens // env.tp_size):
                     init_method = self.collie_config.init_method
-                    init_method(new_embedding.weight[end_pos_new:new_num_tokens // env.tp_size, :])
+                    init_method(new_embedding.weight[end_pos_new:new_num_tokens // env.tp_size, :], std=self.collie_config.initializer_range)
             self.set_input_embedding(embedding_name, new_embedding)
         if lm_head is not None:
             if embedding is not None and id(lm_head.weight) == id(embedding.weight):
@@ -661,7 +587,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                                 = lm_head.bias.data[start_pos_old:end_pos_old]
                         if end_pos_new < (new_num_tokens // env.tp_size):
                             init_method = self.collie_config.init_method
-                            init_method(new_lm_head.weight[end_pos_new:new_num_tokens // env.tp_size, :])
+                            init_method(new_lm_head.weight[end_pos_new:new_num_tokens // env.tp_size, :], std=self.collie_config.initializer_range)
                             if lm_head.bias is not None:
                                 init_method(new_lm_head.bias[end_pos_new:new_num_tokens // env.tp_size])
             else:
@@ -680,7 +606,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                         = lm_head.bias.data[start_pos_old:end_pos_old]
                 if end_pos_new < (new_num_tokens // env.tp_size):
                     init_method = self.collie_config.init_method
-                    init_method(new_lm_head.weight[end_pos_new:new_num_tokens // env.tp_size, :])
+                    init_method(new_lm_head.weight[end_pos_new:new_num_tokens // env.tp_size, :], std=self.collie_config.initializer_range)
                     if lm_head.bias is not None:
                             init_method(new_lm_head.bias[end_pos_new:new_num_tokens // env.tp_size])
             self.set_lm_head(lm_head_name, new_lm_head)
