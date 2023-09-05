@@ -125,6 +125,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                 model = super().__new__(model_cls)
                 model.__init__(config)
         else:
+            logger.info("流水线初始化开始，暂时没有使用传入的loss_fn，会在调用trainer时使用")
             model = PipelineModel(
                 config=config,
                 layers=model_cls.pipeline_layers(config),
