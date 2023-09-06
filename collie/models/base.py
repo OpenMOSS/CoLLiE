@@ -164,7 +164,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                     with ContextManagers(contexts):
                         if param.device == torch.device("meta"):
                             if name not in post_init_funcs:
-                                value = config.init_method(torch.empty((*param.data.size(),), dtype=config.model_config.torch_dtype,device="cpu"), std=config.initializer_range)
+                                value = config.init_method(torch.empty((*param.data.size(),), dtype=config.model_config.torch_dtype,device="cpu"), std=config.model_config.initializer_range)
                             else:
                                 value = post_init_funcs[name]()
                             set_module_tensor_to_device(
@@ -174,7 +174,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                             )
                         else:
                             if name not in post_init_funcs:
-                                param.data = config.init_method(torch.zeros_like(param.data), std=config.initializer_range).to(config.model_config.torch_dtype).to(param.device)
+                                param.data = config.init_method(torch.zeros_like(param.data), std=config.model_config.initializer_range).to(config.model_config.torch_dtype).to(param.device)
                             else:
                                 param.data = post_init_funcs[name]()
 
@@ -317,7 +317,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                 if is_zero3_enabled(config):
                     contexts.append(deepspeed.zero.GatheredParameters(param, modifier_rank=0))
                 with ContextManagers(contexts):
-                    value = state_dict.get(name, config.init_method(torch.zeros_like(param.data), std=config.initializer_range).to(config.model_config.torch_dtype),)
+                    value = state_dict.get(name, config.init_method(torch.zeros_like(param.data), std=config.model_config.initializer_range).to(config.model_config.torch_dtype),)
                     
                     if name in post_init_funcs and name not in state_dict:
                         value = post_init_funcs[name]()
@@ -539,7 +539,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                             = embedding.weight.data[start_pos_old:end_pos_old, :]
                         if end_pos_new < (new_num_tokens // env.tp_size):
                             init_method = self.collie_config.init_method
-                            init_method(new_embedding.weight[end_pos_new:new_num_tokens // env.tp_size, :], std=self.collie_config.initializer_range)
+                            init_method(new_embedding.weight[end_pos_new:new_num_tokens // env.tp_size, :], std=self.collie_config.model_config.initializer_range)
             else:
                 if env.tp_size > 1 and isinstance(new_embedding, tensor_parallel.VocabParallelEmbedding):
                     weights_list = [embedding.weight.clone().cuda() for _ in range(env.tp_size)]
@@ -549,7 +549,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                     = embedding.weight.data[start_pos_old:end_pos_old, :]
                 if end_pos_new < (new_num_tokens // env.tp_size):
                     init_method = self.collie_config.init_method
-                    init_method(new_embedding.weight[end_pos_new:new_num_tokens // env.tp_size, :], std=self.collie_config.initializer_range)
+                    init_method(new_embedding.weight[end_pos_new:new_num_tokens // env.tp_size, :], std=self.collie_config.model_config.initializer_range)
             self.set_input_embedding(embedding_name, new_embedding)
         if lm_head is not None:
             if embedding is not None and id(lm_head.weight) == id(embedding.weight):
@@ -608,7 +608,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                                 = lm_head.bias.data[start_pos_old:end_pos_old]
                         if end_pos_new < (new_num_tokens // env.tp_size):
                             init_method = self.collie_config.init_method
-                            init_method(new_lm_head.weight[end_pos_new:new_num_tokens // env.tp_size, :], std=self.collie_config.initializer_range)
+                            init_method(new_lm_head.weight[end_pos_new:new_num_tokens // env.tp_size, :], std=self.collie_config.model_config.initializer_range)
                             if lm_head.bias is not None:
                                 init_method(new_lm_head.bias[end_pos_new:new_num_tokens // env.tp_size])
             else:
@@ -627,7 +627,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                         = lm_head.bias.data[start_pos_old:end_pos_old]
                 if end_pos_new < (new_num_tokens // env.tp_size):
                     init_method = self.collie_config.init_method
-                    init_method(new_lm_head.weight[end_pos_new:new_num_tokens // env.tp_size, :], std=self.collie_config.initializer_range)
+                    init_method(new_lm_head.weight[end_pos_new:new_num_tokens // env.tp_size, :], std=self.collie_config.model_config.initializer_range)
                     if lm_head.bias is not None:
                             init_method(new_lm_head.bias[end_pos_new:new_num_tokens // env.tp_size])
             self.set_lm_head(lm_head_name, new_lm_head)
