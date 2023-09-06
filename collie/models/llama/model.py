@@ -67,6 +67,7 @@ class RMSNormalize(nn.Module):
     
     def __init__(self, dim=None, dtype=torch.float, eps=1e-5, weight=None):
         super(RMSNormalize, self).__init__()
+        self.dtype = dtype
         if weight is not None:
             self.weight = weight
         else:
@@ -84,12 +85,14 @@ class RMSNormalize(nn.Module):
             hidden_states = hidden_states.to(self.weight.dtype)
         return hidden_states * self.weight
 
-    def post_init(self, module, tensor_name, dtype):
-        set_module_tensor_to_device(
-            module=module, tensor_name=tensor_name, device="cpu",
-            value=torch.ones(self.weight.shape, dtype=torch.float, device="cpu"),
-            dtype=dtype,
-        )
+    def post_init(self):
+        if self.weight.device==torch.device("meta"):
+            device = 'cpu'
+        else:
+            device = self.weight.device
+        return torch.ones(
+                    self.weight.shape, dtype=self.dtype, device=device
+                )
 
 class LlamaLayer(nn.Module):
     def __init__(self, config: CollieConfig, layer_idx) -> None:
