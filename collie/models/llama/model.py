@@ -85,6 +85,9 @@ class RMSNormalize(nn.Module):
         return hidden_states * self.weight
 
     def post_init(self):
+    """
+    用于 from scratch 初始化时，使用不同与 CollieConfig 里的初始化方法。
+    """
         if self.weight.device==torch.device("meta"):
             device = 'cpu'
         else:
