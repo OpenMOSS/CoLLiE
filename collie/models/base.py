@@ -177,7 +177,6 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                             else:
                                 param.data = post_init_funcs[name]()
 
-
                     
         if kwargs.get("get_peft", True) and config.peft_config.peft_type is not None:
             model = get_peft_model(model, config.peft_config)
