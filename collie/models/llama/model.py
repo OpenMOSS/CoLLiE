@@ -19,7 +19,7 @@ from transformers.modeling_outputs import (
     CausalLMOutputWithPast,
 )
 from transformers.modeling_utils import dtype_byte_size
-
+from accelerate.utils.modeling import set_module_tensor_to_device
 from collie.config import CollieConfig
 from collie.driver.io import IODriver
 from collie.log.logger import logger
@@ -66,6 +66,7 @@ class RotaryPositionEmbedding(nn.Module):
 class RMSNormalize(nn.Module):
     def __init__(self, dim=None, dtype=torch.float, eps=1e-5, weight=None):
         super(RMSNormalize, self).__init__()
+        self.dtype = dtype
         if weight is not None:
             self.weight = weight
         else:
@@ -83,6 +84,17 @@ class RMSNormalize(nn.Module):
             hidden_states = hidden_states.to(self.weight.dtype)
         return hidden_states * self.weight
 
+    def post_init(self):
+    """
+    用于 from scratch 初始化时，使用不同与 CollieConfig 里的初始化方法。
+    """
+        if self.weight.device==torch.device("meta"):
+            device = 'cpu'
+        else:
+            device = self.weight.device
+        return torch.ones(
+                    self.weight.shape, dtype=self.dtype, device=device
+                )
 
 class LlamaLayer(nn.Module):
     def __init__(self, config: CollieConfig, layer_idx) -> None:
