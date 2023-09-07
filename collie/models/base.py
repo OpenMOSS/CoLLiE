@@ -160,7 +160,6 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                     contexts = []
                     if is_zero3_enabled(config):
                         contexts.append(deepspeed.zero.GatheredParameters(param, modifier_rank=0))
-                    
                     with ContextManagers(contexts):
                         if param.device == torch.device("meta"):
                             if name not in post_init_funcs:
