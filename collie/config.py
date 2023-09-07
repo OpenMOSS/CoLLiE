@@ -102,7 +102,7 @@ class CollieConfig:
         metadata={
         "help": "Initialization method. Possible values are 'normal', 'xavier_normal', "
         "'xavier_uniform', 'kaiming_normal', 'kaiming_uniform', 'orthogonal', 'sparse', "
-        "'eye', 'dirac'. Default is 'none'."
+        "'eye', 'dirac'. Default is 'torch.nn.init.normal_' with mean = 0.0 and std = 0.02."
         }
     )
     low_cpu_mem_usage: bool = field(
