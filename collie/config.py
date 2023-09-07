@@ -1,9 +1,11 @@
 import os
 from dataclasses import dataclass, field
+from statistics import mean
 from typing import Any, Callable, Union
 
 import torch
 from transformers import AutoConfig, BitsAndBytesConfig, PretrainedConfig
+from functools import partial
 
 from collie.driver import IODriver
 from peft import PeftConfig, PeftType, get_peft_config
@@ -96,13 +98,13 @@ class CollieConfig:
         default=True, metadata={"help": "Whether to use flash attention."}
     )
     dropout: float = field(default=0.0, metadata={"help": "Dropout probability."})
-    init_method: Callable = field(
-        default_factory=lambda: torch.nn.init.normal_,
+    init_method: dict = field(
+        default_factory=lambda: {'init_func': torch.nn.init.normal_, 'init_kwargs': {'mean': 0.0, 'std': 0.02}},
         metadata={
-            "help": "Initialization method. Possible values are 'none', 'normal', 'xavier_normal', "
-            "'xavier_uniform', 'kaiming_normal', 'kaiming_uniform', 'orthogonal', 'sparse', "
-            "'eye', 'dirac'. Default is 'none'."
-        },
+        "help": "Initialization method. Possible values are 'none', 'normal', 'xavier_normal', "
+        "'xavier_uniform', 'kaiming_normal', 'kaiming_uniform', 'orthogonal', 'sparse', "
+        "'eye', 'dirac'. Default is 'none'."
+        }
     )
     low_cpu_mem_usage: bool = field(
         default=True,
