@@ -410,7 +410,6 @@ class LlamaModel(nn.Module):
 
 class LlamaForCausalLM(CollieModelForCausalLM):
     base_model_prefix = "model"
-    keep = ['norm']
 
     def __init__(self, config: CollieConfig) -> None:
         super().__init__(config)
