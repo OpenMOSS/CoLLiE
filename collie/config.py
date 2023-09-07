@@ -1,6 +1,6 @@
 import os
 from dataclasses import dataclass, field
-from statistics import mean
+from functools import partial
 from typing import Any, Callable, Union
 
 import torch
