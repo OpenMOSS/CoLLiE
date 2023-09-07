@@ -303,7 +303,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
             ))
 
         post_init_funcs = {}
-        # post_init函数
+        # 记录 post_init 函数
         for name, layer in model.named_modules():
             if hasattr(layer, 'post_init') and name+".weight" not in state_dict.keys():
                 post_init_funcs[name+".weight"] = layer.post_init
