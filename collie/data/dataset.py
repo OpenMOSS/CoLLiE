@@ -5,7 +5,6 @@ import torch
 from torch.utils.data.dataset import Dataset
 from collie.driver.io import FileIODriver
 from transformers import PreTrainedTokenizer
-from collie.log import logger
 import os
 import io
 import json
