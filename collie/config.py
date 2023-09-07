@@ -100,7 +100,7 @@ class CollieConfig:
     init_method: dict = field(
         default_factory=lambda: {'init_func': torch.nn.init.normal_, 'init_kwargs': {'mean': 0.0, 'std': 0.02}},
         metadata={
-        "help": "Initialization method. Possible values are 'none', 'normal', 'xavier_normal', "
+        "help": "Initialization method. Possible values are 'normal', 'xavier_normal', "
         "'xavier_uniform', 'kaiming_normal', 'kaiming_uniform', 'orthogonal', 'sparse', "
         "'eye', 'dirac'. Default is 'none'."
         }
