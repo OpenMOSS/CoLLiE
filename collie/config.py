@@ -5,7 +5,6 @@ from typing import Any, Callable, Union
 
 import torch
 from transformers import AutoConfig, BitsAndBytesConfig, PretrainedConfig
-from functools import partial
 
 from collie.driver import IODriver
 from peft import PeftConfig, PeftType, get_peft_config
