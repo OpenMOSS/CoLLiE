@@ -64,7 +64,6 @@ class RotaryPositionEmbedding(nn.Module):
 
 
 class RMSNormalize(nn.Module):
-    
     def __init__(self, dim=None, dtype=torch.float, eps=1e-5, weight=None):
         super(RMSNormalize, self).__init__()
         self.dtype = dtype
