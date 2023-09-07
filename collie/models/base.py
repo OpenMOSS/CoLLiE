@@ -145,7 +145,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                 object.__setattr__(model, method.__name__, types.MethodType(method, model))
         if kwargs.get("init_params", True):
             post_init_funcs = {}
-            # post_init函数
+            # 记录 post_init 函数
             for name, layer in model.named_modules():
                 if hasattr(layer, 'post_init'):
                     post_init_funcs[name+".weight"] = layer.post_init
