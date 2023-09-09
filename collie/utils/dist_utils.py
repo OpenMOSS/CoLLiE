@@ -19,7 +19,11 @@ from deepspeed.runtime import zero
 from deepspeed.runtime.hybrid_engine import DeepSpeedHybridEngine
 from deepspeed.runtime.config import DeepSpeedConfig
 from deepspeed.runtime.pipe import PipelineModule, LayerSpec
-from transformers.deepspeed import _hf_deepspeed_config_weak_ref, HfDeepSpeedConfig, is_deepspeed_zero3_enabled
+from transformers.deepspeed import HfDeepSpeedConfig, is_deepspeed_zero3_enabled
+try:
+    from transformers.deepspeed import _hf_deepspeed_config_weak_ref
+except ImportError:
+    from transformers.integrations import _hf_deepspeed_config_weak_ref
 from weakref import ref
 
 from megatron.core import parallel_state, tensor_parallel
