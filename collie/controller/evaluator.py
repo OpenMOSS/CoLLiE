@@ -472,9 +472,11 @@ class EvaluatorForClassfication(EvaluatorForPerplexity):
                         pred_str = "".join(
                             c for c in pred_str if c.isalnum() or c.isspace()
                         ).lower()
-                    target_str = evaluator.tokenizer.decode(
-                        batch["output"][option][0, :].cpu().tolist()
-                    ).strip()
+                    # target_str = evaluator.tokenizer.decode(
+                    #     batch["output"][option][0, :].cpu().tolist()
+                    # ).strip()
+                    # Modified CollieDatasetForClassification, now target_str dosen't need to be tokenized and then detokenized.
+                    target_str = batch["output"][0][option]
                     if evaluator.only_latin:
                         target_str = "".join(
                             c for c in target_str if c.isalnum() or c.isspace()

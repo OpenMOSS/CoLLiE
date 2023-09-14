@@ -99,6 +99,10 @@ class ColliePadder:
                         self.collate_fn([x[key][j] for x in batch])
                         for j in range(len(batch[0][key]))
                     ]
+                elif isinstance(batch[0][key], tuple) and isinstance(
+                    batch[0][key][0], str
+                ):
+                    padded_dict[key] = [x[key] for x in batch]
                 else:
                     raise TypeError(f"Unsupported type: {type(batch[0][key])}")
             padded_batch = padded_dict

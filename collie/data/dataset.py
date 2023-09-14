@@ -421,14 +421,7 @@ class CollieDatasetForClassification(CollieDatasetForTraining):
                         "attention_mask",
                         torch.ones_like(torch.tensor(input_ids)).cpu().tolist(),
                     )
-                    output = tuple(
-                        [
-                            self.tokenizer(
-                                option, add_special_tokens=self.add_special_tokens
-                            )["input_ids"]
-                            for option in self.dataset[index]["output"]
-                        ]
-                    )
+                    output = tuple([option for option in self.dataset[index]["output"]])
                     target = self.dataset[index]["target"]
                 else:
                     raise ValueError(
