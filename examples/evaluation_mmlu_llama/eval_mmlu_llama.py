@@ -33,7 +33,7 @@ You can customize your prompt template in `utils_mmlu.py`.
 torchrun --nproc_per_node=8 eval_mmlu_llama.py --dp 8
 ```
 
-Refer to line 167 ~ 176 for more arguments.
+Refer to line 170 ~ 180 for more arguments.
 """
 
 import argparse
@@ -158,6 +158,8 @@ def main(args):
 
         weighted_acc = np.mean(np.concatenate(all_cors))
         print(f"Average accuracy: {weighted_acc:.3f}")
+
+        os.makedirs(args.save_dir, exist_ok=True)
         with open(
             os.path.join(args.save_dir, f"{model_name}_mmlu.json"), "w", encoding="utf8"
         ) as f:
