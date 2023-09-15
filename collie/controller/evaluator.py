@@ -462,27 +462,26 @@ class EvaluatorForClassfication(EvaluatorForPerplexity):
                 ),
             )
             for sample_idx in range(batch["input_ids"].shape[0]):
-                for option in range(len(batch["output"])):
-                    pred_str = evaluator.tokenizer.decode(
-                        generated_ids[sample_idx, -evaluator.max_new_tokens :]
-                        .cpu()
-                        .tolist()
-                    ).strip()
-                    if evaluator.only_latin:
-                        pred_str = "".join(
-                            c for c in pred_str if c.isalnum() or c.isspace()
-                        ).lower()
-                    # target_str = evaluator.tokenizer.decode(
-                    #     batch["output"][option][0, :].cpu().tolist()
-                    # ).strip()
-                    # Modified CollieDatasetForClassification, now target_str dosen't need to be tokenized and then detokenized.
-                    target_str = batch["output"][0][option]
-                    if evaluator.only_latin:
-                        target_str = "".join(
-                            c for c in target_str if c.isalnum() or c.isspace()
-                        ).lower()
-                    if pred_str.startswith(target_str):
-                        pred[sample_idx] = option
+                pred_str = evaluator.tokenizer.decode(
+                    generated_ids[
+                        sample_idx,
+                        batch["input_ids"].shape[1] : batch["input_ids"].shape[1]
+                        + evaluator.max_new_tokens,
+                    ]
+                    .cpu()
+                    .tolist()
+                ).strip()
+                if evaluator.only_latin:
+                    pred_str = "".join(
+                        c for c in pred_str if c.isalnum() or c.isspace()
+                    ).lower()
+                target_str = batch["output"][sample_idx][batch["target"][sample_idx]]
+                if evaluator.only_latin:
+                    target_str = "".join(
+                        c for c in target_str if c.isalnum() or c.isspace()
+                    ).lower()
+                if pred_str.startswith(target_str):
+                    pred[sample_idx] = batch["target"][sample_idx]
         return {
             "pred": pred.cuda(),
             "target": batch["target"].squeeze(1).cuda(),
