@@ -28,7 +28,7 @@ from transformers.deepspeed import HfDeepSpeedConfig, is_deepspeed_zero3_enabled
 try:
     from transformers.deepspeed import _hf_deepspeed_config_weak_ref
 except ImportError:
-    from transformers.integrations import _hf_deepspeed_config_weak_ref
+    from transformers.integrations.deepspeed import _hf_deepspeed_config_weak_ref
 
 from typing import Optional, Union
 from weakref import ref
