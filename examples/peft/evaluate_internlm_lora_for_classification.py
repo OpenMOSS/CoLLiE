@@ -51,7 +51,7 @@ def main(args):
             "target": sample["label"],
         }
         for sample in load_dataset("imdb", split="test")
-    ][:32]
+    ]
 
     eval_dataset_cls = CollieDatasetForClassification(eval_dataset_cls, tokenizer)
 
