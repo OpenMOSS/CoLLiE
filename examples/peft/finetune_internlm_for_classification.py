@@ -12,16 +12,11 @@ on imdb dataset. This example will show you how to:
 torchrun --nproc_per_node=8 finetune_internlm_for_classification.py --bs=4 --dp=8
 ```
 """
-import sys
-
-sys.path.append("../..")
-
 import argparse
 
 import torch
 from datasets import load_dataset
-from torch.utils.data import random_split
-from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel
+from transformers import AutoTokenizer
 
 from collie import (
     AccuracyMetric,
@@ -31,16 +26,14 @@ from collie import (
     CollieDatasetForTraining,
     EvalMonitor,
     EvaluatorForClassfication,
-    EvaluatorForPerplexity,
     InternLMForCausalLM,
     LossMonitor,
     LRMonitor,
     MemoryMonitor,
-    PPLMetric,
     TGSMonitor,
     Trainer,
 )
-from peft import LoraConfig, PeftModel, TaskType
+from peft import LoraConfig, TaskType
 
 
 def main(args):
@@ -107,8 +100,6 @@ def main(args):
         }
         for sample in load_dataset("imdb", split="train")
     ]
-    ratio = 0.01
-    eval_dataset_ppl, train_dataset = random_split(train_dataset, [1 - ratio, ratio])
 
     ### Prepare classification evaluation dataset
     eval_dataset_cls = [
@@ -121,7 +112,6 @@ def main(args):
     ]
 
     train_dataset = CollieDatasetForTraining(train_dataset, tokenizer)
-    eval_dataset_ppl = CollieDatasetForTraining(eval_dataset_ppl, tokenizer)
     eval_dataset_cls = CollieDatasetForClassification(eval_dataset_cls, tokenizer)
 
     # Model
@@ -140,13 +130,6 @@ def main(args):
     )
 
     # Evaluator
-    evaluator_ppl = EvaluatorForPerplexity(
-        model=model,
-        config=config,
-        dataset=eval_dataset_ppl,
-        monitors=[EvalMonitor(config)],
-        metrics={"ppl": PPLMetric(gather_result=True)},
-    )
     evaluator_cls = EvaluatorForClassfication(
         model=model,
         config=config,
@@ -168,7 +151,7 @@ def main(args):
             MemoryMonitor(config),
             LRMonitor(config),
         ],
-        evaluators=[evaluator_ppl, evaluator_cls],
+        evaluators=[evaluator_cls],
         callbacks=[
             CheckpointCallback(
                 folder=f"./lora/{args.jobname}",
@@ -181,15 +164,6 @@ def main(args):
 
     # Train
     trainer.train()
-
-    # Save merged weights
-    merged_model = PeftModel.from_pretrained(
-        AutoModelForCausalLM.from_pretrained(
-            args.model, trust_remote_code=True, device_map="auto"
-        ),
-        f"./lora/{args.jobname}/last",
-    ).merge_and_unload()
-    merged_model.save_pretrained(f"./lora/{args.jobname}/merged")
 
 
 if __name__ == "__main__":
