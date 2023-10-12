@@ -42,6 +42,8 @@ def main(args):
     config = CollieConfig.from_pretrained(args.model, trust_remote_code=True)
     config.use_flash = True
     config.dp_size = args.dp
+    config.tp_size = args.tp
+    config.pp_size = args.pp
     config.train_micro_batch_size = args.bs
     config.gradient_accumulation_steps = args.accum
     config.eval_batch_size = 1
@@ -175,6 +177,8 @@ if __name__ == "__main__":
     parser.add_argument("--epoch", type=int, default=1)
     parser.add_argument("--bs", type=int, default=1)
     parser.add_argument("--dp", type=int, default=1)
+    parser.add_argument("--tp", type=int, default=1)
+    parser.add_argument("--pp", type=int, default=1)
     parser.add_argument("--ogdu", type=bool, default=False)
     args = parser.parse_args()
     main(args)
