@@ -24,8 +24,8 @@ from collie import (
     EvalMonitor,
     EvaluatorForClassfication,
     InternLMForCausalLM,
-    Trainer,
 )
+from collie.utils.peft_utils import load_peft
 from peft import LoraConfig
 
 
@@ -51,7 +51,7 @@ def main(args):
             "target": sample["label"],
         }
         for sample in load_dataset("imdb", split="test")
-    ]
+    ][:32]
 
     eval_dataset_cls = CollieDatasetForClassification(eval_dataset_cls, tokenizer)
 
@@ -65,8 +65,7 @@ def main(args):
     model.eval()
 
     # Load LoRA weights
-    trainer = Trainer(model=model, config=config)
-    trainer.load_peft(args.lora)
+    load_peft(model, config, args.lora)
 
     # Evaluator
     evaluator_cls = EvaluatorForClassfication(

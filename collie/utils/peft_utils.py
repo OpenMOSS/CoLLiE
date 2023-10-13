@@ -1,14 +1,19 @@
+import json
 import math
 import os
 import warnings
 
+import deepspeed
 import torch
 from deepspeed.runtime.zero import GatheredParameters
 from peft.tuners.prefix_tuning import PrefixEncoder
 from transformers import PreTrainedModel
 from transformers.utils import ContextManagers
 
+from collie import CollieConfig
+from collie.driver.io import IODriver
 from peft import (
+    PEFT_TYPE_TO_CONFIG_MAPPING,
     PeftModel,
     PeftModelForCausalLM,
     PeftType,
@@ -18,6 +23,7 @@ from peft import (
     PromptLearningConfig,
     PromptTuningInit,
     TaskType,
+    set_peft_model_state_dict,
 )
 
 
@@ -266,3 +272,130 @@ def patch_peft(config):
     """
     patch_peft_model(config)
     patch_prompt_tuning()
+
+
+def _is_name_in_current_rank(name):
+    # TODO convert hf to pp
+    import re
+
+    search = re.search("\.[0-9]+\.", name)
+    if search is None:
+        # 不可能走到这里
+        raise ValueError(f"{name} is not a pipeline state key.")
+    layer_idx = int(search.group()[1:-1])
+    from .dist_utils import env
+
+    return layer_idx in env.pipeline_layers_idx
+
+
+def _merge_peft(path, prefix, io_driver):
+    """
+    在 pp 情况下将分开保存的 peft 合并到同一个文件
+    """
+    from .dist_utils import env
+
+    if env.pp_size == 1:
+        return
+    full_dict = {}
+    for pp in range(env.pp_size):
+        cur_name = os.path.join(path, f"{prefix}_{pp}.bin")
+        full_dict.update(io_driver.load(cur_name, "b"))
+        io_driver.delete(cur_name)
+    io_driver.save(full_dict, os.path.join(path, f"{prefix}.bin"))
+
+
+def _split_peft(state: dict, model):
+    """
+    在 pp 时选取当前 rank 的 key
+    """
+    from .dist_utils import env
+
+    if env.pp_size == 1:
+        return state
+    if isinstance(model.active_peft_config, PromptLearningConfig):
+        prefix = "base_model."
+    else:
+        prefix = "base_model.model."
+    pipeline_model = model.get_base_model()
+    for name in list(state.keys()):
+        name_pp = prefix + pipeline_model.name_to_pipeline(name[len(prefix) :])
+        if _is_name_in_current_rank(name_pp):
+            state[name_pp] = state[name]
+        state.pop(name)
+
+    return state
+
+
+def load_peft(
+    model: PeftModel,
+    config: CollieConfig,
+    path: str,
+    adapter_name="default",
+    is_trainable: bool = False,
+    protocol: str = "file",
+):
+    """
+    加载 adapter 部分权重，当未使用 ``peft`` 时，该方法等同于 ``load_model``
+
+    :param path: 模型保存路径
+    :param adapter_name: 当前加载的 adapter 名称
+    :param is_trainable: 是否允许加载的 adapter 进行训练
+    :param process_exclusion:
+    """
+    io_driver = IODriver.from_protocol(protocol)
+
+    save_dir = path if adapter_name == "default" else os.path.join(path, adapter_name)
+    peft_config_dict = json.loads(
+        io_driver.load(os.path.join(save_dir, "adapter_config.json"), mode="j")
+    )
+    loaded_peft_config = PEFT_TYPE_TO_CONFIG_MAPPING[peft_config_dict["peft_type"]]()
+    for key, value in peft_config_dict.items():
+        if hasattr(loaded_peft_config, key):
+            setattr(loaded_peft_config, key, value)
+    if isinstance(loaded_peft_config, PromptLearningConfig) and is_trainable:
+        raise ValueError(
+            "Cannot set a prompt learning adapter to trainable when loading pretrained adapter."
+        )
+    else:
+        loaded_peft_config.inference_mode = not is_trainable
+    # 这里在engine影初始化了之后再添加好像确实会出问题
+    if loaded_peft_config.peft_type != model.peft_type:
+        raise ValueError(
+            f"Cannot combine adapters with different peft types. "
+            f"Found {model.peft_type} and "
+            f"{loaded_peft_config.peft_type}."
+        )
+    if adapter_name not in model.peft_config:
+        raise ValueError(
+            f"Adapter `{adapter_name}` is not found in current "
+            "model, please check your checkpoint."
+        )
+    name = f"adapter_model.bin"
+    assert io_driver.exists(os.path.join(path, name)), f"{name} does not exist."
+    loaded_state_dict = io_driver.load(os.path.join(path, name), mode="rb")
+    if loaded_peft_config.peft_type in (PeftType.LORA, PeftType.ADALORA):
+        loaded_state_dict = _split_peft(loaded_state_dict, model)
+    if isinstance(loaded_peft_config, PromptLearningConfig):
+        parameters = [model.prompt_encoder[adapter_name].embedding.weight]
+    else:
+        parameters = [
+            param
+            for name, param in model.named_parameters()
+            if any(
+                [
+                    name.replace(f"{adapter_name}.", "") == k
+                    for k in loaded_state_dict.keys()
+                ]
+            )
+        ]
+
+    contexts = []
+    from .dist_utils import env, is_zero3_enabled
+
+    if is_zero3_enabled(config):
+        contexts.append(deepspeed.zero.GatheredParameters(parameters, modifier_rank=0))
+    with ContextManagers(contexts):
+        if env.dp_rank == 0 or not is_zero3_enabled(config):
+            set_peft_model_state_dict(
+                model, loaded_state_dict, adapter_name=adapter_name
+            )
