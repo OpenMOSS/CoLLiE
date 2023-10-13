@@ -42,18 +42,12 @@ from collie.utils import (
     progress,
     setup_ds_engine,
 )
-from peft import (
-    PEFT_TYPE_TO_CONFIG_MAPPING,
-    PeftModel,
-    PeftType,
-    PromptLearningConfig,
-    get_peft_model_state_dict,
-    set_peft_model_state_dict,
-)
+from collie.utils.peft_utils import _merge_peft, load_peft
+from peft import PeftModel, PeftType, PromptLearningConfig, get_peft_model_state_dict
 
 from .evaluator import Evaluator
 from .server import Server
-from .utils import TrainerEventTrigger, _merge_peft, _split_peft
+from .utils import TrainerEventTrigger
 
 
 class Trainer(TrainerEventTrigger):
@@ -652,65 +646,15 @@ class Trainer(TrainerEventTrigger):
                 process_exclusion=process_exclusion,
                 **kwargs,
             )
-        save_dir = (
-            path if adapter_name == "default" else os.path.join(path, adapter_name)
-        )
-        peft_config_dict = json.loads(
-            io_driver.load(os.path.join(save_dir, "adapter_config.json"), mode="j")
-        )
-        loaded_peft_config = PEFT_TYPE_TO_CONFIG_MAPPING[
-            peft_config_dict["peft_type"]
-        ]()
-        for key, value in peft_config_dict.items():
-            if hasattr(loaded_peft_config, key):
-                setattr(loaded_peft_config, key, value)
-        if isinstance(loaded_peft_config, PromptLearningConfig) and is_trainable:
-            raise ValueError(
-                "Cannot set a prompt learning adapter to trainable when loading pretrained adapter."
-            )
-        else:
-            loaded_peft_config.inference_mode = not is_trainable
-        # 这里在engine影初始化了之后再添加好像确实会出问题
-        if loaded_peft_config.peft_type != self.engine.module.peft_type:
-            raise ValueError(
-                f"Cannot combine adapters with different peft types. "
-                f"Found {self.engine.module.peft_type} and "
-                f"{loaded_peft_config.peft_type}."
-            )
-        if adapter_name not in self.engine.module.peft_config:
-            raise ValueError(
-                f"Adapter `{adapter_name}` is not found in current "
-                "model, please check your checkpoint."
-            )
-        name = f"adapter_model.bin"
-        assert io_driver.exists(os.path.join(path, name)), f"{name} does not exist."
-        loaded_state_dict = io_driver.load(os.path.join(path, name), mode="rb")
-        if loaded_peft_config.peft_type in (PeftType.LORA, PeftType.ADALORA):
-            loaded_state_dict = _split_peft(loaded_state_dict, self.model)
-        if isinstance(loaded_peft_config, PromptLearningConfig):
-            parameters = [self.model.prompt_encoder[adapter_name].embedding.weight]
-        else:
-            parameters = [
-                param
-                for name, param in self.engine.module.named_parameters()
-                if any(
-                    [
-                        name.replace(f"{adapter_name}.", "") == k
-                        for k in loaded_state_dict.keys()
-                    ]
-                )
-            ]
 
-        contexts = []
-        if is_zero3_enabled(self.config):
-            contexts.append(
-                deepspeed.zero.GatheredParameters(parameters, modifier_rank=0)
-            )
-        with ContextManagers(contexts):
-            if env.dp_rank == 0 or not is_zero3_enabled(self.config):
-                set_peft_model_state_dict(
-                    self.model, loaded_state_dict, adapter_name=adapter_name
-                )
+        load_peft(
+            self.engine.module,
+            self.config,
+            path,
+            adapter_name,
+            is_trainable,
+            protocol,
+        )
 
     def save_model(self, path: str, process_exclusion: bool = False, **kwargs):
         ...

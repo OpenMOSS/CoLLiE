@@ -90,7 +90,7 @@ def main(args):
         ]
     )
 
-    # `dataset` is required to init evaluator. Pass a empty dict here.
+    # `dataset` is required to init evaluator. Pass an empty dict here.
     # The real dataset will be passed in the following loop.
     acc_evaluator = EvaluatorForClassfication(
         model=model,
