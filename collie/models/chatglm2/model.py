@@ -799,6 +799,9 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
         # 别忘了清理 word_embeddings 里的 past_position_ids
         self._clean_past_key_values(self.layers)
         self._set_use_cache(self.layers, False)
+    
+    def set_cache(self, use_cache):
+        self._set_use_cache(self.layers, use_cache)
 
     @classmethod
     def _get_word_embedding_with_position_ids_cls(cls, config):

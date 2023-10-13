@@ -471,6 +471,9 @@ class ChatGLMForCausalLM(CollieModelForCausalLM):
         self._clean_past_key_values(self.layers, self.word_embeddings)
         self._set_use_cache(self.layers, False)
 
+    def set_cache(self, use_cache):
+        self._set_use_cache(self.layers, use_cache)
+
     @classmethod
     def _get_word_embedding_with_position_ids_cls(cls, config):
         class WordEmbeddingWithPositionIdsAndInputIds(
