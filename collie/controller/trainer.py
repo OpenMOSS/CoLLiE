@@ -31,7 +31,6 @@ from collie.driver.io import IODriver
 from collie.log import logger
 from collie.models.base import CollieModelForCausalLM
 from collie.module import GPTLMLoss, PipelineGenerationMixin, PipelineModel
-from collie.optim import Lomo
 from collie.utils import (
     BaseMonitor,
     ColliePadder,
@@ -145,7 +144,7 @@ class Trainer(TrainerEventTrigger):
         evaluators: Optional[List] = None,
     ) -> None:
         self.config = config
-        if isinstance(optimizer, Lomo):
+        if "Lomo" in optimizer.__class__.__name__:
             if config.pp_size > 1:
                 raise ValueError("Lomo is incompatible with pipeline parallelism.")
             if self.config.gradient_accumulation_steps > 1:
@@ -279,7 +278,7 @@ class Trainer(TrainerEventTrigger):
             if not isinstance(self.loss_fn, torch.nn.Module):
                 del self.model.loss_fn
             self.model.loss_fn = self.loss_fn
-        if isinstance(self.optimizer, Lomo):
+        if "Lomo" in self.optimizer.__class__.__name__:
             self.engine, _, _, _ = setup_ds_engine(
                 model=self.model,
                 config=self.config,
@@ -450,14 +449,13 @@ class Trainer(TrainerEventTrigger):
                 if isinstance(trainer.loss_fn, nn.Module)
                 else trainer.loss_fn,
             )
-            if not isinstance(trainer.optimizer, Lomo):
+            if not ("Lomo" in trainer.optimizer.__class__.__name__):
                 trainer.engine.backward(loss)
                 trainer.engine.step()
             else:
-                # for lomo only
+                # for lomo or adalomo
                 if trainer.optimizer.clip_grad_norm is not None or (
-                    "fp16" in trainer.engine.config
-                    and trainer.engine.config["fp16"]["enabled"]
+                    trainer.optimizer.loss_scaler is not None
                 ):
                     trainer.optimizer.grad_norm(loss)
                     if (
@@ -471,10 +469,9 @@ class Trainer(TrainerEventTrigger):
                             ).reset_step()
                         return loss.detach().cpu().item()
                     if trainer.optimizer.zero3_enabled:
-                        if "fp16" in trainer.engine.config:
-                            trainer.engine.optimizer.get_param_coordinator(
-                                training=True
-                            ).reset_step()
+                        trainer.engine.optimizer.get_param_coordinator(
+                            training=True
+                        ).reset_step()
                         # zero-3 doesn't support backward twice, so need an additional forward here
                         outputs = trainer.engine(**batch)
                         loss = auto_param_call(
@@ -495,6 +492,7 @@ class Trainer(TrainerEventTrigger):
                     trainer.engine.optimizer.get_param_coordinator(
                         training=True
                     ).reset_step()
+        dist.all_reduce(loss, op=torch.distributed.ReduceOp.AVG, group=env.dp_group, async_op=False)
         return loss.detach().cpu().item()
 
     @property
