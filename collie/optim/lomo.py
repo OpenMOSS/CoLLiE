@@ -1,4 +1,3 @@
-import os
 import torch
 from torch.optim import Optimizer
 import torch.distributed as dist
@@ -38,7 +37,6 @@ class Lomo(Optimizer):
             self.do_weight_decay = True
         else:
             self.do_weight_decay = False
-        print(f"do weight decay {self.do_weight_decay}")
 
         # for grad norm
         if self.clip_grad_norm is not None and self.clip_grad_norm <= 0:
@@ -104,7 +102,7 @@ class Lomo(Optimizer):
                                 # Normalize the gradient according to its norm (computed in another pass)
                                 grad_fp32.mul_(self.clip_coef)
                             p_fp32 = p.data.to(torch.float32)
-                            if self.do_weight_decay :
+                            if self.do_weight_decay:
                                 p_fp32.mul_(1.0 - self.lr * self.weight_decay)
                             p_fp32.add_(grad_fp32, alpha=-self.lr)
                             p.data.copy_(p_fp32)
@@ -220,7 +218,6 @@ class Lomo(Optimizer):
                 for n, p in self.model.named_parameters():
                     p.grad = None
             return
-
 
         with torch.no_grad():
             # The norm is computed over all gradients together, as if they were
