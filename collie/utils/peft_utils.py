@@ -288,7 +288,7 @@ def _is_name_in_current_rank(name):
     return layer_idx in env.pipeline_layers_idx
 
 
-def _merge_peft(path, prefix, io_driver):
+def pp_merge_peft(path, prefix, io_driver):
     """
     在 pp 情况下将分开保存的 peft 合并到同一个文件
     """

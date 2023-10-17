@@ -41,7 +41,7 @@ from collie.utils import (
     progress,
     setup_ds_engine,
 )
-from collie.utils.peft_utils import _merge_peft, load_peft
+from collie.utils.peft_utils import pp_merge_peft, load_peft
 from peft import PeftModel, PeftType, PromptLearningConfig, get_peft_model_state_dict
 
 from .evaluator import Evaluator
@@ -607,7 +607,7 @@ class Trainer(TrainerEventTrigger):
                 )
                 peft_config.inference_mode = inference_mode
                 if pp_save:
-                    _merge_peft(path, name_prefix, io_driver)
+                    pp_merge_peft(path, name_prefix, io_driver)
 
     def load_peft(
         self,
