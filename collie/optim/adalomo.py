@@ -32,19 +32,18 @@ class AdaLomo(Optimizer):
             self,
             model,
             lr=1e-3,
+            loss_scale=2**10,
             eps=(1e-30, 1e-3),
             clip_threshold=1.0,
             decay_rate=-0.8,
             clip_grad_norm=None,
             clip_grad_value=None,
             weight_decay=0.0,
-            loss_scale=2**14
     ):
         self.model = model
         self.lr = lr
         self.clip_grad_norm = clip_grad_norm
         self.clip_grad_value = clip_grad_value
-        self.loss_scaler = None
         self.weight_decay = weight_decay
         self.loss_scale = loss_scale
         if self.weight_decay > 0.0:
