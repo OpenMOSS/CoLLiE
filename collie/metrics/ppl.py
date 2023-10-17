@@ -15,7 +15,7 @@ class PPLMetric(BaseMetric):
         self.total = 0
         
     def get_metric(self) -> Optional[Dict]:
-        return round(self.ppl / (self.total + 1e-12), 6)
+        return {'ppl': round(self.ppl / (self.total + 1e-12), 6)}
         
     def update(self, result: Dict):
         assert "ppl" in result.keys(), f"ppl not in result!"
