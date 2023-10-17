@@ -455,7 +455,7 @@ class Trainer(TrainerEventTrigger):
             else:
                 # for lomo or adalomo
                 if trainer.optimizer.clip_grad_norm is not None or (
-                    trainer.optimizer.loss_scaler is not None
+                    hasattr(trainer.optimizer, "loss_scaler") and trainer.optimizer.loss_scaler is not None
                 ):
                     trainer.optimizer.grad_norm(loss)
                     if (
