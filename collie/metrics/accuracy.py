@@ -105,4 +105,4 @@ class AccuracyMetric(BaseMetric):
             self.total += torch.sum(masks).item()
         else:
             self.correct += torch.sum(torch.eq(pred, target)).item()
-            self.total += np.prod(list(pred.size()))
+            self.total += np.prod(list(pred.size())).item()

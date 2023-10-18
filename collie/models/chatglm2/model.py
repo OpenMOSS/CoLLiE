@@ -419,7 +419,7 @@ class ChatGLM2Layer(nn.Module):
         self.hidden_states = None
 
     def get_masks(self, input_ids, past_key_values, padding_mask=None):
-        batch_size, seq_length, _ = input_ids.shape
+        batch_size, seq_length = input_ids.shape
         full_attention_mask = torch.ones(
             batch_size, seq_length, seq_length, device=input_ids.device
         )
@@ -582,11 +582,12 @@ class ChatGLM2Layer(nn.Module):
         past_key_values = inputs.get("past_key_values", None)
         full_attention_mask = inputs.get("full_attention_mask", None)
         attention_mask = inputs.get("attention_mask", None)
-        
+
         if full_attention_mask is None:
-            if (inputs["hidden_states"].shape[1] != 1 and past_key_values is not None) or (attention_mask and not attention_mask.all()):
+            if (inputs["hidden_states"].shape[1] != 1 and past_key_values is not None) or\
+                (attention_mask is not None and not attention_mask.all()):
                 full_attention_mask = self.get_masks(
-                    inputs["hidden_states"],
+                    inputs["input_ids"],
                     past_key_values,
                     padding_mask=attention_mask,
                 )
@@ -654,7 +655,6 @@ class ChatGLM2Model(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         past_key_values: Optional[Tuple[torch.Tensor]] = None,
         **kwargs,):
-        _, seq_length = input_ids.shape
 
         inputs = {"input_ids": input_ids}
         if input_ids == None:
@@ -662,24 +662,13 @@ class ChatGLM2Model(nn.Module):
             inputs['rotary_pos_emb'] = self._get_rotary_embedding(self.config, kwargs.get("position_ids", None))
         else:
             inputs.update(dict(zip(["hidden_states", "rotary_pos_emb"], self.word_embeddings(input_ids, kwargs.get("position_ids", None)))))
-            # inputs["hidden_states"], inputs['rotary_pos_emb'] = self.word_embeddings(inputs["input_ids"], kwargs.get("position_ids", None))
+
         if past_key_values is not None:
             inputs["past_key_values"] = past_key_values
         
-        full_attention_mask = kwargs.get("full_attention_mask", None)
-        
-        if full_attention_mask is None:
-            if (attention_mask is not None and not attention_mask.all()) or (
-                past_key_values and seq_length != 1
-            ):
-                full_attention_mask = self.get_masks(
-                    input_ids, past_key_values, padding_mask=attention_mask
-                )
-
-        inputs["attention_mask"] = full_attention_mask
-        
-        # inputs['rotary_pos_emb'] = self._get_rotary_embedding(self.config, kwargs.get("position_ids", None))
-        
+        if attention_mask is not None:
+            inputs["attention_mask"] = attention_mask
+                
         
         all_hidden_states = ()
         for layer in self.layers:
@@ -729,33 +718,6 @@ class ChatGLM2Model(nn.Module):
             )),
         ]
         return layers
-
-    def get_masks(self, input_ids, past_key_values, padding_mask=None):
-        batch_size, seq_length = input_ids.shape
-        full_attention_mask = torch.ones(
-            batch_size, seq_length, seq_length, device=input_ids.device
-        )
-        full_attention_mask.tril_()
-        past_length = 0
-        if past_key_values:
-            past_length = past_key_values[0][0].shape[0]
-        if past_length:
-            full_attention_mask = torch.cat(
-                (
-                    torch.ones(
-                        batch_size, seq_length, past_length, device=input_ids.device
-                    ),
-                    full_attention_mask,
-                ),
-                dim=-1,
-            )
-        if padding_mask is not None:
-            full_attention_mask = full_attention_mask * padding_mask.unsqueeze(1)
-        if not past_length and padding_mask is not None:
-            full_attention_mask -= padding_mask.unsqueeze(-1) - 1
-        full_attention_mask = (full_attention_mask < 0.5).bool()
-        full_attention_mask.unsqueeze_(1)
-        return full_attention_mask
         
     @staticmethod
     def _get_rotary_embedding(config, position_ids):
