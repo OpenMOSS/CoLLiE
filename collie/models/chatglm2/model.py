@@ -467,16 +467,19 @@ class ChatGLM2Layer(nn.Module):
                 rearrange(value_layer, "b n (h d) -> b n h d", d=head_dim),
             )
         else:
-            new_tensor_shape = mixed_x_layer.size()[:-1] + (
-                self.num_attention_heads_per_partition,
-                3 * self.hidden_size_per_attention_head,
-            )
-            mixed_x_layer = mixed_x_layer.view(*new_tensor_shape)
+            # new_tensor_shape = mixed_x_layer.size()[:-1] + (
+            #     self.num_attention_heads_per_partition,
+            #     3 * self.hidden_size_per_attention_head,
+            # )
+            # mixed_x_layer = mixed_x_layer.view(*new_tensor_shape)
 
-            # [sq, b, np, 3 * hn] --> 3 [sq, b, np, hn]
-            (query_layer, key_layer, value_layer) = split_tensor_along_last_dim(
-                mixed_x_layer, 3
-            )
+            # # [sq, b, np, 3 * hn] --> 3 [sq, b, np, hn]
+            # (query_layer, key_layer, value_layer) = split_tensor_along_last_dim(
+            #     mixed_x_layer, 3
+            # )
+            query_layer = self.attention["query_layer"](layernorm_output)
+            key_layer = self.attention["key_layer"](layernorm_output)
+            value_layer = self.attention["value_layer"](layernorm_output)
 
         # apply relative positional encoding (rotary embedding)
         if rotary_pos_emb is not None:
@@ -635,7 +638,6 @@ class ChatGLM2Model(nn.Module):
         self.word_embeddings = self._get_word_embedding_with_position_ids_cls(config)(
             config.padded_vocab_size, config.hidden_size
         )
-
         # Rotary positional embeddings
         self.seq_length = config.seq_length
         # self.config.checkpointing = True
@@ -1196,28 +1198,65 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
                 .transpose(1, 2)
                 .reshape(config.hidden_size, config.hidden_size)
             )
+        
+        # recal inv_freq
+        rotary_dim = (
+            config.model_config.hidden_size // config.model_config.num_attention_heads 
+            if config.model_config.kv_channels is None else config.model_config.kv_channels
+        )
+        dim = rotary_dim // 2
+        inv_freq = 1.0 / (10000 ** (torch.arange(0, dim, 2).to(dtype=config.model_config.torch_dtype) / dim))
+        
+        # gather q,k,v layer to q_k_v_layer
+        state_dict_keys = state_dict.keys()
 
+        for layer_id in range(config.model_config.num_layers):
+            weight_names = [None, None, None]
+            bias_names = [None, None, None]
+            dense_names = [None, None]
+            for key_name in state_dict_keys:
+                if f"{layer_id}.attention.key_layer.weight" in key_name:
+                    weight_names[1] = key_name
+                if f"{layer_id}.attention.query_layer.weight" in key_name:
+                    weight_names[0] = key_name
+                if f"{layer_id}.attention.value_layer.weight" in key_name:
+                    weight_names[2] = key_name
+                
+                if f"{layer_id}.attention.key_layer.bias" in key_name:
+                    bias_names[1] = key_name
+                if f"{layer_id}.attention.query_layer.bias" in key_name:
+                    bias_names[0] = key_name
+                if f"{layer_id}.attention.value_layer.bias" in key_name:
+                    bias_names[2] = key_name
+                
+                if f"{layer_id}.mlp.dense_h_to_4h_up_proj.weight" in key_name:
+                      dense_names[0] = key_name   
+                if f"{layer_id}.mlp.dense_h_to_4h_down_proj.weight" in key_name:
+                      dense_names[1] = key_name   
+                
+            if weight_names[0]:
+                state_dict[weight_names[0].replace("query_layer", "query_key_value")] = torch.cat([state_dict.pop(weight_names[0]),
+                            state_dict.pop(weight_names[1]),
+                            state_dict.pop(weight_names[2])], dim=0)
+                state_dict[bias_names[0].replace("query_layer", "query_key_value")] = torch.cat([state_dict.pop(bias_names[0]),
+                            state_dict.pop(bias_names[1]),
+                            state_dict.pop(bias_names[2])], dim=0)
+                state_dict[dense_names[0].replace("dense_h_to_4h_up_proj", "dense_h_to_4h")] = torch.cat([
+                            state_dict.pop(dense_names[0]),
+                            state_dict.pop(dense_names[1])
+                ], dim=0)
+            
         # gather to tp rank 0
         if env.is_pipeline:
-            layers = env.pipeline_layers_idx
             parts = env.pipeline_parts
             for key in list(state_dict.keys()):
-                if 0 in layers:
-                    state_dict["transformer.word_embeddings.weight"] = state_dict.pop(
-                        key
-                    )
-                elif max(layers) - 1 in layers:
-                    state_dict["lm_head.weight"] = state_dict.pop(key)
+                if "output_layer" in key:
+                    state_dict["transformer."+key] = state_dict.pop(key)
+                elif "word_embeddings" in key:
+                    state_dict[key.replace("model", "transformer.embedding")] = state_dict.pop(key)
                 else:
-                    layer = int(key.split(".")[0])
-                    if layer == max(parts) - 2:
-                        state_dict[
-                            key.replace(f"{layer}.", "transformer.final_layernorm.")
-                        ] = state_dict.pop(key)
-                    else:
-                        state_dict[
-                            key.replace(f"{layer}.", f"transformer.layers.{layer - 1}.")
-                        ] = state_dict.pop(key)
+                    state_dict[key.replace("model", "transformer.encoder").replace(".attention", ".self_attention")] = state_dict.pop(key)      
+            
         if dist.is_initialized() and process_exclusion:
             # 如果启动了进程互斥，则要进行 pp_size 次循环
             rank_order = range(config.pp_size)
@@ -1292,6 +1331,8 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
                                     gc.collect()
                     if env.tp_rank == 0:
                         # Save gathered weights
+                        if env.rank == 0:
+                            state_dict["transformer.rotary_pos_emb.inv_freq"] = inv_freq
                         if env.is_pipeline:
                             ckpt_name = f"pytorch_model-{env.pp_rank+1:05d}-of-{config.pp_size:05d}.bin"
                             total_size = 0
@@ -1305,6 +1346,7 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
                             index_dict = dict(
                                 total_size=total_size, weight_map=weight_map
                             )
+                            
                             index_dicts = [None for _ in range(env.pp_size)]
                             dist.gather_object(
                                 index_dict, index_dicts if env.pp_rank == 0 else None
@@ -1315,6 +1357,7 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
                                 for _index_dict in index_dicts:
                                     total_size += _index_dict["total_size"]
                                     weight_map.update(_index_dict["weight_map"])
+                                
                                 merged_dict = {
                                     "metadata": {"total_size": total_size},
                                     "weight_map": weight_map,
