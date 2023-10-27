@@ -122,7 +122,20 @@ class CollieDatasetForTraining(Dataset):
             ...
         ]
 
+    或者:
+
+    .. code-block::
+
+        [
+            {
+                "tokens": [token_id_1, token_id_2, ...],
+                "labels": [-100, token_id_2, ...] # 可选，-100 表示计算 loss 时忽略该 token
+            },
+            ...
+        ]
+
     当使用第二种数据格式时，只有 `output` 部分的 token 会参与 loss计算。
+    当使用第二种数据格式时，`labels` 字段是可选的，如果不提供 `labels` 默认计算所有 token 的 loss
     """
 
     def __init__(
