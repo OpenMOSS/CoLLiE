@@ -84,6 +84,19 @@ class _ShardContainer(list):
         return json.loads(self.file.readline().decode())
 
 
+def _inspect_special_tokens_length(tokenizer):
+    ids_with_special_tokens = tokenizer("a", add_special_tokens=True).input_ids
+    ids_without_special_tokens = tokenizer("a", add_special_tokens=False).input_ids
+    bos_length = 0
+    for bos_length in range(len(ids_with_special_tokens)):
+        if ids_with_special_tokens[bos_length] == ids_without_special_tokens[0]:
+            break
+    eos_length = (
+        len(ids_with_special_tokens) - len(ids_without_special_tokens) - bos_length
+    )
+    return bos_length, eos_length
+
+
 class CollieDatasetForTraining(Dataset):
     """**CoLLie** 中的基本数据格式，可用于预训练、微调任务。
     需提供的数据格式形似：
@@ -129,25 +142,13 @@ class CollieDatasetForTraining(Dataset):
         if shuffle:
             random.seed(seed)
             random.shuffle(self.indices)
+        if self.tokenizer is not None:
+            self.bos_length, self.eos_length = _inspect_special_tokens_length(self.tokenizer)
 
     def __len__(self):
         return len(self.dataset)
 
-    def _inspect_special_tokens_length(self):
-        ids_with_special_tokens = self.tokenizer("a", add_special_tokens=True).input_ids
-        ids_without_special_tokens = self.tokenizer(
-            "a", add_special_tokens=False
-        ).input_ids
-        for bos_length in range(len(ids_with_special_tokens)):
-            if ids_with_special_tokens[bos_length] == ids_without_special_tokens[0]:
-                break
-        bos_length += 1
-        eos_length = (
-            len(ids_with_special_tokens) - len(ids_without_special_tokens) - bos_length
-        )
-        return bos_length, eos_length
-
-    def __getitem__(self, index) -> Tuple:
+    def __getitem__(self, index) -> Dict:
         if isinstance(index, slice):
             return self._get_slice(index)
         if index > len(self):
@@ -185,15 +186,15 @@ class CollieDatasetForTraining(Dataset):
                     torch.ones_like(torch.tensor(input_ids)).cpu().tolist(),
                 )
                 labels = torch.tensor(input_ids)
-                context_length = len(
+                target_length = len(
                     self.tokenizer(
-                        self.dataset[index]["input"],
+                        self.dataset[index]["output"],
                         add_special_tokens=self.add_special_tokens,
                     ).input_ids
                 )
-                _, eos_length = self._inspect_special_tokens_length()
-                context_length -= eos_length
-                labels[: context_length - 2] = -100
+                if self.add_special_tokens:
+                    target_length -= self.bos_length
+                labels[: -target_length] = -100
                 labels = labels.cpu().tolist()
             else:
                 raise ValueError("Dataset must have one or two fields.")
@@ -278,7 +279,7 @@ class CollieDatasetForGeneration(CollieDatasetForTraining):
             ]
     """
 
-    def __getitem__(self, index) -> Tuple:
+    def __getitem__(self, index) -> Dict:
         if index > len(self):
             raise IndexError("Index out of range.")
         target = None
@@ -360,7 +361,7 @@ class CollieDatasetForClassification(CollieDatasetForTraining):
         ), "Style can only be one of `harness` or `helm`"
         self.style = style.lower()
 
-    def __getitem__(self, index) -> Tuple:
+    def __getitem__(self, index) -> Dict:
         if index > len(self):
             raise IndexError("Index out of range.")
         index = self.indices[index]
@@ -376,6 +377,7 @@ class CollieDatasetForClassification(CollieDatasetForTraining):
                 ):
                     input_ids = []
                     attention_mask = []
+                    labels = []
                     for output in self.dataset[index]["output"]:
                         inputs = self.tokenizer(
                             self.dataset[index]["input"] + output,
@@ -388,7 +390,21 @@ class CollieDatasetForClassification(CollieDatasetForTraining):
                                 torch.ones_like(torch.tensor(inputs.get("input_ids"))),
                             )
                         )
+                        label = torch.tensor(inputs.get("input_ids"))
+                        target_length = len(
+                            self.tokenizer(
+                                output,
+                                add_special_tokens=self.add_special_tokens,
+                            ).input_ids
+                        )
+                        if self.add_special_tokens:
+                            target_length -= self.bos_length
+                        label[: -target_length] = -100
+                        label = label.cpu().tolist()
+                        labels.append(label)
+
                     input_ids = tuple(input_ids)
+                    labels = tuple(labels)
                     attention_mask = tuple(attention_mask)
                     target = self.dataset[index]["target"]
                 else:
@@ -397,13 +413,14 @@ class CollieDatasetForClassification(CollieDatasetForTraining):
                     )
                 if self.max_length > 1:
                     input_ids = [sample[: self.max_length] for sample in input_ids]
+                    labels = [sample[: self.max_length] for sample in labels]
                     attention_mask = [
                         sample[: self.max_length] for sample in attention_mask
                     ]
                 return {
                     "input_ids": input_ids,
                     "attention_mask": attention_mask,
-                    "labels": input_ids,
+                    "labels": labels,
                     "target": target,
                 }
             elif self.style == "helm":
