@@ -24,7 +24,11 @@ from collie.config import CollieConfig
 from collie.driver.io import IODriver
 from collie.log.logger import logger
 from collie.models.base import CollieModelForCausalLM
-from collie.models.utils import flash_attention
+from collie.models.utils import (
+    flash_attention, 
+    kv_cache_to_inputs_for_layer, inputs_to_kv_cache_for_layer, 
+    kv_cache_to_inputs_for_model, inputs_to_kv_cache_for_model, 
+)
 from collie.module import (
     ColumnParallelLinearWithoutBias,
     ColumnParallelLMHead,
@@ -172,7 +176,7 @@ class MossBlock(nn.Module):
             self.hidden_states = None
         layer_past = None
         if past_key_values is not None:
-            layer_past = past_key_values[self.idx]
+            layer_past = past_key_values
         assert (
             hidden_states.ndim == 3
         ), f"hidden_states.shape must be (B, N, H), but got {hidden_states.shape}"
@@ -190,31 +194,36 @@ class MossBlock(nn.Module):
             rearrange(value, "b n (h d) -> b n h d", d=head_dim),
         )
         if layer_past is not None:
-            start_pos = layer_past[0].shape[2]
+            if self.config.peft_config and self.config.peft_config.peft_type == "PREFIX_TUNING":
+                start_pos = layer_past[0].shape[2]
+            else:
+                start_pos = layer_past[0].shape[1]
         else:
             start_pos = 0
         query, key = self.self_attn["rotary_emb"](query, key, seq_len, start_pos)
         if layer_past is not None:
             # past_key: batch_size, num_heads, seq_len, head_dim
-            past_key = (
-                layer_past[0]
-                .reshape(*layer_past[0].shape[:-1], 2, -1)
-                .permute(0, 2, 1, 4, 3)
-                .reshape(batch_size, start_pos, self.config.num_attention_heads, -1)
-            )
+            if self.config.peft_config and self.config.peft_config.peft_type == "PREFIX_TUNING":
+                past_key =  layer_past[0].reshape(*layer_past[0].shape[:-1], 2, -1)\
+                                        .permute(0, 2, 1, 4, 3)\
+                                        .reshape(batch_size, start_pos, self.num_heads, -1)
+                past_value = layer_past[1].permute([0, 2, 1, 3])
+            else:
+                past_key, past_value = layer_past
             query = torch.cat([past_key, query], dim=1)
             key = torch.cat([past_key, key], dim=1)
-            value = torch.cat([layer_past[1].permute([0, 2, 1, 3]), value], dim=1)
+            value = torch.cat([past_value, value], dim=1)
         new_layer_past = None
         if self.use_cache and not self.training:
             # 调整成和 hf 兼容的格式，方便 prefix tuning
-            present_key = (
-                key.reshape(*key.shape[:-1], -1, 2)
-                .permute(0, 2, 1, 4, 3)
-                .reshape(
-                    batch_size, self.config.num_attention_heads, seq_len + start_pos, -1
-                )
-            )
+            if self.config.peft_config and self.config.peft_config.peft_type == "PREFIX_TUNING":
+                present_key = key.reshape(*key.shape[:-1], -1, 2)\
+                                .permute(0, 2, 1, 4, 3)\
+                                .reshape(batch_size, self.num_heads // self.config.tp_size, seq_len + start_pos, -1)
+                present_value = value.permute([0, 2, 1, 3])
+                new_layer_past = (present_key, present_value)
+            else:
+                new_layer_past = (key, value)
         attention_mask = (
             attention_mask
             if attention_mask is not None
@@ -264,26 +273,23 @@ class MossBlock(nn.Module):
         return hidden_states, new_layer_past
 
     def forward(self, inputs: dict):
+        
+        layer_past = inputs_to_kv_cache_for_layer(idx=self.idx, inputs=inputs)
+            
         if self.config.checkpointing and self.training:
             hidden_states, new_layer_past = torch.utils.checkpoint.checkpoint(
                 self._forward,
                 inputs["hidden_states"],
                 inputs.get("attention_mask", None),
-                inputs.get("past_key_values", None),
+                layer_past,  # inputs.get("past_key_values", None),
             )
         else:
-            hidden_states, new_layer_past = self._forward(**inputs)
+            hidden_states, new_layer_past = self._forward(inputs["hidden_states"],
+                                                          inputs.get("attention_mask", None), 
+                                                          layer_past)  # **inputs
         inputs["hidden_states"] = hidden_states
-        new_past_key_values = inputs.get("new_past_key_values", None)
-        if new_layer_past is not None:
-            new_layer_past.unsqueeze_(0)
-            if new_past_key_values is None:
-                new_past_key_values = new_layer_past
-            else:
-                new_past_key_values = concat_tensor(
-                    [new_past_key_values, new_layer_past]
-                ).to(new_layer_past.device)
-            inputs["new_past_key_values"] = new_past_key_values
+
+        inputs.update(kv_cache_to_inputs_for_layer(idx=self.idx, new_layer_past=new_layer_past))
 
         return inputs
 
@@ -316,18 +322,17 @@ class MossModel(nn.Module):
             inputs["hidden_states"] = kwargs["inputs_embeds"]
         else:
             inputs["hidden_states"] = self.embed_tokens(inputs["input_ids"])
-        if past_key_values is not None:
-            inputs["past_key_values"] = past_key_values
+
+        inputs.update(kv_cache_to_inputs_for_model(past_key_values))
+            
         all_hidden_states = ()
         for layer in self.layers:
             all_hidden_states += (inputs["hidden_states"],)
             inputs.update(layer(inputs))
         inputs["hidden_states"] = self.norm(inputs["hidden_states"])
         all_hidden_states += (inputs["hidden_states"],)
-
-        past_key_values = None
-        if "new_past_key_values" in inputs:
-            past_key_values = inputs["new_past_key_values"]
+        
+        past_key_values = inputs_to_kv_cache_for_model(self.config.num_hidden_layers, inputs)
 
         return BaseModelOutputWithPast(
             last_hidden_state=inputs["hidden_states"],

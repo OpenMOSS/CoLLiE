@@ -58,6 +58,9 @@ def flash_attention(query, key, value, attention_mask):
 
 
 def kv_cache_to_inputs_for_model(past_key_values):
+    """
+    在模型的输入阶段，将嵌套元组形式的past_key_values转化为inputs字典中的每个字段
+    """
     inputs = {}
     if past_key_values is not None:
         for i, past_key_value in enumerate(past_key_values):
@@ -67,6 +70,9 @@ def kv_cache_to_inputs_for_model(past_key_values):
 
 
 def inputs_to_kv_cache_for_model(num_hidden_layers, inputs):
+    """
+    在模型的输出阶段，将inputs字典中的kv_cache转化为嵌套元组形式的past_key_values
+    """
     past_key_values = ()
     for i in range(0, num_hidden_layers):
         past_key_values += ((inputs[f"past_key_values_layer{i}_key"], 
@@ -75,6 +81,9 @@ def inputs_to_kv_cache_for_model(num_hidden_layers, inputs):
 
 
 def kv_cache_to_inputs_for_layer(idx, new_layer_past):
+    """
+    在第idx层的输出阶段，将元组形式的new_layer_past转化为inputs字典中的每个字段
+    """
     inputs = {}
     if new_layer_past is not None:
         inputs[f"past_key_values_layer{idx}_key"] = new_layer_past[0]
@@ -83,6 +92,9 @@ def kv_cache_to_inputs_for_layer(idx, new_layer_past):
 
 
 def inputs_to_kv_cache_for_layer(idx, inputs):
+    """
+    在第idx层的输入阶段，将inputs字典中的kv_cahce转化为元组形式的layer_past
+    """
     if f"past_key_values_layer{idx}_key" in inputs and f"past_key_values_layer{idx}_value" in inputs:
         return (inputs[f"past_key_values_layer{idx}_key"], 
                 inputs[f"past_key_values_layer{idx}_value"]) 

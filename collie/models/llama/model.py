@@ -235,8 +235,6 @@ class LlamaLayer(nn.Module):
                 past_value = layer_past[1].permute([0, 2, 1, 3])
             else:
                 past_key, past_value = layer_past
-            # if env.rank == 0:
-            #     logger.info(f'layer: {self.idx}, query.shape: {query.shape}, key.shape: {key.shape}, past_key.shape: {past_key.shape}, value.shape: {value.shape}, past_value.shape: {past_value.shape}, ')
             query = torch.cat([past_key, query], dim=1)
             key = torch.cat([past_key, key], dim=1)
             value = torch.cat([past_value, value], dim=1)
