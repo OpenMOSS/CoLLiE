@@ -454,7 +454,6 @@ class ChatGLM2Layer(nn.Module):
 
         # Layer norm at the beginning of the transformer layer.
         layernorm_output = self.input_layernorm(hidden_states)
-        # import pdb;pdb.set_trace()
         # Attention heads [sq, b, h] --> [sq, b, (np * 3 * hn)]
         if self.multi_query_attention:
             query_layer = self.attention["query_layer"](layernorm_output)
