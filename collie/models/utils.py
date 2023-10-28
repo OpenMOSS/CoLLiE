@@ -57,6 +57,40 @@ def flash_attention(query, key, value, attention_mask):
     return output
 
 
+def kv_cache_to_inputs_for_model(past_key_values):
+    inputs = {}
+    if past_key_values is not None:
+        for i, past_key_value in enumerate(past_key_values):
+            inputs[f"past_key_values_layer{i}_key"] = past_key_value[0]
+            inputs[f"past_key_values_layer{i}_value"] = past_key_value[1]
+    return inputs
+
+
+def inputs_to_kv_cache_for_model(num_hidden_layers, inputs):
+    past_key_values = ()
+    for i in range(0, num_hidden_layers):
+        past_key_values += ((inputs[f"past_key_values_layer{i}_key"], 
+                             inputs[f"past_key_values_layer{i}_value"]), )
+    return past_key_values if past_key_values != () else None
+
+
+def kv_cache_to_inputs_for_layer(idx, new_layer_past):
+    inputs = {}
+    if new_layer_past is not None:
+        inputs[f"past_key_values_layer{idx}_key"] = new_layer_past[0]
+        inputs[f"past_key_values_layer{idx}_value"] = new_layer_past[1]
+    return inputs
+
+
+def inputs_to_kv_cache_for_layer(idx, inputs):
+    if f"past_key_values_layer{idx}_key" in inputs and f"past_key_values_layer{idx}_value" in inputs:
+        return (inputs[f"past_key_values_layer{idx}_key"], 
+                inputs[f"past_key_values_layer{idx}_value"]) 
+    else:
+        return None
+
+
+
 # Index dict merging is now handled by pp rank 0 without tmp file.
 # This function is deprecated.
 # def merge_index_dict(path, file_list, driver):
