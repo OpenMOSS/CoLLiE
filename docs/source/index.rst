@@ -8,11 +8,12 @@ CoLLiE: Collaborative Tuning of Large Language Models in an Efficient Way
    :maxdepth: 2
    :caption: 快速上手
 
-   tutorials/collie-tutorial-0-intro.ipynb
    tutorials/collie-tutorial-1-example.ipynb
-   tutorials/collie-tutorial-2-trainer.ipynb
-   tutorials/collie-tutorial-3-parallel.ipynb
-   tutorials/collie-tutorial-4-lomo-peft.ipynb
+   tutorials/collie-tutorial-2-feature.ipynb
+   tutorials/collie-tutorial-3-basic.ipynb
+   tutorials/collie-tutorial-4-advanced.ipynb
+   tutorials/collie-tutorial-5-lomo-peft.ipynb
+   tutorials/collie-tutorial-6-parallel.ipynb
 
 .. toctree::
    :maxdepth: 2
