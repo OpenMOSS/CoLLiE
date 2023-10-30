@@ -3,8 +3,10 @@ CoLLiE: Collaborative Tuning of Large Language Models in an Efficient Way
 
 `CoLLiE <https://github.com/OpenLMLab/collie>`_ 是一款用于高效训练、微调大模型的工具包，支持数据并行、张量并行、流水线并行、ZeRO优化等多种优化方式。
 
-.. raw:: html
-   <iframe width="672" height="378" src="https://www.youtube.com/embed/HIb910e4IEA?si=uC8YCQ7_4S1F06Au" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
+.. youtube:: HIb910e4IEA
+   :height: 378
+   :width: 672
+   :align: center
 
 .. toctree::
    :maxdepth: 2
