@@ -138,7 +138,7 @@ class GPTLMLoss(torch.nn.Module):
         :param logits: 语言模型的输出
         :param labels: 真实标签
         """
-        shift_logits = logits[..., :-1, :].contiguous()
+        shift_logits = logits[..., :-1, :].float().contiguous()
         shift_labels = labels[..., 1:].contiguous().to(logits.device)
         # Flatten the tokens
         return self.loss(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
