@@ -47,6 +47,7 @@ extensions = [
     'sphinx_autodoc_typehints',
     'nbsphinx',
     'sphinx_copybutton',
+    'sphinxcontrib.youtube',
 ]
 
 autodoc_default_options = {
