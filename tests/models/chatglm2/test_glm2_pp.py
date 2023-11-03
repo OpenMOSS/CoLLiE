@@ -4,7 +4,7 @@ sys.path.append("../../../")
 from transformers import AutoTokenizer, GenerationConfig
 
 from collie.models import ChatGLM2ForCausalLM
-from collie import  CollieConfig, env
+from collie import CollieConfig, env
 
 tokenizer = AutoTokenizer.from_pretrained(
         "THUDM/chatglm2-6b",
@@ -15,6 +15,7 @@ config = CollieConfig.from_pretrained("THUDM/chatglm2-6b",
 config.dp_size = 1
 config.pp_size = 8
 model = ChatGLM2ForCausalLM.from_pretrained("THUDM/chatglm2-6b", config=config).cuda()
+model.eval()
 prompt = "[Round 0]\n\n\n\n问：你是谁？\n\n答："
 inputs = tokenizer(prompt, return_tensors="pt")
 print(inputs)

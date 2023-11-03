@@ -1,5 +1,6 @@
 import json
 import os
+from typing import Tuple
 
 import torch
 from einops import rearrange
@@ -57,7 +58,7 @@ def flash_attention(query, key, value, attention_mask):
     return output
 
 
-def kv_cache_to_inputs_for_model(past_key_values):
+def kv_cache_to_inputs_for_model(past_key_values: Tuple[Tuple[torch.Tensor, torch.Tensor], ...]):
     """
     在模型的输入阶段，将嵌套元组形式的past_key_values转化为inputs字典中的每个字段
     """
