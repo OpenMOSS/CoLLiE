@@ -318,7 +318,7 @@ class ChatGLM2Layer(nn.Module):
     def __init__(self, config: CollieConfig, layer_id: int) -> None:
         super().__init__()
         self.config = config
-        self.layer_id = max(1, layer_id)
+        self.layer_id = layer_id
 
         self.qkv_hidden_size = 3 * config.hidden_size
 
@@ -506,7 +506,7 @@ class ChatGLM2Layer(nn.Module):
         new_layer_past = None
         if not self.training and self.use_cache:
             if past_key_values is not None:
-                cache_k, cache_v = past_key_values[self.layer_id - 1]
+                cache_k, cache_v = past_key_values
                 key_layer = torch.cat((cache_k, key_layer), dim=0)
                 value_layer = torch.cat((cache_v, value_layer), dim=0)
             new_layer_past = (key_layer, value_layer)
@@ -653,7 +653,7 @@ class ChatGLM2Model(nn.Module):
         # self.config.checkpointing = True
         self.layers = nn.Sequential(
             *[
-                ChatGLM2Layer(config, i + 1)
+                ChatGLM2Layer(config, i)
                 for i in range(config.num_layers)
             ]
         )
@@ -686,9 +686,7 @@ class ChatGLM2Model(nn.Module):
         all_hidden_states += (inputs["hidden_states"],)
         inputs["hidden_states"] = self.final_layernorm(inputs["hidden_states"])
 
-        if past_key_values is not None:
-            past_key_values = inputs_to_kv_cache_for_model(self.config.num_layers, inputs)
-
+        past_key_values = inputs_to_kv_cache_for_model(self.config.num_layers, inputs)
         return BaseModelOutputWithPast(
             last_hidden_state=inputs["hidden_states"],
             hidden_states=all_hidden_states,
