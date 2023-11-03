@@ -229,7 +229,7 @@ class LlamaLayer(nn.Module):
         if layer_past is not None:
             # past_key: batch_size, num_heads, seq_len, head_dim
             if self.config.peft_config and self.config.peft_config.peft_type == "PREFIX_TUNING":
-                past_key =  layer_past[0].reshape(*layer_past[0].shape[:-1], 2, -1)\
+                past_key = layer_past[0].reshape(*layer_past[0].shape[:-1], 2, -1)\
                                         .permute(0, 2, 1, 4, 3)\
                                         .reshape(batch_size, start_pos, self.num_heads, -1)
                 past_value = layer_past[1].permute([0, 2, 1, 3])
@@ -356,8 +356,9 @@ class LlamaModel(nn.Module):
             inputs.update(layer(inputs))
         inputs["hidden_states"] = self.norm(inputs["hidden_states"])
         all_hidden_states += (inputs["hidden_states"],)
-        
-        past_key_values = inputs_to_kv_cache_for_model(self.config.num_hidden_layers, inputs)
+
+        if past_key_values is not None:
+            past_key_values = inputs_to_kv_cache_for_model(self.config.num_hidden_layers, inputs)
 
         return BaseModelOutputWithPast(
             last_hidden_state=inputs["hidden_states"],
