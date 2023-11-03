@@ -357,8 +357,7 @@ class LlamaModel(nn.Module):
         inputs["hidden_states"] = self.norm(inputs["hidden_states"])
         all_hidden_states += (inputs["hidden_states"],)
 
-        if past_key_values is not None:
-            past_key_values = inputs_to_kv_cache_for_model(self.config.num_hidden_layers, inputs)
+        past_key_values = inputs_to_kv_cache_for_model(self.config.num_hidden_layers, inputs)
 
         return BaseModelOutputWithPast(
             last_hidden_state=inputs["hidden_states"],
