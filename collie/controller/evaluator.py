@@ -231,6 +231,7 @@ class EvaluatorForGeneration(Evaluator):
         :param batch: 一个 batch 的数据，类型为长度为 ``Dict``，格式为：
 
             .. code-block:: python
+            
                 {
                     "input_ids": torch.tensor([[1, 100, 100, 2]]),
                     "target": torch.tensor([[1, 100, 100, 2]]),
