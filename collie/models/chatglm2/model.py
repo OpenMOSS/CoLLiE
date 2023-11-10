@@ -199,7 +199,7 @@ class CoreAttention(torch.nn.Module):
                 )
             context_layer = context_layer.permute(2, 0, 1, 3)
             new_context_layer_shape = context_layer.size()[:-2] + (
-                self.hidden_size_per_partition,
+                self.hidden_size_per_partition // self.config.tp_size,
             )
             context_layer = context_layer.reshape(*new_context_layer_shape)
         else:
