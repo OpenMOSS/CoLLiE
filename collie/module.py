@@ -39,6 +39,8 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from collie.log import logger
 from collie.utils import env, broadcast_tensor, setup_ds_engine, stack_tensor, concat_tensor
+from collie.models.utils import (kv_cache_to_inputs_for_model, inputs_to_kv_cache_for_model,\
+                                kv_cache_to_inputs_for_layer, inputs_to_kv_cache_for_layer)
 
 class ColumnParallelLinearWithoutBias(ColumnParallelLinear):
     """重写 ``megatron`` 提供的列并行全连接层以去掉结果中的 ``bias``。
@@ -221,13 +223,23 @@ class PipelineGenerationMixin(GenerationMixin):
                 stack_past_key_values = [None for _ in range(len(past_key_values))]
                 for i, layer_past in enumerate(past_key_values):
                     if not isinstance(layer_past, torch.Tensor):
-                        stack_past_key_values[i] = stack_tensor(layer_past)
+                        new_past = torch.stack((layer_past[0], layer_past[1]), dim=0)
+                        stack_past_key_values[i] = new_past.unsqueeze_(0)
                     else:
                         stack_past_key_values[i] = layer_past
                 del past_key_values
-                past_key_values = stack_tensor(stack_past_key_values)
+                past_key_values = torch.cat(stack_past_key_values, dim=0)
+                
+                # stack_past_key_values = [None for _ in range(len(past_key_values))]
+                # for i, layer_past in enumerate(past_key_values):
+                #     if not isinstance(layer_past, torch.Tensor):
+                #         stack_past_key_values[i] = stack_tensor(layer_past)
+                #     else:
+                #         stack_past_key_values[i] = layer_past
+                # del past_key_values
+                # past_key_values = stack_tensor(stack_past_key_values)
             inputs["past_key_values"] = past_key_values
-
+            
         outputs = self.engine_container[-1].generate_batch(inputs)
         hidden_states = self._get_hidden_states()
         if self.is_contrastive_search:
@@ -244,12 +256,25 @@ class PipelineGenerationMixin(GenerationMixin):
                 last_hidden_states, src=src, group=env.pp_group
             )
             hidden_states.append(last_hidden_states)
-        
         # 还原 past key values
-        if "new_past_key_values" in outputs:
-            past_key_values = outputs["new_past_key_values"]
-        else:
-            past_key_values = None
+        # if "new_past_key_values" in outputs:
+        #     past_key_values = outputs["new_past_key_values"]
+        # else:
+        #     past_key_values = None
+        # 处理 past_key_values 为 None 的情况
+        
+        past_key_values = inputs_to_kv_cache_for_model(self.config.num_layers, outputs)
+        if past_key_values is not None:
+            # stack 起来
+            stack_past_key_values = [None for _ in range(len(past_key_values))]
+            for i, layer_past in enumerate(past_key_values):
+                if not isinstance(layer_past, torch.Tensor):
+                    new_past = torch.stack((layer_past[0], layer_past[1]), dim=0)
+                    stack_past_key_values[i] = new_past.unsqueeze_(0)
+                else:
+                    stack_past_key_values[i] = layer_past
+            del past_key_values
+            past_key_values = torch.cat(stack_past_key_values, dim=0)
 
         return CausalLMOutputWithPast(
             loss=None,

@@ -1,6 +1,5 @@
 import json
 import os
-from typing import Tuple
 
 import torch
 from einops import rearrange
@@ -58,7 +57,7 @@ def flash_attention(query, key, value, attention_mask):
     return output
 
 
-def kv_cache_to_inputs_for_model(past_key_values: Tuple[Tuple[torch.Tensor, torch.Tensor], ...]):
+def kv_cache_to_inputs_for_model(past_key_values):
     """
     在模型的输入阶段，将嵌套元组形式的past_key_values转化为inputs字典中的每个字段
     """
@@ -75,9 +74,12 @@ def inputs_to_kv_cache_for_model(num_hidden_layers, inputs):
     在模型的输出阶段，将inputs字典中的kv_cache转化为嵌套元组形式的past_key_values
     """
     past_key_values = ()
-    for i in range(0, num_hidden_layers):
-        past_key_values += ((inputs[f"past_key_values_layer{i}_key"], 
-                             inputs[f"past_key_values_layer{i}_value"]), )
+    try:
+        for i in range(0, num_hidden_layers):
+            past_key_values += ((inputs[f"past_key_values_layer{i}_key"], 
+                                inputs[f"past_key_values_layer{i}_value"]), )
+    except:
+        pass
     return past_key_values if past_key_values != () else None
 
 
