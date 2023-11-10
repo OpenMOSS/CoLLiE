@@ -1114,7 +1114,7 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
                     "value_layer.weight",
                     "value_layer.bias",
                     "word_embeddings.weight",
-                    "output_layer.weight",
+                    "lm_head.weight",
                     "dense_h_to_4h_up_proj.weight",
                     "dense_h_to_4h_down_proj.weight",
                 ]
