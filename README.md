@@ -24,7 +24,8 @@ CoLLiE (Collaborative Tuning of Large Language Models in an Efficient Way)，一
 
 
 ## 新闻
-* [2023/07/18] 发布Python包`collie-lm`。您可以在[链接](https://pypi.org/project/collie-lm/#history)中查看更多细节！
+* [2023/12] 🎉 CoLLiE被EMNLP System Demonstrations接收：[CoLLiE: Collaborative Training of Large Language Models in an Efficient Way](https://arxiv.org/abs/2312.00407)
+* [2023/07] 发布Python包`collie-lm`。您可以在[链接](https://pypi.org/project/collie-lm/#history)中查看更多细节！
 
 ## 目录
 <ul>
