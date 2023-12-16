@@ -262,8 +262,13 @@ class PipelineGenerationMixin(GenerationMixin):
         # else:
         #     past_key_values = None
         # 处理 past_key_values 为 None 的情况
-        
-        past_key_values = inputs_to_kv_cache_for_model(self.config.num_layers, outputs)
+        try:
+            # chatglm
+            num_layer = self.config.num_layers
+        except:
+            # llama
+            num_layer = self.config.num_hidden_layers
+        past_key_values = inputs_to_kv_cache_for_model(num_layer, outputs)
         if past_key_values is not None:
             # stack 起来
             stack_past_key_values = [None for _ in range(len(past_key_values))]

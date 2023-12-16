@@ -313,7 +313,7 @@ class ChatGLMLayer(nn.Module):
             config.hidden_size, eps=config.layernorm_epsilon)
         self.alpha = (2 * self.config.num_layers) ** 0.5
         self.layer_id = layer_id
-        self.hidden_size = config.hidden_size
+        self.hidden_size = config.hidden_size // config.tp_size
         # 务必保持变量名一致
         self.use_cache = False
         self.hidden_states = None
@@ -467,15 +467,14 @@ class ChatGLMLayer(nn.Module):
                 inputs[f"past_key_values_layer{i}_key"] = layer_past[0]
                 inputs[f"past_key_values_layer{i}_value"] = layer_past[1]
             del inputs["past_key_values"]      
-            
+        
         past_key_values = inputs_to_kv_cache_for_layer(idx=self.layer_id,
                                                         inputs=inputs)
             
         attention_mask = inputs.get("attention_mask", None)
-        if attention_mask is None and past_key_values is not None:
+        if past_key_values is not None:
             attention_mask = torch.zeros(1, 1, device=inputs["hidden_states"].device).bool()
-        
-        if attention_mask is None and past_key_values is None:
+        else:
             attention_mask = self.get_masks(inputs["input_ids"], inputs["input_ids"].device)
         
         attention_mask = attention_mask.contiguous()   
