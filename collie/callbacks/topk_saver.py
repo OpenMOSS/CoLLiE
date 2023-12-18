@@ -258,7 +258,7 @@ class TopkSaver(ResultsMonitor, Saver):
 
         save_folder = states['save_folder']
         # 用户手动传入的 folder 应有最高的优先级
-        if self.folder is not None:
+        if self.save_folder is not None:
             logger.info(
                 'Detected: The checkpoint was previously saved in '
                 f'{save_folder}, different from the folder {self.save_folder} '
