@@ -509,6 +509,7 @@ class ChatGLM2Layer(nn.Module):
                 cache_k, cache_v = past_key_values
                 key_layer = torch.cat((cache_k, key_layer), dim=0)
                 value_layer = torch.cat((cache_v, value_layer), dim=0)
+                print(key_layer.shape)
             new_layer_past = (key_layer, value_layer)
 
         # Multi query attention

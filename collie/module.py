@@ -269,6 +269,8 @@ class PipelineGenerationMixin(GenerationMixin):
             # llama
             num_layer = self.config.num_hidden_layers
         past_key_values = inputs_to_kv_cache_for_model(num_layer, outputs)
+        # print(outputs.keys())
+        # print(len(past_key_values), past_key_values[0])
         if past_key_values is not None:
             # stack 起来
             stack_past_key_values = [None for _ in range(len(past_key_values))]
@@ -280,7 +282,7 @@ class PipelineGenerationMixin(GenerationMixin):
                     stack_past_key_values[i] = layer_past
             del past_key_values
             past_key_values = torch.cat(stack_past_key_values, dim=0)
-
+        # print("module", past_key_values)
         return CausalLMOutputWithPast(
             loss=None,
             logits=outputs["logits"],
