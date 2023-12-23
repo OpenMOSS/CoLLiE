@@ -364,7 +364,7 @@ def _get_fun_msg(fn, with_fp=True)->str:
     """
     获取函数的基本信息，帮助报错::
 
-        >>>> print(_get_fun_msg(_get_fun_msg))
+        >>> print(_get_fun_msg(_get_fun_msg))
         `_get_fun_msg(fn) -> str`(In file:/Users/hnyan/Desktop/projects/fastNLP/fastNLP/fastNLP/core/utils/utils.py)
 
     :param callable fn:
