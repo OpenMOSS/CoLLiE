@@ -253,7 +253,6 @@ class Trainer(TrainerEventTrigger):
         # self.skip_epoch_idx = state_dict["epoch_idx"]
         # self.skip_batch_idx = state_dict["batch_idx"]
         self.resume_from_checkpoint = True
-        print("Loading state dict")
 
     @property
     def global_batch_idx(self):
@@ -329,7 +328,6 @@ class Trainer(TrainerEventTrigger):
         if dataloader is not None:
             train_dataloader = dataloader
         self.on_train_begin()
-        print("before Training: ", self.epoch_idx, self.batch_idx, self.lr)
         tqbar_epoch = progress(
             range(self.epoch_idx, self.config.train_epochs),
             desc="Training Epoch",
@@ -348,7 +346,6 @@ class Trainer(TrainerEventTrigger):
                 # train_dataloader.sampler.set_epoch(self.epoch_idx)
                 tqbar_batch.sequence.sampler.set_epoch(self.epoch_idx)
             
-            print("Training: ", self.epoch_idx, self.batch_idx)
             self.on_train_epoch_begin()
             tqbar_epoch.set_description(
                 f"Training Epoch: {self.epoch_idx} / {self.config.train_epochs}"
@@ -993,9 +990,7 @@ class Trainer(TrainerEventTrigger):
         # load_zero_checkpoint = engine.zero_optimization() or engine.bfloat16_enabled()
         load_zero_checkpoint = engine.save_zero_checkpoint
         if load_zero_checkpoint:
-            print("before load_zero_checkpoint")
             success = self._load_zero_checkpoint(path, io_driver)
-            print(success)
             if not success:
                 engine.optimizer._restore_from_bit16_weights()
 
