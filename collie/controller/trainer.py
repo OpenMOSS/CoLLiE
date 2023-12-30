@@ -250,8 +250,6 @@ class Trainer(TrainerEventTrigger):
         """加载优化器的自身状态"""
         self.epoch_idx = state_dict["epoch_idx"]
         self.trained_batch_idx = state_dict["batch_idx"]
-        # self.skip_epoch_idx = state_dict["epoch_idx"]
-        # self.skip_batch_idx = state_dict["batch_idx"]
         self.resume_from_checkpoint = True
 
     @property
@@ -343,7 +341,6 @@ class Trainer(TrainerEventTrigger):
         )    
         for self.epoch_idx in tqbar_epoch:
             if not train_dataloader.curriculum_learning_enabled:
-                # train_dataloader.sampler.set_epoch(self.epoch_idx)
                 tqbar_batch.sequence.sampler.set_epoch(self.epoch_idx)
             
             self.on_train_epoch_begin()
@@ -358,6 +355,7 @@ class Trainer(TrainerEventTrigger):
                 tqbar_batch.set_description(
                     f"Training Batch: {self.batch_idx} / {self.steps_per_epoch}"
                 )
+                # skip trained batch
                 if self.resume_from_checkpoint:
                     if self.batch_idx <= self.trained_batch_idx:
                         continue
@@ -405,7 +403,6 @@ class Trainer(TrainerEventTrigger):
             self.resume_from_checkpoint = False
             self.batch_idx = 0
         self.on_train_end()
-        # self.epoch_idx = 0
 
     def eval(self, dataloader: Optional[Iterable] = None):
         """验证循环
