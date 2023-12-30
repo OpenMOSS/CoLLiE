@@ -238,7 +238,6 @@ class LlamaLayer(nn.Module):
             query = torch.cat([past_key, query], dim=1)
             key = torch.cat([past_key, key], dim=1)
             value = torch.cat([past_value, value], dim=1)
-            # print(key.shape)
         new_layer_past = None
         if self.use_cache and not self.training:
             # 调整成和 hf 兼容的格式，方便 prefix tuning
@@ -299,18 +298,8 @@ class LlamaLayer(nn.Module):
         return hidden_states, new_layer_past
 
     def forward(self, inputs: dict):
-        # for pp, moudle
-        if "past_key_values" in inputs:
-            all_pasts = inputs["past_key_values"]
-            # all_pasts = all_pasts.permute(0, 1, 3, 2, 4, 5)
-            for i in range(self.config.num_hidden_layers):
-                layer_past = all_pasts[i]
-                inputs[f"past_key_values_layer{i}_key"] = layer_past[0]
-                inputs[f"past_key_values_layer{i}_value"] = layer_past[1]
-            del inputs["past_key_values"]
-            
         layer_past = inputs_to_kv_cache_for_layer(idx=self.idx, inputs=inputs)
-        # print(layer_past)    
+
         if self.config.checkpointing and self.training:
             hidden_states, new_layer_past = torch.utils.checkpoint.checkpoint(
                 self._forward,
@@ -325,7 +314,6 @@ class LlamaLayer(nn.Module):
         inputs["hidden_states"] = hidden_states
 
         inputs.update(kv_cache_to_inputs_for_layer(idx=self.idx, new_layer_past=new_layer_past))
-
         return inputs
 
 
