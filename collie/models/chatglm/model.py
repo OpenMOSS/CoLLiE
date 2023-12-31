@@ -379,14 +379,19 @@ class ChatGLMLayer(nn.Module):
             if past_key_values is not None:
                 cache_k, cache_v = past_key_values
                 # 这里是恢复 sq 作为第一个维度，转为 [sq, b, sk, hd]
-                cache_k = cache_k.permute(1, 0, 2, 3)
-                cache_v = cache_v.permute(1, 0, 2, 3)
+                if env.pp_size > 1:
+                    cache_k = rearrange(cache_k, "b sq sk hd -> sq b sk hd")
+                    cache_v = rearrange(cache_v, "b sq sk hd -> sq b sk hd")
                 key = torch.cat([cache_k, key], dim=0)
                 value = torch.cat([cache_v, value], dim=0)
             # 这里转置的原因是 pipeline 生成时在 pipeline_engine时候会对batch划分，指定dim=2，故需要转置
-            past_key = key.permute(1, 0, 2, 3)
-            past_value = value.permute(1, 0, 2, 3)
-            new_layer_past = (past_key.contiguous(), past_value.contiguous())
+            if env.pp_size > 1:
+                new_layer_past = (
+                    rearrange(key, "sq b sk hd -> b sq sk hd"),
+                    rearrange(value, "sq b sk hd -> b sq sk hd"),
+                )
+            else:
+                new_layer_past = (key, value)
 
         # seqlen, batch, num_attention_heads, hidden_size_per_attention_head
         seq_len, b, nh, hidden_size = key.shape

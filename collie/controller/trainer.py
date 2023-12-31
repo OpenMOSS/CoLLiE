@@ -916,8 +916,7 @@ class Trainer(TrainerEventTrigger):
         io_driver = IODriver.from_protocol(protocol)
         assert io_driver.exists(path), f"`{path}` does not exist."
         engine = self.engine
-        # check, 更改为加载traniner_state_dict, 但是包含训练的状态
-        # loaded_args = json.loads(io_driver.load(os.path.join(path, "collie.json"), "r"))
+        # check并行方法一致
         loaded_args = json.loads(io_driver.load(os.path.join(path, "trainer_state_dict.json"), "r"))
         assert (
             loaded_args["dp_size"] == env.dp_size
