@@ -230,11 +230,12 @@ class EvaluatorForGeneration(Evaluator):
         :param evaluator: 训练器
         :param batch: 一个 batch 的数据，类型为长度为 ``Dict``，格式为：
 
-            .. code-block::
-            {
-                "input_ids": torch.tensor([[1, 100, 100, 2]]),
-                "taregt": torch.tensor([[1, 100, 100, 2]]),
-            }
+            .. code-block:: python
+            
+                {
+                    "input_ids": torch.tensor([[1, 100, 100, 2]]),
+                    "target": torch.tensor([[1, 100, 100, 2]]),
+                }
 
         :return: 一次验证的结果，为 `Dict` 类型，该结果会被传入 `metric` 的 `update` 方法中
         """
