@@ -161,6 +161,7 @@ class Trainer(TrainerEventTrigger):
         self.train_dataset = train_dataset
         self.eval_dataset = eval_dataset
         self.loss_fn = loss_fn
+        self.resume_from_checkpoint = False
         if train_fn is not None:
             self.train_fn = train_fn
         if eval_fn is not None:
@@ -248,7 +249,8 @@ class Trainer(TrainerEventTrigger):
     def load_state_dict(self, state_dict: dict):
         """加载优化器的自身状态"""
         self.epoch_idx = state_dict["epoch_idx"]
-        self.batch_idx = state_dict["batch_idx"]
+        self.trained_batch_idx = state_dict["batch_idx"]
+        self.resume_from_checkpoint = True
 
     @property
     def global_batch_idx(self):
@@ -336,8 +338,11 @@ class Trainer(TrainerEventTrigger):
             desc="Training Batch: ",
             disable=env.rank != 0,
             total=self.steps_per_epoch,
-        )
+        )    
         for self.epoch_idx in tqbar_epoch:
+            if not train_dataloader.curriculum_learning_enabled:
+                tqbar_batch.sequence.sampler.set_epoch(self.epoch_idx)
+            
             self.on_train_epoch_begin()
             tqbar_epoch.set_description(
                 f"Training Epoch: {self.epoch_idx} / {self.config.train_epochs}"
@@ -350,6 +355,13 @@ class Trainer(TrainerEventTrigger):
                 tqbar_batch.set_description(
                     f"Training Batch: {self.batch_idx} / {self.steps_per_epoch}"
                 )
+                # skip trained batch
+                if self.resume_from_checkpoint:
+                    if self.batch_idx <= self.trained_batch_idx:
+                        continue
+                    else:
+                        self.resume_from_checkpoint = False
+
                 if self.server is not None:
                     self.server.data_provider_handler()
                 self.engine.train()
@@ -381,15 +393,16 @@ class Trainer(TrainerEventTrigger):
                     and (self.batch_idx + 1) % self.config.eval_per_n_steps == 0
                 ):
                     self.eval()
-            self.on_train_epoch_end()
-            if (
-                self.config.eval_per_n_epochs > 0
-                and (self.epoch_idx + 1) % self.config.eval_per_n_epochs == 0
-            ):
-                self.eval()
+            if self.resume_from_checkpoint is False:
+                self.on_train_epoch_end()
+                if (
+                    self.config.eval_per_n_epochs > 0
+                    and (self.epoch_idx + 1) % self.config.eval_per_n_epochs == 0
+                ):
+                    self.eval()
+            self.resume_from_checkpoint = False
             self.batch_idx = 0
         self.on_train_end()
-        self.epoch_idx = 0
 
     def eval(self, dataloader: Optional[Iterable] = None):
         """验证循环
@@ -837,12 +850,14 @@ class Trainer(TrainerEventTrigger):
         callback_states = self.on_save_checkpoint()
         # save parallel_settings
         if env.dp_rank == 0:
-            dist_config = {
+            trainer_state_dict = {
                 "dp_size": env.dp_size,
                 "tp_size": env.tp_size,
                 "pp_size": env.pp_size,
             }
-            io_driver.save(json.dumps(dist_config), os.path.join(path, "collie.json"))
+            trainer_state_dict.update(self.state_dict())
+            io_driver.save(json.dumps(trainer_state_dict), os.path.join(path, "trainer_state_dict.json"))
+
         engine = self.engine
         # DeepSpeedEngine.save_checkpoint
 
@@ -901,8 +916,9 @@ class Trainer(TrainerEventTrigger):
         io_driver = IODriver.from_protocol(protocol)
         assert io_driver.exists(path), f"`{path}` does not exist."
         engine = self.engine
-        # check
-        loaded_args = json.loads(io_driver.load(os.path.join(path, "collie.json"), "r"))
+        # check, 更改为加载traniner_state_dict, 但是包含训练的状态
+        # loaded_args = json.loads(io_driver.load(os.path.join(path, "collie.json"), "r"))
+        loaded_args = json.loads(io_driver.load(os.path.join(path, "trainer_state_dict.json"), "r"))
         assert (
             loaded_args["dp_size"] == env.dp_size
             and loaded_args["tp_size"] == env.tp_size
@@ -959,6 +975,8 @@ class Trainer(TrainerEventTrigger):
             "global_samples", engine.global_steps * engine.train_batch_size()
         )
         engine.skipped_steps = checkpoint["skipped_steps"]
+        # self.load_state_dict(checkpoint['trainer_state_dict'])
+        self.load_state_dict(loaded_args)
 
         # load_zero_checkpoint = engine.zero_optimization() or engine.bfloat16_enabled()
         load_zero_checkpoint = engine.save_zero_checkpoint
@@ -968,7 +986,6 @@ class Trainer(TrainerEventTrigger):
                 engine.optimizer._restore_from_bit16_weights()
 
         self._checkpoint_epilogue()
-
         self.on_load_checkpoint(checkpoint["callback_states"])
 
     def _save_zero_checkpoint(self, path, driver):

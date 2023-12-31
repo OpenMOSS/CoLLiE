@@ -74,12 +74,12 @@ def inputs_to_kv_cache_for_model(num_hidden_layers, inputs):
     在模型的输出阶段，将inputs字典中的kv_cache转化为嵌套元组形式的past_key_values
     """
     past_key_values = ()
-    try:
-        for i in range(0, num_hidden_layers):
-            past_key_values += ((inputs[f"past_key_values_layer{i}_key"], 
-                                inputs[f"past_key_values_layer{i}_value"]), )
-    except:
-        pass
+    for i in range(0, num_hidden_layers):
+        try:
+            past_key_values += ((inputs[f"past_key_values_layer{i}_key"],
+                            inputs[f"past_key_values_layer{i}_value"]), )
+        except:
+            break
     return past_key_values if past_key_values != () else None
 
 

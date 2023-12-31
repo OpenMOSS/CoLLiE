@@ -201,11 +201,6 @@ class PipelineGenerationMixin(GenerationMixin):
                 **kwargs) -> torch.Tensor:
         """ 进行迭代的流水线模型的前向传播（生成）
         """
-        if use_cache:
-            logger.rank_zero_warning(
-                "In Pipeline Parallelism, `use_cache=True` will result in "
-                "slowing down the generate process.", once=True
-            )
         inputs = {}
         if input_ids is not None:
             inputs["input_ids"] = input_ids
@@ -217,29 +212,8 @@ class PipelineGenerationMixin(GenerationMixin):
         if inputs_embeds is not None:
             inputs["inputs_embeds"] = inputs_embeds
         if past_key_values is not None:
-            # TODO 这里先按照输入的 past key values 是没有 split 版本的处理
-            if not isinstance(past_key_values, torch.Tensor):
-                # stack 起来
-                stack_past_key_values = [None for _ in range(len(past_key_values))]
-                for i, layer_past in enumerate(past_key_values):
-                    if not isinstance(layer_past, torch.Tensor):
-                        new_past = torch.stack((layer_past[0], layer_past[1]), dim=0)
-                        stack_past_key_values[i] = new_past.unsqueeze_(0)
-                    else:
-                        stack_past_key_values[i] = layer_past
-                del past_key_values
-                past_key_values = torch.cat(stack_past_key_values, dim=0)
-                
-                # stack_past_key_values = [None for _ in range(len(past_key_values))]
-                # for i, layer_past in enumerate(past_key_values):
-                #     if not isinstance(layer_past, torch.Tensor):
-                #         stack_past_key_values[i] = stack_tensor(layer_past)
-                #     else:
-                #         stack_past_key_values[i] = layer_past
-                # del past_key_values
-                # past_key_values = stack_tensor(stack_past_key_values)
-            inputs["past_key_values"] = past_key_values
-            
+            inputs.update(kv_cache_to_inputs_for_model(past_key_values))
+
         outputs = self.engine_container[-1].generate_batch(inputs)
         hidden_states = self._get_hidden_states()
         if self.is_contrastive_search:
@@ -256,12 +230,7 @@ class PipelineGenerationMixin(GenerationMixin):
                 last_hidden_states, src=src, group=env.pp_group
             )
             hidden_states.append(last_hidden_states)
-        # 还原 past key values
-        # if "new_past_key_values" in outputs:
-        #     past_key_values = outputs["new_past_key_values"]
-        # else:
-        #     past_key_values = None
-        # 处理 past_key_values 为 None 的情况
+
         try:
             # chatglm
             num_layer = self.config.num_layers
@@ -269,17 +238,6 @@ class PipelineGenerationMixin(GenerationMixin):
             # llama
             num_layer = self.config.num_hidden_layers
         past_key_values = inputs_to_kv_cache_for_model(num_layer, outputs)
-        if past_key_values is not None:
-            # stack 起来
-            stack_past_key_values = [None for _ in range(len(past_key_values))]
-            for i, layer_past in enumerate(past_key_values):
-                if not isinstance(layer_past, torch.Tensor):
-                    new_past = torch.stack((layer_past[0], layer_past[1]), dim=0)
-                    stack_past_key_values[i] = new_past.unsqueeze_(0)
-                else:
-                    stack_past_key_values[i] = layer_past
-            del past_key_values
-            past_key_values = torch.cat(stack_past_key_values, dim=0)
 
         return CausalLMOutputWithPast(
             loss=None,

@@ -298,9 +298,8 @@ class LlamaLayer(nn.Module):
         return hidden_states, new_layer_past
 
     def forward(self, inputs: dict):
-        
         layer_past = inputs_to_kv_cache_for_layer(idx=self.idx, inputs=inputs)
-            
+
         if self.config.checkpointing and self.training:
             hidden_states, new_layer_past = torch.utils.checkpoint.checkpoint(
                 self._forward,
@@ -315,7 +314,6 @@ class LlamaLayer(nn.Module):
         inputs["hidden_states"] = hidden_states
 
         inputs.update(kv_cache_to_inputs_for_layer(idx=self.idx, new_layer_past=new_layer_past))
-
         return inputs
 
 

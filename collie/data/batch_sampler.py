@@ -55,3 +55,7 @@ class CollieBatchSampler:
             return len(self.sampler) // self.batch_size  # type: ignore[arg-type]
         else:
             return (len(self.sampler) + self.batch_size - 1) // self.batch_size  # type: ignore[arg-type]
+        
+    def set_epoch(self, epoch_idx):
+        self.sampler.set_epoch(epoch_idx)
+        
