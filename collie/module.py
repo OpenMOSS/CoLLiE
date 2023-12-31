@@ -231,12 +231,12 @@ class PipelineGenerationMixin(GenerationMixin):
             )
             hidden_states.append(last_hidden_states)
 
-        try:
-            # chatglm
+        if hasattr(self.config, 'num_layers'):  # chatglm
             num_layer = self.config.num_layers
-        except:
-            # llama
+        elif hasattr(self.config, 'num_hidden_layers'):  # llama
             num_layer = self.config.num_hidden_layers
+        else:
+            raise RuntimeError("Cannot find num_layers or num_hidden_layers in config")
         past_key_values = inputs_to_kv_cache_for_model(num_layer, outputs)
 
         return CausalLMOutputWithPast(

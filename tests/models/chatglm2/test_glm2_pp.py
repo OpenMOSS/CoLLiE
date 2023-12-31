@@ -13,8 +13,7 @@ tokenizer = AutoTokenizer.from_pretrained(
 config = CollieConfig.from_pretrained("THUDM/chatglm2-6b",
         trust_remote_code=True)
 config.dp_size = 1
-config.tp_size = 2
-config.pp_size = 1
+config.pp_size = 2
 model = ChatGLM2ForCausalLM.from_pretrained("THUDM/chatglm2-6b", config=config).cuda()
 model.eval()
 prompt = "[Round 0]\n\n\n\n问：你是谁？\n\n答："
