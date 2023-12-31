@@ -857,7 +857,7 @@ class Trainer(TrainerEventTrigger):
             }
             trainer_state_dict.update(self.state_dict())
             io_driver.save(json.dumps(trainer_state_dict), os.path.join(path, "trainer_state_dict.json"))
-            # io_driver.save(json.dumps(dist_config), os.path.join(path, "collie.json"))
+
         engine = self.engine
         # DeepSpeedEngine.save_checkpoint
 
@@ -886,13 +886,7 @@ class Trainer(TrainerEventTrigger):
             global_steps=engine.global_steps,
             global_samples=engine.global_samples,
             callback_states=callback_states,
-            # trainer_state_dict=self.state_dict()
         )
-        
-        # if env.dp_rank == 0:
-        #     trainer_state_dict = self.state_dict()
-        #     io_driver.save(json.dumps(trainer_state_dict), os.path.join(path, "trainer_state_dict.json"))
-            
 
         if env.dp_rank == 0 or engine.zero_optimization_partition_weights():
             io_driver.save(state, os.path.join(path, self.checkpoint_file))
