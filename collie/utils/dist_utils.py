@@ -23,12 +23,11 @@ from deepspeed.runtime.utils import set_random_seed
 from deepspeed.runtime.zero.stage_1_and_2 import DeepSpeedZeroOptimizer
 from torch import distributed as dist
 from torch.multiprocessing import Process, set_start_method
-from transformers.deepspeed import HfDeepSpeedConfig, is_deepspeed_zero3_enabled
 
 try:
-    from transformers.deepspeed import _hf_deepspeed_config_weak_ref
+    from transformers.integrations.deepspeed import _hf_deepspeed_config_weak_ref, HfDeepSpeedConfig
 except ImportError:
-    from transformers.integrations.deepspeed import _hf_deepspeed_config_weak_ref
+    from transformers.deepspeed import _hf_deepspeed_config_weak_ref, HfDeepSpeedConfig
 
 from typing import Optional, Union
 from weakref import ref

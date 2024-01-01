@@ -1,7 +1,10 @@
 import torch
 from torch.optim import Optimizer
 import torch.distributed as dist
-from transformers.deepspeed import is_deepspeed_zero3_enabled
+try:
+    from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
+except ImportError:
+    from transformers.deepspeed import is_deepspeed_zero3_enabled
 
 from ..utils.dist_utils import env
 from collie.log import logger
