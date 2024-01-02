@@ -709,7 +709,7 @@ class Moss003MoonForCausalLM(CollieModelForCausalLM):
                 index_dict = set_index_dict(state_dict, ckpt_name)
                 index_dicts = [None for _ in range(env.pp_size)]
                 dist.gather_object(
-                    index_dict, index_dicts if env.pp_rank == 0 else None
+                    index_dict, index_dicts if env.pp_rank == 0 else None, group=env.pp_group
                 )
                 if env.pp_rank == 0:
                     total_size = 0
