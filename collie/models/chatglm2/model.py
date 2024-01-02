@@ -1199,56 +1199,6 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
         dim = rotary_dim // 2
         inv_freq = 1.0 / (10000 ** (torch.arange(0, dim, 2).to(dtype=config.model_config.torch_dtype) / dim))
 
-        # gather q,k,v layer to q_k_v_layer
-        state_dict_keys = state_dict.keys()
-
-        for layer_id in range(config.model_config.num_layers):
-            weight_names = [None, None, None]
-            bias_names = [None, None, None]
-            dense_names = [None, None]
-            for key_name in state_dict_keys:
-                if f"{layer_id}.attention.key_layer.weight" in key_name:
-                    weight_names[1] = key_name
-                if f"{layer_id}.attention.query_layer.weight" in key_name:
-                    weight_names[0] = key_name
-                if f"{layer_id}.attention.value_layer.weight" in key_name:
-                    weight_names[2] = key_name
-
-                if f"{layer_id}.attention.key_layer.bias" in key_name:
-                    bias_names[1] = key_name
-                if f"{layer_id}.attention.query_layer.bias" in key_name:
-                    bias_names[0] = key_name
-                if f"{layer_id}.attention.value_layer.bias" in key_name:
-                    bias_names[2] = key_name
-
-                if f"{layer_id}.mlp.dense_h_to_4h_up_proj.weight" in key_name:
-                      dense_names[0] = key_name
-                if f"{layer_id}.mlp.dense_h_to_4h_down_proj.weight" in key_name:
-                      dense_names[1] = key_name
-
-            if weight_names[0]:
-                state_dict[weight_names[0].replace("query_layer", "query_key_value")] = torch.cat([state_dict.pop(weight_names[0]),
-                            state_dict.pop(weight_names[1]),
-                            state_dict.pop(weight_names[2])], dim=0)
-                state_dict[bias_names[0].replace("query_layer", "query_key_value")] = torch.cat([state_dict.pop(bias_names[0]),
-                            state_dict.pop(bias_names[1]),
-                            state_dict.pop(bias_names[2])], dim=0)
-                state_dict[dense_names[0].replace("dense_h_to_4h_up_proj", "dense_h_to_4h")] = torch.cat([
-                            state_dict.pop(dense_names[0]),
-                            state_dict.pop(dense_names[1])
-                ], dim=0)
-
-        # gather to tp rank 0
-        if env.is_pipeline:
-            parts = env.pipeline_parts
-            for key in list(state_dict.keys()):
-                if "output_layer" in key:
-                    state_dict["transformer."+key] = state_dict.pop(key)
-                elif "word_embeddings" in key:
-                    state_dict[key.replace("model", "transformer.embedding")] = state_dict.pop(key)
-                else:
-                    state_dict[key.replace("model", "transformer.encoder").replace(".attention", ".self_attention")] = state_dict.pop(key)
-
         if dist.is_initialized() and process_exclusion:
             # 如果启动了进程互斥，则要进行 pp_size 次循环
             rank_order = range(config.pp_size)
@@ -1288,6 +1238,7 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
                                 "value_layer.bias",
                                 "word_embeddings.weight",
                                 "lm_head.weight",
+                                "output_layer.weight",
                                 "dense_h_to_4h_up_proj.weight",
                                 "dense_h_to_4h_down_proj.weight",
                             ]
@@ -1306,8 +1257,8 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
                                 try:
                                     need_column_split = (
                                         need_column_split
-                                        or int(key.split(".")[0]) == max(parts) - 1
-                                        or int(key.split(".")[0]) == min(parts)
+                                        or int(key.split(".")[0]) == max(env.pipeline_parts) - 1
+                                        or int(key.split(".")[0]) == min(env.pipeline_parts)
                                     )
                                 except:
                                     pass
@@ -1321,6 +1272,59 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
                                 if process_exclusion:
                                     # CPU 内存回收（速度很慢）
                                     gc.collect()
+
+                    state_dict_keys = state_dict.keys()
+
+                    for layer_id in range(config.model_config.num_layers):
+                        weight_names = [None, None, None]
+                        bias_names = [None, None, None]
+                        dense_names = [None, None]
+                        for key_name in state_dict_keys:
+                            if f".{layer_id}.attention.key_layer.weight" in key_name:
+                                weight_names[1] = key_name
+                            if f".{layer_id}.attention.query_layer.weight" in key_name:
+                                weight_names[0] = key_name
+                            if f".{layer_id}.attention.value_layer.weight" in key_name:
+                                weight_names[2] = key_name
+
+                            if f".{layer_id}.attention.key_layer.bias" in key_name:
+                                bias_names[1] = key_name
+                            if f".{layer_id}.attention.query_layer.bias" in key_name:
+                                bias_names[0] = key_name
+                            if f".{layer_id}.attention.value_layer.bias" in key_name:
+                                bias_names[2] = key_name
+
+                            if f".{layer_id}.mlp.dense_h_to_4h_up_proj.weight" in key_name:
+                                dense_names[0] = key_name
+                            if f".{layer_id}.mlp.dense_h_to_4h_down_proj.weight" in key_name:
+                                dense_names[1] = key_name
+
+                        if weight_names[0]:
+                            state_dict[weight_names[0].replace("query_layer", "query_key_value")] = torch.cat(
+                                [state_dict.pop(weight_names[0]),
+                                 state_dict.pop(weight_names[1]),
+                                 state_dict.pop(weight_names[2])], dim=0)
+                            state_dict[bias_names[0].replace("query_layer", "query_key_value")] = torch.cat(
+                                [state_dict.pop(bias_names[0]),
+                                 state_dict.pop(bias_names[1]),
+                                 state_dict.pop(bias_names[2])], dim=0)
+                            state_dict[dense_names[0].replace("dense_h_to_4h_up_proj", "dense_h_to_4h")] = torch.cat([
+                                state_dict.pop(dense_names[0]),
+                                state_dict.pop(dense_names[1])
+                            ], dim=0)
+
+                    for key in list(state_dict.keys()):
+                        if "output_layer" in key:
+                            state_dict["transformer." + key] = state_dict.pop(key)
+                        elif "word_embeddings" in key:
+                            state_dict[key.replace("model", "transformer.embedding")] = state_dict.pop(key)
+                        elif key == "lm_head.weight":
+                            state_dict[key.replace("lm_head", "transformer.output_layer")] = state_dict.pop(key)
+                        else:
+                            state_dict[
+                                key.replace("model", "transformer.encoder").replace(".attention", ".self_attention")
+                            ] = state_dict.pop(key)
+
                     if env.tp_rank == 0:
                         # Save gathered weights
                         if env.rank == 0:
