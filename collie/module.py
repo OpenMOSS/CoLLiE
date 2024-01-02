@@ -39,6 +39,8 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from collie.log import logger
 from collie.utils import env, broadcast_tensor, setup_ds_engine, stack_tensor, concat_tensor
+from collie.models.utils import (kv_cache_to_inputs_for_model, inputs_to_kv_cache_for_model,\
+                                kv_cache_to_inputs_for_layer, inputs_to_kv_cache_for_layer)
 
 class ColumnParallelLinearWithoutBias(ColumnParallelLinear):
     """重写 ``megatron`` 提供的列并行全连接层以去掉结果中的 ``bias``。
@@ -199,11 +201,6 @@ class PipelineGenerationMixin(GenerationMixin):
                 **kwargs) -> torch.Tensor:
         """ 进行迭代的流水线模型的前向传播（生成）
         """
-        if use_cache:
-            logger.rank_zero_warning(
-                "In Pipeline Parallelism, `use_cache=True` will result in "
-                "slowing down the generate process.", once=True
-            )
         inputs = {}
         if input_ids is not None:
             inputs["input_ids"] = input_ids
@@ -215,18 +212,7 @@ class PipelineGenerationMixin(GenerationMixin):
         if inputs_embeds is not None:
             inputs["inputs_embeds"] = inputs_embeds
         if past_key_values is not None:
-            # TODO 这里先按照输入的 past key values 是没有 split 版本的处理
-            if not isinstance(past_key_values, torch.Tensor):
-                # stack 起来
-                stack_past_key_values = [None for _ in range(len(past_key_values))]
-                for i, layer_past in enumerate(past_key_values):
-                    if not isinstance(layer_past, torch.Tensor):
-                        stack_past_key_values[i] = stack_tensor(layer_past)
-                    else:
-                        stack_past_key_values[i] = layer_past
-                del past_key_values
-                past_key_values = stack_tensor(stack_past_key_values)
-            inputs["past_key_values"] = past_key_values
+            inputs.update(kv_cache_to_inputs_for_model(past_key_values))
 
         outputs = self.engine_container[-1].generate_batch(inputs)
         hidden_states = self._get_hidden_states()
@@ -244,12 +230,14 @@ class PipelineGenerationMixin(GenerationMixin):
                 last_hidden_states, src=src, group=env.pp_group
             )
             hidden_states.append(last_hidden_states)
-        
-        # 还原 past key values
-        if "new_past_key_values" in outputs:
-            past_key_values = outputs["new_past_key_values"]
+
+        if hasattr(self.config, 'num_layers'):  # chatglm
+            num_layer = self.config.num_layers
+        elif hasattr(self.config, 'num_hidden_layers'):  # llama
+            num_layer = self.config.num_hidden_layers
         else:
-            past_key_values = None
+            raise RuntimeError("Cannot find num_layers or num_hidden_layers in config")
+        past_key_values = inputs_to_kv_cache_for_model(num_layer, outputs)
 
         return CausalLMOutputWithPast(
             loss=None,

@@ -31,6 +31,10 @@ from collie.module import (
     ColumnParallelLMHead,
     RowParallelLinearWithoutBias,
 )
+from collie.models.utils import (
+    kv_cache_to_inputs_for_layer, inputs_to_kv_cache_for_layer,
+    kv_cache_to_inputs_for_model, inputs_to_kv_cache_for_model
+)
 from collie.utils import concat_tensor, dict_as_params, env, progress
 
 # try:
@@ -314,7 +318,7 @@ class ChatGLM2Layer(nn.Module):
     def __init__(self, config: CollieConfig, layer_id: int) -> None:
         super().__init__()
         self.config = config
-        self.layer_id = max(1, layer_id)
+        self.layer_id = layer_id
 
         self.qkv_hidden_size = 3 * config.hidden_size
 
@@ -486,19 +490,23 @@ class ChatGLM2Layer(nn.Module):
             query_layer = apply_rotary_pos_emb(query_layer, rotary_pos_emb).to(value_layer.dtype)
             key_layer = apply_rotary_pos_emb(key_layer, rotary_pos_emb).to(value_layer.dtype)
 
-        # adjust key and value for inference
+        new_layer_past = None
         if not self.training and self.use_cache:
             if past_key_values is not None:
-                past_key_values = past_key_values.permute(0, 1, 3, 2, 4, 5)
-                cache_k, cache_v = past_key_values[self.layer_id-1]
-                # query_layer = torch.cat([cache_k, query_layer], dim=0)
+                cache_k, cache_v = past_key_values
+                # for pp, pp will split batch along the first dimension into micro-batches
+                if env.pp_size > 1:
+                    cache_k = rearrange(cache_k, "b n h d -> n b h d")
+                    cache_v = rearrange(cache_v, "b n h d -> n b h d")
                 key_layer = torch.cat((cache_k, key_layer), dim=0)
                 value_layer = torch.cat((cache_v, value_layer), dim=0)
-            past_key_values = (key_layer, value_layer)
-            past_key_values = torch.stack(past_key_values, dim=0)
-            past_key_values = past_key_values.permute(0, 2, 1, 3, 4)
-        else:
-            past_key_values = None
+            if env.pp_size > 1:
+                new_layer_past = (
+                    rearrange(key_layer, "b n h d -> n b h d"),
+                    rearrange(value_layer, "b n h d -> n b h d")
+                )
+            else:
+                new_layer_past = (key_layer, value_layer)
 
         # Multi query attention
         if self.multi_query_attention:
@@ -575,19 +583,20 @@ class ChatGLM2Layer(nn.Module):
         )
         output = residual + output
 
-        return output, past_key_values
+        return output, new_layer_past
 
     def forward(self, inputs: dict):
         inputs["rotary_pos_emb"] = inputs["rotary_pos_emb"].to(
             inputs["hidden_states"].device
         )
-        past_key_values = inputs.get("past_key_values", None)
+        past_key_values = inputs_to_kv_cache_for_layer(idx=self.layer_id, inputs=inputs)
+
         full_attention_mask = inputs.get("full_attention_mask", None)
         attention_mask = inputs.get("attention_mask", None)
 
         if full_attention_mask is None:
-            if (inputs["hidden_states"].shape[1] != 1 and past_key_values is not None) or\
-                (attention_mask is not None and not attention_mask.all()):
+            if (inputs["hidden_states"].shape[1] != 1 and past_key_values is not None) or \
+                    (attention_mask is not None and not attention_mask.all()):
                 full_attention_mask = self.get_masks(
                     inputs["input_ids"],
                     past_key_values,
@@ -603,7 +612,6 @@ class ChatGLM2Layer(nn.Module):
                 full_attention_mask,
                 past_key_values,
                 inputs["rotary_pos_emb"],
-                
             )
         else:
             inputs["hidden_states"], new_layer_past = self._forward(
@@ -611,22 +619,12 @@ class ChatGLM2Layer(nn.Module):
                 full_attention_mask,
                 past_key_values,
                 inputs["rotary_pos_emb"],
-                
             )
         # 将输入维度转为 [b, s, h]
         inputs["hidden_states"] = inputs["hidden_states"].transpose(0, 1).contiguous()
-        
-        new_past_key_values = inputs.get("new_past_key_values", None)
-        if new_layer_past is not None:
-            new_layer_past.unsqueeze_(0)
-            if new_past_key_values is None:
-                new_past_key_values = new_layer_past
-            else:
-                new_past_key_values = concat_tensor(
-                    [new_past_key_values, new_layer_past]
-                ).to(new_layer_past.device)
-            inputs["new_past_key_values"] = new_past_key_values
-        
+
+        inputs.update(kv_cache_to_inputs_for_layer(idx=self.layer_id, new_layer_past=new_layer_past))
+
         return inputs
 
 
@@ -642,14 +640,14 @@ class ChatGLM2Model(nn.Module):
         # self.config.checkpointing = True
         self.layers = nn.Sequential(
             *[
-                ChatGLM2Layer(config, i + 1)
+                ChatGLM2Layer(config, i)
                 for i in range(config.num_layers)
             ]
         )
         self.final_layernorm = RMSNorm(
             config.hidden_size, eps=config.layernorm_epsilon
         )
-    
+
     def forward(
         self,
         input_ids,
@@ -664,30 +662,24 @@ class ChatGLM2Model(nn.Module):
         else:
             inputs.update(dict(zip(["hidden_states", "rotary_pos_emb"], self.word_embeddings(input_ids, kwargs.get("position_ids", None)))))
 
-        if past_key_values is not None:
-            inputs["past_key_values"] = past_key_values
-        
         if attention_mask is not None:
             inputs["attention_mask"] = attention_mask
-                
-        
+        inputs.update(kv_cache_to_inputs_for_model(past_key_values))
+
         all_hidden_states = ()
         for layer in self.layers:
             all_hidden_states += (inputs["hidden_states"],)
             inputs.update(layer(inputs))
         all_hidden_states += (inputs["hidden_states"],)
         inputs["hidden_states"] = self.final_layernorm(inputs["hidden_states"])
-        
-        past_key_values = None
-        if "new_past_key_values" in inputs:
-            past_key_values = inputs["new_past_key_values"]
-        
+
+        past_key_values = inputs_to_kv_cache_for_model(self.config.num_layers, inputs)
         return BaseModelOutputWithPast(
             last_hidden_state=inputs["hidden_states"],
             hidden_states=all_hidden_states,
             past_key_values=past_key_values,
         )
-    
+
     @classmethod
     def pipeline_layers(cls, config: CollieConfig):
         """
@@ -708,7 +700,7 @@ class ChatGLM2Model(nn.Module):
                 config.hidden_size,
             )),
             ("layers",[
-                LayerSpec(ChatGLM2Layer, config, i + 1)
+                LayerSpec(ChatGLM2Layer, config, i)
                 for i in range(config.num_layers)
             ]),
             ("final_layernorm",LayerSpec(
@@ -719,7 +711,7 @@ class ChatGLM2Model(nn.Module):
             )),
         ]
         return layers
-        
+
     @staticmethod
     def _get_rotary_embedding(config, position_ids):
         seq_length = config.seq_length
@@ -770,7 +762,7 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
         self.main_input_name = "input_ids"
 
     def forward(
-            self, 
+            self,
             input_ids: torch.Tensor,
             attention_mask: Optional[torch.Tensor] = None,
             past_key_values: Optional[Tuple[torch.Tensor]] = None,
@@ -795,7 +787,7 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
         batch_size, seq_length = input_ids.shape
         position_ids = torch.arange(seq_length, dtype=torch.long, device=device).unsqueeze(0).repeat(batch_size, 1)
         return position_ids
-    
+
     def _update_model_kwargs_for_generation(
         self,
         outputs,
@@ -833,7 +825,7 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
         # 别忘了清理 word_embeddings 里的 past_position_ids
         # self._clean_past_key_values(self.layers)
         self._set_use_cache(self.model.layers, False)
-    
+
     def set_cache(self, use_cache):
         self._set_use_cache(self.model.layers, use_cache)
 
@@ -845,7 +837,7 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
         :return: list
         """
         if isinstance(config, str):
-            config = CollieConfig.from_pretrained(config) 
+            config = CollieConfig.from_pretrained(config)
         lm_head = LayerSpec(
                 dict_as_params(input_keys="hidden_states", output_keys="logits"),
                 ColumnParallelLMHead,
@@ -964,7 +956,7 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
                         part_state_dict = io_driver.load(
                             os.path.join(path, weight), mode="rb"
                         )
-                        for key in list(part_state_dict.keys()):                         
+                        for key in list(part_state_dict.keys()):
                             if "encoder" in key:
                                 key_weights = part_state_dict.pop(key)
                                 # 这里需要手动将 qkv 的 weight 矩阵拆解，以便适应于 tp 的情况
@@ -1115,6 +1107,7 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
                     "value_layer.bias",
                     "word_embeddings.weight",
                     "lm_head.weight",
+                    "output_layer.weight",
                     "dense_h_to_4h_up_proj.weight",
                     "dense_h_to_4h_down_proj.weight",
                 ]
@@ -1197,65 +1190,15 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
                 .transpose(1, 2)
                 .reshape(config.hidden_size, config.hidden_size)
             )
-        
+
         # recal inv_freq
         rotary_dim = (
-            config.model_config.hidden_size // config.model_config.num_attention_heads 
+            config.model_config.hidden_size // config.model_config.num_attention_heads
             if config.model_config.kv_channels is None else config.model_config.kv_channels
         )
         dim = rotary_dim // 2
         inv_freq = 1.0 / (10000 ** (torch.arange(0, dim, 2).to(dtype=config.model_config.torch_dtype) / dim))
-        
-        # gather q,k,v layer to q_k_v_layer
-        state_dict_keys = state_dict.keys()
 
-        for layer_id in range(config.model_config.num_layers):
-            weight_names = [None, None, None]
-            bias_names = [None, None, None]
-            dense_names = [None, None]
-            for key_name in state_dict_keys:
-                if f"{layer_id}.attention.key_layer.weight" in key_name:
-                    weight_names[1] = key_name
-                if f"{layer_id}.attention.query_layer.weight" in key_name:
-                    weight_names[0] = key_name
-                if f"{layer_id}.attention.value_layer.weight" in key_name:
-                    weight_names[2] = key_name
-                
-                if f"{layer_id}.attention.key_layer.bias" in key_name:
-                    bias_names[1] = key_name
-                if f"{layer_id}.attention.query_layer.bias" in key_name:
-                    bias_names[0] = key_name
-                if f"{layer_id}.attention.value_layer.bias" in key_name:
-                    bias_names[2] = key_name
-                
-                if f"{layer_id}.mlp.dense_h_to_4h_up_proj.weight" in key_name:
-                      dense_names[0] = key_name   
-                if f"{layer_id}.mlp.dense_h_to_4h_down_proj.weight" in key_name:
-                      dense_names[1] = key_name   
-                
-            if weight_names[0]:
-                state_dict[weight_names[0].replace("query_layer", "query_key_value")] = torch.cat([state_dict.pop(weight_names[0]),
-                            state_dict.pop(weight_names[1]),
-                            state_dict.pop(weight_names[2])], dim=0)
-                state_dict[bias_names[0].replace("query_layer", "query_key_value")] = torch.cat([state_dict.pop(bias_names[0]),
-                            state_dict.pop(bias_names[1]),
-                            state_dict.pop(bias_names[2])], dim=0)
-                state_dict[dense_names[0].replace("dense_h_to_4h_up_proj", "dense_h_to_4h")] = torch.cat([
-                            state_dict.pop(dense_names[0]),
-                            state_dict.pop(dense_names[1])
-                ], dim=0)
-            
-        # gather to tp rank 0
-        if env.is_pipeline:
-            parts = env.pipeline_parts
-            for key in list(state_dict.keys()):
-                if "output_layer" in key:
-                    state_dict["transformer."+key] = state_dict.pop(key)
-                elif "word_embeddings" in key:
-                    state_dict[key.replace("model", "transformer.embedding")] = state_dict.pop(key)
-                else:
-                    state_dict[key.replace("model", "transformer.encoder").replace(".attention", ".self_attention")] = state_dict.pop(key)      
-            
         if dist.is_initialized() and process_exclusion:
             # 如果启动了进程互斥，则要进行 pp_size 次循环
             rank_order = range(config.pp_size)
@@ -1295,6 +1238,7 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
                                 "value_layer.bias",
                                 "word_embeddings.weight",
                                 "lm_head.weight",
+                                "output_layer.weight",
                                 "dense_h_to_4h_up_proj.weight",
                                 "dense_h_to_4h_down_proj.weight",
                             ]
@@ -1313,8 +1257,8 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
                                 try:
                                     need_column_split = (
                                         need_column_split
-                                        or int(key.split(".")[0]) == max(parts) - 1
-                                        or int(key.split(".")[0]) == min(parts)
+                                        or int(key.split(".")[0]) == max(env.pipeline_parts) - 1
+                                        or int(key.split(".")[0]) == min(env.pipeline_parts)
                                     )
                                 except:
                                     pass
@@ -1328,6 +1272,59 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
                                 if process_exclusion:
                                     # CPU 内存回收（速度很慢）
                                     gc.collect()
+
+                    state_dict_keys = state_dict.keys()
+
+                    for layer_id in range(config.model_config.num_layers):
+                        weight_names = [None, None, None]
+                        bias_names = [None, None, None]
+                        dense_names = [None, None]
+                        for key_name in state_dict_keys:
+                            if f".{layer_id}.attention.key_layer.weight" in key_name:
+                                weight_names[1] = key_name
+                            if f".{layer_id}.attention.query_layer.weight" in key_name:
+                                weight_names[0] = key_name
+                            if f".{layer_id}.attention.value_layer.weight" in key_name:
+                                weight_names[2] = key_name
+
+                            if f".{layer_id}.attention.key_layer.bias" in key_name:
+                                bias_names[1] = key_name
+                            if f".{layer_id}.attention.query_layer.bias" in key_name:
+                                bias_names[0] = key_name
+                            if f".{layer_id}.attention.value_layer.bias" in key_name:
+                                bias_names[2] = key_name
+
+                            if f".{layer_id}.mlp.dense_h_to_4h_up_proj.weight" in key_name:
+                                dense_names[0] = key_name
+                            if f".{layer_id}.mlp.dense_h_to_4h_down_proj.weight" in key_name:
+                                dense_names[1] = key_name
+
+                        if weight_names[0]:
+                            state_dict[weight_names[0].replace("query_layer", "query_key_value")] = torch.cat(
+                                [state_dict.pop(weight_names[0]),
+                                 state_dict.pop(weight_names[1]),
+                                 state_dict.pop(weight_names[2])], dim=0)
+                            state_dict[bias_names[0].replace("query_layer", "query_key_value")] = torch.cat(
+                                [state_dict.pop(bias_names[0]),
+                                 state_dict.pop(bias_names[1]),
+                                 state_dict.pop(bias_names[2])], dim=0)
+                            state_dict[dense_names[0].replace("dense_h_to_4h_up_proj", "dense_h_to_4h")] = torch.cat([
+                                state_dict.pop(dense_names[0]),
+                                state_dict.pop(dense_names[1])
+                            ], dim=0)
+
+                    for key in list(state_dict.keys()):
+                        if "output_layer" in key:
+                            state_dict["transformer." + key] = state_dict.pop(key)
+                        elif "word_embeddings" in key:
+                            state_dict[key.replace("model", "transformer.embedding")] = state_dict.pop(key)
+                        elif key == "lm_head.weight":
+                            state_dict[key.replace("lm_head", "transformer.output_layer")] = state_dict.pop(key)
+                        else:
+                            state_dict[
+                                key.replace("model", "transformer.encoder").replace(".attention", ".self_attention")
+                            ] = state_dict.pop(key)
+
                     if env.tp_rank == 0:
                         # Save gathered weights
                         if env.rank == 0:
@@ -1345,10 +1342,10 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
                             index_dict = dict(
                                 total_size=total_size, weight_map=weight_map
                             )
-                            
+
                             index_dicts = [None for _ in range(env.pp_size)]
                             dist.gather_object(
-                                index_dict, index_dicts if env.pp_rank == 0 else None
+                                index_dict, index_dicts if env.pp_rank == 0 else None, group=env.pp_group
                             )
                             if env.pp_rank == 0:
                                 total_size = 0
@@ -1356,7 +1353,7 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
                                 for _index_dict in index_dicts:
                                     total_size += _index_dict["total_size"]
                                     weight_map.update(_index_dict["weight_map"])
-                                
+
                                 merged_dict = {
                                     "metadata": {"total_size": total_size},
                                     "weight_map": weight_map,

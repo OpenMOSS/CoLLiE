@@ -20,7 +20,6 @@ from accelerate.utils.modeling import set_module_tensor_to_device
 from transformers.generation.utils import GenerationMixin
 from transformers.generation.utils import GenerationConfig
 from transformers.utils import ContextManagers
-from transformers.deepspeed import is_deepspeed_zero3_enabled
 from collie.module import PipelineModel, GPTLMLoss
 from collie.config import CollieConfig, load_config
 from collie.log import logger

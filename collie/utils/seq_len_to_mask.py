@@ -18,7 +18,7 @@ def seq_len_to_mask(seq_len, max_len: Optional[int]=None):
         (14, 15)
         >>> seq_len = torch.arange(2, 16)
         >>> mask = seq_len_to_mask(seq_len, max_len=100)
-        >>>print(mask.size())
+        >>> print(mask.size())
         torch.Size([14, 100])
 
     :param seq_len: 大小为 ``(B,)`` 的长度序列；

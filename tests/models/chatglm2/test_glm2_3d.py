@@ -18,6 +18,7 @@ model = ChatGLM2ForCausalLM.from_pretrained("THUDM/chatglm2-6b", config=config).
 prompt = "[Round 0]\n\n\n\n问：你是谁？\n\n答："
 inputs = tokenizer(prompt, return_tensors="pt")
 print(inputs)
+model.eval()
 gen_config = GenerationConfig(max_new_tokens=256, early_stopping=True, eos_token_id=2)
 
 outs = model.generate(inputs["input_ids"].cuda(), generation_config=gen_config)
