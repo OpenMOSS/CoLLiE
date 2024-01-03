@@ -24,6 +24,7 @@ CoLLiE (Collaborative Tuning of Large Language Models in an Efficient Way)，一
 
 
 ## 新闻
+- [2023/12] 🎉 CoLLiE被EMNLP System Demonstrations接收：[CoLLiE: Collaborative Training of Large Language Models in an Efficient Way](https://arxiv.org/abs/2312.00407)
 - [2023/08] 评测结果新增[显存占用与模型大小的关系](#显存占用)和[吞吐量](#吞吐量)。
 - [2023/07] 发布Python包`collie-lm`。您可以在[PyPI](https://pypi.org/project/collie-lm/#history)中查看更多细节！
 
