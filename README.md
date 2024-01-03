@@ -24,8 +24,9 @@ CoLLiE (Collaborative Tuning of Large Language Models in an Efficient Way)，一
 
 
 ## 新闻
-* [2023/12] 🎉 CoLLiE被EMNLP System Demonstrations接收：[CoLLiE: Collaborative Training of Large Language Models in an Efficient Way](https://arxiv.org/abs/2312.00407)
-* [2023/07] 发布Python包`collie-lm`。您可以在[链接](https://pypi.org/project/collie-lm/#history)中查看更多细节！
+- [2023/12] 🎉 CoLLiE被EMNLP System Demonstrations接收：[CoLLiE: Collaborative Training of Large Language Models in an Efficient Way](https://arxiv.org/abs/2312.00407)
+- [2023/08] 评测结果新增[显存占用与模型大小的关系](#显存占用)和[吞吐量](#吞吐量)。
+- [2023/07] 发布Python包`collie-lm`。您可以在[PyPI](https://pypi.org/project/collie-lm/#history)中查看更多细节！
 
 ## 目录
 <ul>
@@ -112,14 +113,15 @@ CoLLiE 基于 *DeepSpeed* 和 *PyTorch*，为大型语言模型提供协作式�
 
 ## 评测
 
-### 吞吐量
-|            | 7B   | 13B  | 30B  | 65B  |
-| ---------- | ---- | ---- | ---- | ---- |
-| Finetune   | 2    | 3    | 6    | 16   |
-| LoRA       | 1    | 1    | 1    | 2    |
-| LOMO       | 1    | 1    | 1    | 2    |
+### 显存占用
+使用张量并行测试了批量大小为 1，序列长度为 2048，梯度累计步数为 2 下显存占用情况，结果如下：
 
-注：在使用Adam优化器的情况下，各个模型需要的最少的GPU（A100）数量
+<img src="docs/assets/images/mem_req.png" width="400px">
+
+### 吞吐量
+在 A100 和 RTX-3090 上测试了不同批量大小下使用 Adam 优化器的吞吐量，结果如下：
+
+<img src="docs/assets/images/throughput.png" width="800px">
 
 ## 安装
 在安装前，你需要确保：

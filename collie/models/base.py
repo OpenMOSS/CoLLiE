@@ -20,7 +20,6 @@ from accelerate.utils.modeling import set_module_tensor_to_device
 from transformers.generation.utils import GenerationMixin
 from transformers.generation.utils import GenerationConfig
 from transformers.utils import ContextManagers
-from transformers.deepspeed import is_deepspeed_zero3_enabled
 from collie.module import PipelineModel, GPTLMLoss
 from collie.config import CollieConfig, load_config
 from collie.log import logger
@@ -46,6 +45,8 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
 
     """
     main_input_name = "input_ids"
+    base_model_prefix = ""
+    _can_generate = False
 
     def __init__(self, config: CollieConfig) -> None:
         super().__init__()
@@ -55,30 +56,6 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         self.config = config.model_config
         # transformers 的 GenerateMixin 要求 config 必须为 PretrainedConfig，备份一下 collie 的配置
         self.collie_config = config
-
-    def _get_past_key_values(self, layers: Sequence[nn.Module], attr_name: str="past_key_values"):
-        past_key_values = []
-        for layer in layers:
-            assert hasattr(layer, attr_name), f"{layer} does not have {attr_name}"
-            past_key_values.append(getattr(layer, attr_name))
-        return tuple(past_key_values) if None not in past_key_values else None
-
-    def _clean_past_key_values(self, layers: Sequence[nn.Module], attr_name: str="past_key_values"):
-        for layer in layers:
-            if hasattr(layer, attr_name):
-                object.__setattr__(layer, attr_name, None)
-
-    def _set_past_key_values(self, 
-                             layers: Sequence[nn.Module], 
-                             past_key_values: Tuple[torch.Tensor], 
-                             attr_name: str="past_key_values"):
-        if past_key_values is None:
-            self._clean_past_key_values(layers, attr_name)
-            return
-        past_key_values = iter(past_key_values)
-        for layer in layers:
-            if hasattr(layer, attr_name):
-                object.__setattr__(layer, attr_name, next(past_key_values))
 
     def _get_hidden_states(self, layers: Sequence[nn.Module], attr_name: str="hidden_states"):
         all_hidden_states = []
@@ -111,11 +88,8 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         生成函数。用法同 ``huggingface``。
         """
         res = super().generate(*args, **kwargs)
-        self.clean()
+        self.clean_cache()
         return res
-
-    def clean():
-        raise NotImplementedError
 
     @classmethod
     def from_config(cls, config: Union[CollieConfig, str], **kwargs):
@@ -127,6 +101,10 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         """
         if isinstance(config, str):
             config = CollieConfig.from_pretrained(config, **kwargs)
+        if 'train_micro_batch_size_per_gpu' in config.ds_config:
+            assert config.ds_config['train_micro_batch_size_per_gpu'] == config.train_micro_batch_size, \
+                "train_micro_batch_size_per_gpu in ds_config should be the same as train_micro_batch_size"
+        config.ds_config['train_micro_batch_size_per_gpu'] = config.train_micro_batch_size
         setup_distribution(config)
         model_cls = cls._get_model_cls(config)
         model = None
@@ -138,10 +116,6 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
             contexts.append(init_empty_weights())
         if config.pp_size == 1:
             if is_zero3_enabled(config):
-                if 'train_micro_batch_size_per_gpu' in config.ds_config:
-                    assert config.ds_config['train_micro_batch_size_per_gpu'] == config.train_micro_batch_size, \
-                        "train_micro_batch_size_per_gpu in ds_config should be the same as train_micro_batch_size"
-                config.ds_config['train_micro_batch_size_per_gpu'] = config.train_micro_batch_size
                 contexts.append(deepspeed.zero.Init(
                     data_parallel_group=parallel_state.get_data_parallel_group(),
                     config_dict_or_path=config.ds_config  # config is necessary for bf16
@@ -150,6 +124,7 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                 model = super().__new__(model_cls)
                 model.__init__(config)
         else:
+            logger.info("Pipeline initialization starts, the provided loss_fn is not currently being used; it will be utilized in trainer.")
             model = PipelineModel(
                 config=config,
                 layers=model_cls.pipeline_layers(config),
@@ -168,27 +143,39 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
             for method in cls.overwrite_pipeline_methods() + [cls.resize_token_embeddings, cls.prepare_inputs, cls.enable_input_require_grads]:
                 object.__setattr__(model, method.__name__, types.MethodType(method, model))
         if kwargs.get("init_params", True):
-            for name, param in model.named_parameters():
-                contexts = []
-                if is_zero3_enabled(config):
-                    contexts.append(deepspeed.zero.GatheredParameters(param, modifier_rank=0))
-                    if 'train_micro_batch_size_per_gpu' in config.ds_config:
-                        assert config.ds_config['train_micro_batch_size_per_gpu'] == config.train_micro_batch_size, \
-                            "train_micro_batch_size_per_gpu in ds_config should be the same as train_micro_batch_size"
-                    config.ds_config['train_micro_batch_size_per_gpu'] = config.train_micro_batch_size
-                    contexts.append(deepspeed.zero.Init(
-                        data_parallel_group=parallel_state.get_data_parallel_group(),
-                        config_dict_or_path=config.ds_config  # config is necessary for bf16
-                    ))
-                with ContextManagers(contexts):
-                    if param.device == torch.device("meta"):
-                        set_module_tensor_to_device(
-                            module=model, tensor_name=name, device="cpu" if param.device == torch.device("meta") else param.device,
-                            value=config.init_method(torch.empty((*param.data.size(),),dtype=config.model_config.torch_dtype)),
-                            dtype=config.model_config.torch_dtype
-                        )
-                    else:
-                        param.data = config.init_method(torch.zeros_like(param.data)).to(config.model_config.torch_dtype).to(param.device)
+            post_init_funcs = {}
+            # 记录 post_init 函数
+            for name, layer in model.named_modules():
+                if hasattr(layer, 'post_init'):
+                    post_init_funcs[name+".weight"] = layer.post_init
+            context_zero3_init = []
+            if is_zero3_enabled(config):
+                context_zero3_init.append(deepspeed.zero.Init(
+                    data_parallel_group=parallel_state.get_data_parallel_group(),
+                    config_dict_or_path=config.ds_config
+                ))
+            with ContextManagers(context_zero3_init):
+                for name, param in model.named_parameters():
+                    contexts = []
+                    if is_zero3_enabled(config):
+                        contexts.append(deepspeed.zero.GatheredParameters(param, modifier_rank=0))
+                    with ContextManagers(contexts):
+                        if param.device == torch.device("meta"):
+                            if name not in post_init_funcs:
+                                value = config.init_method['init_func'](torch.empty((*param.data.size(),), dtype=config.model_config.torch_dtype,device="cpu"), **config.init_method['init_kwargs'])
+                            else:
+                                value = post_init_funcs[name]()
+                            set_module_tensor_to_device(
+                                module=model, tensor_name=name, device="cpu",
+                                value=value,
+                                dtype=config.model_config.torch_dtype,
+                            )
+                        else:
+                            if name not in post_init_funcs:
+                                param.data = config.init_method['init_func'](torch.zeros_like(param.data), **config.init_method['init_kwargs']).to(config.model_config.torch_dtype).to(param.device)
+                            else:
+                                param.data = post_init_funcs[name]()
+
         if kwargs.get("get_peft", True) and config.peft_config.peft_type is not None:
             model = get_peft_model(model, config.peft_config)
             model.print_trainable_parameters()
@@ -216,23 +203,20 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
     @abstractmethod
     def clean_cache(self):
         """
-        清理 ``past_key_values`` 和 ``hidden_states`` 状态的函数。
+        清理 ``use_cache`` 和 ``hidden_states`` 状态的函数。
         """
         raise NotImplementedError(
             "`clean_cache` should be implemented to clear caches for generation."
         )
 
     @abstractmethod
-    def set_cache(self, use_cache, past_key_values):
+    def set_cache(self, use_cache):
         """
-        设置 ``use_cache`` 和 ``past_key_values`` 的函数。
+        设置 ``use_cache`` 的函数。
 
         :param use_cache: 是否在生成时使用缓存的 ``past_key_values``。如果为
             ``True`` 则会保存前向传播过程中 Attention 的 key 和 value 用于下一次
             生成。可以参考 :meth:`_set_use_cache` 的代码来设置。
-        :param past_key_values: 本次生时传入的 key 和 value。如果为 ``None`` 则
-            可以参考 :meth:`_clean_past_key_values` 清除所有的缓存，否则可以参考
-            :meth:`_set_past_key_values` 来设置 ``past_key_values``。
         """
         raise NotImplementedError(
             "`set_cache` should be implemented to set caches for generation."
@@ -254,7 +238,6 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
 
             其余 ``kwargs`` 的内容会用于设置 :class:`.CollieConfig` 的内容。
         """
-
         process_exclusion = kwargs.pop("process_exclusion", False)
         if dist.is_initialized() and process_exclusion:
             logger.warning(
@@ -299,47 +282,68 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
             )
         # load state dict
         state_dict = {}
-        if not is_zero3_enabled(config) or env.dp_rank == 0 \
-            or config.low_cpu_mem_usage or config.quantization_config.load_in_8bit \
-                or getattr(config.quantization_config, "load_in_4bit", False):
+        if not is_zero3_enabled(config) or env.dp_rank == 0:
             state_dict = cls.load_parallel_state_dict(
                 path=model_path_or_name, config=config,
                 process_exclusion=process_exclusion, **kwargs
             )
+        if isinstance(model, PipelineModel):
+            for key in list(state_dict.keys()):
+                key_pp = model.name_to_pipeline(key)
+                state_dict[key_pp] = state_dict.pop(key)
+
+        context_zero3_init = []
+        if is_zero3_enabled(config):
+            context_zero3_init.append(deepspeed.zero.Init(
+                data_parallel_group=parallel_state.get_data_parallel_group(),
+                config_dict_or_path=config.ds_config
+            ))
+
+        post_init_funcs = {}
+        # 记录 post_init 函数
+        for name, layer in model.named_modules():
+            if hasattr(layer, 'post_init') and name+".weight" not in state_dict.keys():
+                post_init_funcs[name+".weight"] = layer.post_init
         # load checkpoint and dispatch
-        for name, param in model.named_parameters():
-            if name not in state_dict.keys():
-                logger.rank_zero_warning("Missing key: {name}!")
-                continue
-            contexts = []
-            if is_zero3_enabled(config):
-                contexts.append(deepspeed.zero.GatheredParameters(param, modifier_rank=0))
-                contexts.append(deepspeed.zero.Init(
-                    data_parallel_group=parallel_state.get_data_parallel_group(),
-                    config_dict_or_path=config.ds_config  # config is necessary for bf16
-                ))
-            with ContextManagers(contexts):
-                if getattr(config.quantization_config, "load_in_4bit", False) or \
-                    config.quantization_config.load_in_8bit:
-                        set_module_quantized_tensor_to_device(
-                            module=model, 
-                            tensor_name=name, 
-                            device="cpu" if param.device == torch.device("meta") else param.device,
-                            value=state_dict[name].data
-                        )
-                else:
-                    if param.device == torch.device("meta"):
-                        set_module_tensor_to_device(
-                            module=model, tensor_name=name, device="cpu" if param.device == torch.device("meta") else param.device,
-                            value=state_dict[name].data, dtype=config.model_config.torch_dtype
-                        )
+        with ContextManagers(context_zero3_init):
+            for name, param in model.named_parameters():
+                if name not in state_dict.keys() and (not is_zero3_enabled(config) or env.dp_rank == 0):
+                    logger.warning(f"Missing key: {name}!")
+                contexts = []
+                if is_zero3_enabled(config):
+                    contexts.append(deepspeed.zero.GatheredParameters(param, modifier_rank=0))
+                with ContextManagers(contexts):
+                    value = state_dict.get(name, config.init_method['init_func'](torch.zeros_like(param.data), **config.init_method['init_kwargs']).to(config.model_config.torch_dtype),)
+                    
+                    if name in post_init_funcs and name not in state_dict:
+                        value = post_init_funcs[name]()
+                        
+                    if getattr(config.quantization_config, "load_in_4bit", False) or \
+                        config.quantization_config.load_in_8bit:
+                            set_module_quantized_tensor_to_device(
+                                module=model,
+                                tensor_name=name,
+                                device="cpu",
+                                value=value,
+                            )
                     else:
-                        assert param.data.shape == state_dict[name].data.shape, f"The shape of the parameter corresponding to the `{name}` does not match!"
-                        param.data = state_dict[name].data.to(config.model_config.torch_dtype).to(param.device)
+                        if param.device == torch.device("meta"):
+                            set_module_tensor_to_device(
+                                module=model, tensor_name=name, device="cpu",
+                                value=value,
+                                dtype=config.model_config.torch_dtype
+                            )
+                        else:
+                            if name in state_dict:
+                                assert param.data.shape == state_dict[name].data.shape, f"The shape of the parameter corresponding to the `{name}` does not match: {param.data.shape} vs {state_dict[name].data.shape}"
+                            param.data = value.to(param.device)
+            
+        
         if config.peft_config.peft_type is not None:
             model = get_peft_model(model, config.peft_config)
             model.print_trainable_parameters()
         return model
+
 
     @classmethod
     def pipeline_layers(cls, config: Union[CollieConfig, str]):
@@ -384,9 +388,9 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         生成过程中更新输入和 cache 状态的函数，包含设置 use_cache 和 past_key_values
         以及更新输入两个过程。
         """
-        self.set_cache(use_cache, past_key_values)
+        self.set_cache(use_cache)
         if past_key_values is not None:
-            if None in past_key_values:
+            if not isinstance(past_key_values, torch.Tensor) and None in past_key_values:
                 past_key_values = None
         return self.prepare_inputs(
             input_ids=input_ids, attention_mask=attention_mask,
@@ -530,8 +534,8 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                         new_embedding.weight.data[start_pos_new:end_pos_new, :] \
                             = embedding.weight.data[start_pos_old:end_pos_old, :]
                         if end_pos_new < (new_num_tokens // env.tp_size):
-                            init_method = self.collie_config.init_method
-                            init_method(new_embedding.weight[end_pos_new:new_num_tokens // env.tp_size, :])
+                            init_method = self.collie_config.init_method['init_func']
+                            init_method(new_embedding.weight[end_pos_new:new_num_tokens // env.tp_size, :], **self.collie_config.init_method['init_kwargs'])
             else:
                 if env.tp_size > 1 and isinstance(new_embedding, tensor_parallel.VocabParallelEmbedding):
                     weights_list = [embedding.weight.clone().cuda() for _ in range(env.tp_size)]
@@ -540,8 +544,8 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                 new_embedding.weight.data[start_pos_new:end_pos_new, :] \
                     = embedding.weight.data[start_pos_old:end_pos_old, :]
                 if end_pos_new < (new_num_tokens // env.tp_size):
-                    init_method = self.collie_config.init_method
-                    init_method(new_embedding.weight[end_pos_new:new_num_tokens // env.tp_size, :])
+                    init_method = self.collie_config.init_method['init_func']
+                    init_method(new_embedding.weight[end_pos_new:new_num_tokens // env.tp_size, :], **self.collie_config.init_method['init_kwargs'])
             self.set_input_embedding(embedding_name, new_embedding)
         if lm_head is not None:
             if embedding is not None and id(lm_head.weight) == id(embedding.weight):
@@ -579,8 +583,11 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                 start_pos_new = 0
                 end_pos_new = 0
             if is_zero3_enabled(self.collie_config):
-                with deepspeed.zero.GatheredParameters([new_lm_head.weight, lm_head.weight] + \
-                    [new_lm_head.bias, lm_head.bias] if lm_head.bias is not None else [], modifier_rank=0):
+                with deepspeed.zero.GatheredParameters(
+                        [new_lm_head.weight, lm_head.weight] + [new_lm_head.bias, lm_head.bias]
+                        if lm_head.bias is not None else [new_lm_head.weight, lm_head.weight],
+                        modifier_rank=0
+                ):
                     if env.tp_size > 1 and isinstance(new_lm_head, tensor_parallel.ColumnParallelLinear):
                         weights_list = [lm_head.weight.clone().cuda() for _ in range(env.tp_size)]
                         dist.all_gather(weights_list, lm_head.weight.cuda(), group=parallel_state.get_tensor_model_parallel_group())
@@ -596,8 +603,8 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                             new_lm_head.bias.data[start_pos_new:end_pos_new] \
                                 = lm_head.bias.data[start_pos_old:end_pos_old]
                         if end_pos_new < (new_num_tokens // env.tp_size):
-                            init_method = self.collie_config.init_method
-                            init_method(new_lm_head.weight[end_pos_new:new_num_tokens // env.tp_size, :])
+                            init_method = self.collie_config.init_method['init_func']
+                            init_method(new_lm_head.weight[end_pos_new:new_num_tokens // env.tp_size, :], **self.collie_config.init_method['init_kwargs'])
                             if lm_head.bias is not None:
                                 init_method(new_lm_head.bias[end_pos_new:new_num_tokens // env.tp_size])
             else:
@@ -615,8 +622,8 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                     new_lm_head.bias.data[start_pos_new:end_pos_new] \
                         = lm_head.bias.data[start_pos_old:end_pos_old]
                 if end_pos_new < (new_num_tokens // env.tp_size):
-                    init_method = self.collie_config.init_method
-                    init_method(new_lm_head.weight[end_pos_new:new_num_tokens // env.tp_size, :])
+                    init_method = self.collie_config.init_method['init_func']
+                    init_method(new_lm_head.weight[end_pos_new:new_num_tokens // env.tp_size, :], **self.collie_config.init_method['init_kwargs'])
                     if lm_head.bias is not None:
                             init_method(new_lm_head.bias[end_pos_new:new_num_tokens // env.tp_size])
             self.set_lm_head(lm_head_name, new_lm_head)
@@ -624,6 +631,12 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
 
     def get_input_embedding(self):
         for name, module in self.named_children():
+            if isinstance(module, (nn.Embedding, tensor_parallel.VocabParallelEmbedding)):
+                return name, module
+        base_model = getattr(self, self.base_model_prefix, None)
+        if base_model is None:
+            return None, None
+        for name, module in base_model.named_children():
             if isinstance(module, (nn.Embedding, tensor_parallel.VocabParallelEmbedding)):
                 return name, module
         return None, None
@@ -638,7 +651,8 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
         return lm_head_name, lm_head
 
     def set_input_embedding(self, name, embedding):
-        self.add_module(name, embedding)
+        base_model = getattr(self, self.base_model_prefix, self)
+        base_model.add_module(name, embedding)
 
     def set_lm_head(self, name, lm_head):
         self.add_module(name, lm_head)

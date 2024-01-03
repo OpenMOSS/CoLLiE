@@ -1,72 +1,103 @@
 """ **CoLLie** 中的分布式工具。
 """
-import os
 import copy
 import json
+import os
 import re
 import subprocess
 
-import torch
-from torch import distributed as dist
-from torch.multiprocessing import Process, set_start_method
 import deepspeed
+import torch
+from deepspeed.accelerator import get_accelerator
 from deepspeed.monitor.wandb import WandbMonitor
+from deepspeed.runtime import zero
+from deepspeed.runtime.config import DeepSpeedConfig
+from deepspeed.runtime.engine import (
+    DeepSpeedEngine,
+    DeepSpeedOptimizerCallable,
+    DeepSpeedSchedulerCallable,
+)
+from deepspeed.runtime.hybrid_engine import DeepSpeedHybridEngine
+from deepspeed.runtime.pipe import LayerSpec, PipelineModule
 from deepspeed.runtime.utils import set_random_seed
 from deepspeed.runtime.zero.stage_1_and_2 import DeepSpeedZeroOptimizer
-from deepspeed.runtime.engine import DeepSpeedEngine, DeepSpeedOptimizerCallable, DeepSpeedSchedulerCallable
-from deepspeed.accelerator import get_accelerator
-from deepspeed.runtime import zero
-from deepspeed.runtime.hybrid_engine import DeepSpeedHybridEngine
-from deepspeed.runtime.config import DeepSpeedConfig
-from deepspeed.runtime.pipe import PipelineModule, LayerSpec
-from transformers.deepspeed import _hf_deepspeed_config_weak_ref, HfDeepSpeedConfig, is_deepspeed_zero3_enabled
+from torch import distributed as dist
+from torch.multiprocessing import Process, set_start_method
+
+try:
+    from transformers.integrations.deepspeed import _hf_deepspeed_config_weak_ref, HfDeepSpeedConfig
+except ImportError:
+    from transformers.deepspeed import _hf_deepspeed_config_weak_ref, HfDeepSpeedConfig
+
+from typing import Optional, Union
 from weakref import ref
 
 from megatron.core import parallel_state, tensor_parallel
 
-from typing import Union, Optional
-
-from collie.config import load_config, CollieConfig
-from .peft_utils import patch_peft
+from collie.config import CollieConfig, load_config
 from peft import PeftModel
 
+from .peft_utils import patch_peft
+
 __all__ = [
-    "env", "setup_distribution", "set_seed", "setup_ds_engine",
-    "zero3_load_state_dict", "is_zero3_enabled", "broadcast_tensor",
-    "patch_deepspeed", "patch_megatron", "patch_pipeline_engine",
-    "launch"
+    "env",
+    "setup_distribution",
+    "set_seed",
+    "setup_ds_engine",
+    "zero3_load_state_dict",
+    "is_zero3_enabled",
+    "broadcast_tensor",
+    "patch_deepspeed",
+    "patch_megatron",
+    "patch_pipeline_engine",
+    "launch",
 ]
 
 DTYPE_ENUM = [
-    torch.float32, torch.float64, torch.float16, torch.bfloat16, torch.uint8,
-    torch.int8, torch.int16, torch.int32, torch.int64, torch.bool
+    torch.float32,
+    torch.float64,
+    torch.float16,
+    torch.bfloat16,
+    torch.uint8,
+    torch.int8,
+    torch.int16,
+    torch.int32,
+    torch.int64,
+    torch.bool,
 ]
 
+
 def zero3_load_state_dict(model: torch.nn.Module, state_dict: dict):
-    """用于加载 ZeRO stage 3 的模型参数。
-    """
+    """用于加载 ZeRO stage 3 的模型参数。"""
     for name, param in model.named_parameters():
         with deepspeed.zero.GatheredParameters(param, modifier_rank=0):
             param.data = state_dict[name].data.to(param.device).to(param.dtype)
 
+
 def is_zero3_enabled(config: CollieConfig):
-    """判断是否启用了 ZeRO stage 3。
-    """
+    """判断是否启用了 ZeRO stage 3。"""
     if isinstance(config.ds_config, str) and os.path.exists(config.ds_config):
         config.ds_config = load_config(config.ds_config)
-    if isinstance(config.ds_config, dict) \
-            and "zero_optimization" in config.ds_config.keys() \
-            and "stage" in config.ds_config["zero_optimization"].keys() \
-            and config.ds_config["zero_optimization"]["stage"] == 3:
+    if (
+        isinstance(config.ds_config, dict)
+        and "zero_optimization" in config.ds_config.keys()
+        and "stage" in config.ds_config["zero_optimization"].keys()
+        and config.ds_config["zero_optimization"]["stage"] == 3
+    ):
         return True
     else:
         return False
 
+
 def setup_ds_engine(
-        config: CollieConfig,
-        model: torch.nn.Module,
-        optimizer: Optional[Union[torch.optim.Optimizer, DeepSpeedOptimizerCallable]] = None,
-        lr_scheduler: Optional[Union[torch.optim.lr_scheduler._LRScheduler, DeepSpeedSchedulerCallable]] = None
+    config: CollieConfig,
+    model: torch.nn.Module,
+    optimizer: Optional[
+        Union[torch.optim.Optimizer, DeepSpeedOptimizerCallable]
+    ] = None,
+    lr_scheduler: Optional[
+        Union[torch.optim.lr_scheduler._LRScheduler, DeepSpeedSchedulerCallable]
+    ] = None,
 ):
     """启动 DeepSpeed 引擎。
 
@@ -76,46 +107,59 @@ def setup_ds_engine(
     :param lr_scheduler: 学习率调度器
     :return: DeepSpeed 引擎、优化器、dataloader (为 None)、学习率调度器
     """
-    if "train_micro_batch_size_per_gpu" not in config.ds_config.keys():
-        config.ds_config["train_micro_batch_size_per_gpu"] = config.train_micro_batch_size
-    if "gradient_accumulation_steps" not in config.ds_config.keys():
-        config.ds_config["gradient_accumulation_steps"] = config.gradient_accumulation_steps
     if config.pp_size != 1 or config.tp_size != 1:
         from collie.models import CollieModelForCausalLM
         from collie.module import PipelineModel
         from peft import PeftModel
+
         if isinstance(model, PeftModel):
-            assert isinstance(model.get_base_model(), (CollieModelForCausalLM, PipelineModel)), "Currently pipeline or tensor parallelism only supports Collie models."
+            assert isinstance(
+                model.get_base_model(), (CollieModelForCausalLM, PipelineModel)
+            ), "Currently pipeline or tensor parallelism only supports Collie models."
         else:
-            assert isinstance(model, (CollieModelForCausalLM, PipelineModel)), "Currently pipeline or tensor parallelism only supports Collie models."
+            assert isinstance(
+                model, (CollieModelForCausalLM, PipelineModel)
+            ), "Currently pipeline or tensor parallelism only supports Collie models."
+    if "train_micro_batch_size_per_gpu" not in config.ds_config.keys():
+        config.ds_config[
+            "train_micro_batch_size_per_gpu"
+        ] = config.train_micro_batch_size
+    if "gradient_accumulation_steps" not in config.ds_config.keys():
+        config.ds_config[
+            "gradient_accumulation_steps"
+        ] = config.gradient_accumulation_steps
+    print(config.ds_config)
     engine, optimizer, _, lr_scheduler = initialize(
         model=model,
         optimizer=optimizer,
         lr_scheduler=lr_scheduler,
         model_parameters=[p for p in model.parameters() if p.requires_grad],
         mpu=parallel_state if config.pp_size == 1 else None,
-        config=config.ds_config
+        config=config.ds_config,
     )
+    config.train_micro_batch_size = engine.train_micro_batch_size_per_gpu()
+    config.gradient_accumulation_steps = engine.gradient_accumulation_steps()
     return engine, optimizer, _, lr_scheduler
 
+
 def _decompose_slurm_nodes(s):
-    #使用正则表达式找到所有符合模式的子串
-    sub_strings = re.findall(r'[\w-]+\-\[[^\]]*\]|[\w-]+\-\d+', s)
+    # 使用正则表达式找到所有符合模式的子串
+    sub_strings = re.findall(r"[\w-]+\-\[[^\]]*\]|[\w-]+\-\d+", s)
 
     results = []
 
     for sub_s in sub_strings:
         # 搜索括号内的元素
-        bracket_content = re.search('\[([^\]]+)\]', sub_s)
+        bracket_content = re.search("\[([^\]]+)\]", sub_s)
         if bracket_content:
             # 获取前缀部分
-            prefix = sub_s.split('[')[0]
+            prefix = sub_s.split("[")[0]
             # 获取括号内的所有元素
-            elements = bracket_content.group(1).split(',')
+            elements = bracket_content.group(1).split(",")
             for element in elements:
-                if '-' in element:  # 如果元素是一个范围
-                    start, end = [int(i) for i in element.split('-')]
-                    results.extend(f'{prefix}{i}' for i in range(start, end+1))
+                if "-" in element:  # 如果元素是一个范围
+                    start, end = [int(i) for i in element.split("-")]
+                    results.extend(f"{prefix}{i}" for i in range(start, end + 1))
                 else:  # 如果元素是一个单独的数字
                     results.append(prefix + element)
         else:  # 如果没有括号，直接添加到结果中
@@ -145,7 +189,7 @@ def setup_distribution(config) -> None:
     patch_transformers(config)
     patch_deepspeed(config)
     patch_megatron()
-    patch_peft()
+    patch_peft(config)
     if "WORLD_SIZE" in os.environ.keys():
         # launch from pytorch
         master_addr = os.environ.get("MASTER_ADDR", "localhost")
@@ -169,7 +213,9 @@ def setup_distribution(config) -> None:
             node_list = sorted(node_list)
             master_addr = node_list[0]
             os.environ["MASTER_ADDR"] = f"{master_addr}"
-            result = subprocess.run(["scontrol", "show", "node", master_addr], capture_output=True)
+            result = subprocess.run(
+                ["scontrol", "show", "node", master_addr], capture_output=True
+            )
             result = re.search(r"NodeAddr=(.*?)\s", result.stdout.decode())
             if result:
                 master_addr = result.groups(1)[0]
@@ -185,43 +231,49 @@ def setup_distribution(config) -> None:
         os.environ["LOCAL_RANK"] = os.environ["SLURM_LOCALID"]
         os.environ["RANK"] = os.environ["SLURM_PROCID"]
         os.environ["WORLD_SIZE"] = os.environ["SLURM_NTASKS"]
-    deepspeed.init_distributed(dist_backend='nccl',
-                               auto_mpi_discovery=False,
-                               init_method="tcp://{}:{}".format(
-                                   master_addr,
-                                   master_port),
-                               world_size=int(os.environ["WORLD_SIZE"]),
-                               rank=int(os.environ["RANK"]))
+    deepspeed.init_distributed(
+        dist_backend="nccl",
+        auto_mpi_discovery=False,
+        init_method="tcp://{}:{}".format(master_addr, master_port),
+        world_size=int(os.environ["WORLD_SIZE"]),
+        rank=int(os.environ["RANK"]),
+    )
     parallel_state.initialize_model_parallel(
         tensor_model_parallel_size=config.tp_size,
-        pipeline_model_parallel_size=config.pp_size
+        pipeline_model_parallel_size=config.pp_size,
     )
     # random seed has to be set after deepspeed.init_distributed
     set_seed(config)
-    torch.cuda.set_device(torch.device('cuda:{}'.format(os.environ["LOCAL_RANK"])))
+    torch.cuda.set_device(torch.device("cuda:{}".format(os.environ["LOCAL_RANK"])))
     os.environ["COLLIE_PP_RANK"] = "0"
     os.environ["COLLIE_TP_RANK"] = str(parallel_state.get_tensor_model_parallel_rank())
     os.environ["COLLIE_DP_RANK"] = str(parallel_state.get_data_parallel_rank())
 
 
 def set_seed(config):
-    """设置随机数种子。
-    """
+    """设置随机数种子。"""
     tensor_parallel.model_parallel_cuda_manual_seed(config.seed)
     set_random_seed(config.seed)
 
+
 def patch_deepspeed(config):
-    if hasattr(config, "ds_config") \
-            and "zero_optimization" in config.ds_config.keys() \
-            and "offload_optimizer" in config.ds_config["zero_optimization"].keys() \
-            and "pin_memory" in config.ds_config["zero_optimization"]["offload_optimizer"].keys() \
-            and not config.ds_config["zero_optimization"]["offload_optimizer"]["pin_memory"]:
+    if (
+        hasattr(config, "ds_config")
+        and "zero_optimization" in config.ds_config.keys()
+        and "offload_optimizer" in config.ds_config["zero_optimization"].keys()
+        and "pin_memory"
+        in config.ds_config["zero_optimization"]["offload_optimizer"].keys()
+        and not config.ds_config["zero_optimization"]["offload_optimizer"]["pin_memory"]
+    ):
         get_accelerator().pin_memory = lambda x: x
-    if hasattr(config, "ds_config") \
-            and "zero_optimization" in config.ds_config.keys() \
-            and "offload_param" in config.ds_config["zero_optimization"].keys() \
-            and "pin_memory" in config.ds_config["zero_optimization"]["offload_param"].keys() \
-            and not config.ds_config["zero_optimization"]["offload_param"]["pin_memory"]:
+    if (
+        hasattr(config, "ds_config")
+        and "zero_optimization" in config.ds_config.keys()
+        and "offload_param" in config.ds_config["zero_optimization"].keys()
+        and "pin_memory"
+        in config.ds_config["zero_optimization"]["offload_param"].keys()
+        and not config.ds_config["zero_optimization"]["offload_param"]["pin_memory"]
+    ):
         get_accelerator().pin_memory = lambda x: x
     raw_init = copy.deepcopy(DeepSpeedZeroOptimizer.__init__)
 
@@ -234,7 +286,9 @@ def patch_deepspeed(config):
                 continue
 
     DeepSpeedZeroOptimizer.__init__ = safe_init
-    raw_initialize_optimizer_states = copy.deepcopy(DeepSpeedZeroOptimizer.initialize_optimizer_states)
+    raw_initialize_optimizer_states = copy.deepcopy(
+        DeepSpeedZeroOptimizer.initialize_optimizer_states
+    )
 
     def safe_initialize_optimizer_states(self, *args, **kwargs):
         while True:
@@ -244,15 +298,20 @@ def patch_deepspeed(config):
             except RuntimeError as e:
                 continue
 
-    DeepSpeedZeroOptimizer.initialize_optimizer_states = safe_initialize_optimizer_states
-    
+    DeepSpeedZeroOptimizer.initialize_optimizer_states = (
+        safe_initialize_optimizer_states
+    )
+
     raw_wandb_init = copy.deepcopy(WandbMonitor.__init__)
+
     def collie_wandb_init(self, wandb_config):
         raw_wandb_init(self, wandb_config)
         import wandb
+
         wandb.run.name = wandb_config.job_name
         # this causes bugs
         # wandb.config.update(wandb_config.config, allow_val_change=True)
+
     WandbMonitor.__init__ = collie_wandb_init
 
     # LayerSpec
@@ -265,42 +324,58 @@ def patch_deepspeed(config):
             self.global_rank = dist.get_rank()
         else:
             self.global_rank = -1
+
     LayerSpec.__init__ = layer_spec_init
-        
+
+
 def patch_transformers(config):
     global _hf_deepspeed_config_weak_ref
     ds_config = HfDeepSpeedConfig(config.ds_config)
     # weak ref -> strong ref
     _hf_deepspeed_config_weak_ref = lambda: ds_config
 
+
 def patch_megatron():
-    parallel_state.get_model_parallel_world_size = lambda: parallel_state.get_tensor_model_parallel_world_size()
-    parallel_state.get_model_parallel_rank = lambda: parallel_state.get_tensor_model_parallel_rank()
-    parallel_state.get_pipe_parallel_rank = lambda: parallel_state.get_pipeline_model_parallel_rank()
-    
+    parallel_state.get_model_parallel_world_size = (
+        lambda: parallel_state.get_tensor_model_parallel_world_size()
+    )
+    parallel_state.get_model_parallel_rank = (
+        lambda: parallel_state.get_tensor_model_parallel_rank()
+    )
+    parallel_state.get_pipe_parallel_rank = (
+        lambda: parallel_state.get_pipeline_model_parallel_rank()
+    )
+
+
 def patch_bitesandbytes(config: CollieConfig):
     # 较低版本的 transformers 没有 load_in_4bit
-    if getattr(config.quantization_config, "load_in_4bit", False) or \
-        config.quantization_config.load_in_8bit:
+    if (
+        getattr(config.quantization_config, "load_in_4bit", False)
+        or config.quantization_config.load_in_8bit
+    ):
         from bitsandbytes.nn import Int8Params, Params4bit
+
         raw_cuda_8bit = Int8Params.cuda
+
         def cuda_8bit(self, device):
             if self.data.is_cuda:
                 return self
             else:
                 return raw_cuda_8bit(self, device)
+
         Int8Params.cuda = cuda_8bit
         raw_cuda_4bit = Params4bit.cuda
+
         def cuda_4bit(self, device):
             if self.data.is_cuda:
                 return self
             else:
                 return raw_cuda_4bit(self, device)
-        Params4bit.cuda = cuda_4bit
-        
 
-def broadcast_tensor(tensor, dtype=None, src=0, shape=None,
-                     ndim=None, group=None):
+        Params4bit.cuda = cuda_4bit
+
+
+def broadcast_tensor(tensor, dtype=None, src=0, shape=None, ndim=None, group=None):
     """从 ``src`` 广播 ``tensor``。
 
     该函数支持广播 ``tensor`` 的维度和类型。如果 ``ndim`` 和 ``shape`` 为 ``None``
@@ -351,6 +426,7 @@ def broadcast_tensor(tensor, dtype=None, src=0, shape=None,
     dist.broadcast(tensor, src, group)
     return tensor
 
+
 class Env:
     """**CoLLiE** 的环境变量，可以从中获取各种并行的 world_size 和 rank。
 
@@ -361,6 +437,7 @@ class Env:
         from collie.utils import env
         print(env.dp_rank)
     """
+
     @property
     def seed(self):
         """
@@ -536,20 +613,22 @@ class Env:
             return True
         return parallel_state.is_pipeline_first_stage()
 
+
 env = Env()
 
-def launch(target: callable,
-           devices: str,
-           port: int=12701):
-    """ 在一台节点上以 torchrun 风格启动多进程
+
+def launch(target: callable, devices: str, port: int = 12701):
+    """在一台节点上以 torchrun 风格启动多进程
     :param target: 启动的函数
     :param devices: 启动的设备，以逗号分隔
     :param port: 启动的端口
     """
+
     def _wrapper(environ):
         torch.set_default_device(torch.device(int(environ.get("LOCAL_RANK"))))
         os.environ.update(environ)
         target()
+
     set_start_method("fork")
     processes = []
     for rank in range(len(devices.split(","))):
@@ -564,18 +643,20 @@ def launch(target: callable,
     [p.start() for p in processes]
     [p.join() for p in processes]
 
-def initialize(args=None,
-               model: torch.nn.Module = None,
-               optimizer = None,
-               model_parameters: Optional[torch.nn.Module] = None,
-               training_data: Optional[torch.utils.data.Dataset] = None,
-               lr_scheduler = None,
-               mpu=None,
-               dist_init_required: Optional[bool] = None,
-               collate_fn=None,
-               config=None,
-               config_params=None):
 
+def initialize(
+    args=None,
+    model: torch.nn.Module = None,
+    optimizer=None,
+    model_parameters: Optional[torch.nn.Module] = None,
+    training_data: Optional[torch.utils.data.Dataset] = None,
+    lr_scheduler=None,
+    mpu=None,
+    dist_init_required: Optional[bool] = None,
+    collate_fn=None,
+    config=None,
+    config_params=None,
+):
     # Disable zero.Init context if it's currently enabled
     zero.partition_parameters.shutdown_init_context()
 
@@ -583,8 +664,11 @@ def initialize(args=None,
 
     global dist
     from deepspeed import comm as dist
+
     dist_backend = get_accelerator().communication_backend_name()
-    dist.init_distributed(dist_backend=dist_backend, dist_init_required=dist_init_required)
+    dist.init_distributed(
+        dist_backend=dist_backend, dist_init_required=dist_init_required
+    )
 
     # Set config using config_params for backwards compat
     if config is None and config_params is not None:
@@ -593,58 +677,78 @@ def initialize(args=None,
     # Check for deepscale_config for backwards compat
     if hasattr(args, "deepscale_config") and args.deepscale_config is not None:
         if hasattr(args, "deepspeed_config"):
-            assert (args.deepspeed_config is
-                    None), "Not sure how to proceed, we were given both a deepscale_config and deepspeed_config"
+            assert (
+                args.deepspeed_config is None
+            ), "Not sure how to proceed, we were given both a deepscale_config and deepspeed_config"
         args.deepspeed_config = args.deepscale_config
         args.deepscale_config = None
 
     # Check that we have only one config passed
     if hasattr(args, "deepspeed_config") and args.deepspeed_config is not None:
-        assert config is None, "Not sure how to proceed, we were given deepspeed configs in the deepspeed arguments and deepspeed.initialize() function call"
+        assert (
+            config is None
+        ), "Not sure how to proceed, we were given deepspeed configs in the deepspeed arguments and deepspeed.initialize() function call"
         config = args.deepspeed_config
-    assert config != None, "DeepSpeed requires --deepspeed_config to specify configuration file"
-    if not isinstance(model, PipelineModule) and not (isinstance(model, PeftModel) and isinstance(model.get_base_model(), PipelineModule)):
+    assert (
+        config != None
+    ), "DeepSpeed requires --deepspeed_config to specify configuration file"
+    if not isinstance(model, PipelineModule) and not (
+        isinstance(model, PeftModel)
+        and isinstance(model.get_base_model(), PipelineModule)
+    ):
         config_class = DeepSpeedConfig(config, mpu)
         if config_class.hybrid_engine.enabled:
-            engine = DeepSpeedHybridEngine(args=args,
-                                           model=model,
-                                           optimizer=optimizer,
-                                           model_parameters=model_parameters,
-                                           training_data=training_data,
-                                           lr_scheduler=lr_scheduler,
-                                           mpu=mpu,
-                                           dist_init_required=dist_init_required,
-                                           collate_fn=collate_fn,
-                                           config=config,
-                                           config_class=config_class)
+            engine = DeepSpeedHybridEngine(
+                args=args,
+                model=model,
+                optimizer=optimizer,
+                model_parameters=model_parameters,
+                training_data=training_data,
+                lr_scheduler=lr_scheduler,
+                mpu=mpu,
+                dist_init_required=dist_init_required,
+                collate_fn=collate_fn,
+                config=config,
+                config_class=config_class,
+            )
         else:
-            engine = DeepSpeedEngine(args=args,
-                                     model=model,
-                                     optimizer=optimizer,
-                                     model_parameters=model_parameters,
-                                     training_data=training_data,
-                                     lr_scheduler=lr_scheduler,
-                                     mpu=mpu,
-                                     dist_init_required=dist_init_required,
-                                     collate_fn=collate_fn,
-                                     config=config,
-                                     config_class=config_class)
+            engine = DeepSpeedEngine(
+                args=args,
+                model=model,
+                optimizer=optimizer,
+                model_parameters=model_parameters,
+                training_data=training_data,
+                lr_scheduler=lr_scheduler,
+                mpu=mpu,
+                dist_init_required=dist_init_required,
+                collate_fn=collate_fn,
+                config=config,
+                config_class=config_class,
+            )
     else:
-        from .pipeline_engine import ColliePipelineEngine  
+        from .pipeline_engine import ColliePipelineEngine
+
         assert mpu is None, "mpu must be None with pipeline parallelism"
         mpu = model.mpu()
         config_class = DeepSpeedConfig(config, mpu)
-        engine = ColliePipelineEngine(args=args,
-                                model=model,
-                                optimizer=optimizer,
-                                model_parameters=model_parameters,
-                                training_data=training_data,
-                                lr_scheduler=lr_scheduler,
-                                mpu=mpu,
-                                dist_init_required=dist_init_required,
-                                collate_fn=collate_fn,
-                                config=config,
-                                config_class=config_class)
+        engine = ColliePipelineEngine(
+            args=args,
+            model=model,
+            optimizer=optimizer,
+            model_parameters=model_parameters,
+            training_data=training_data,
+            lr_scheduler=lr_scheduler,
+            mpu=mpu,
+            dist_init_required=dist_init_required,
+            collate_fn=collate_fn,
+            config=config,
+            config_class=config_class,
+        )
 
-    return_items = [engine, engine.optimizer, engine.training_dataloader, engine.lr_scheduler]
+    return_items = [
+        engine,
+        engine.optimizer,
+        engine.training_dataloader,
+        engine.lr_scheduler,
+    ]
     return tuple(return_items)

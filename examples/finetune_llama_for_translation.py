@@ -1,8 +1,7 @@
 import sys
 sys.path.append("..")
-import torch
-from datasets import load_dataset
-from transformers import LlamaTokenizer, GenerationConfig
+
+from rich.traceback import install
 from collie import Trainer, EvaluatorForPerplexity, LlamaForCausalLM, CollieConfig, PPLMetric, AccuracyMetric, DecodeMetric, CollieDatasetForTraining, CollieDatasetForGeneration, \
     LossMonitor, TGSMonitor, MemoryMonitor, EvalMonitor, GradioProvider, EvaluatorForGeneration, LRMonitor, BleuMetric, DashProvider
     
@@ -13,17 +12,19 @@ config.eval_batch_size = 1
 config.gradient_accumulation_steps = 128
 config.eval_per_n_epochs = 1
 config.train_epochs = 10
+config.use_flash = True
 config.ds_config = {
     "fp16": {
         "enabled": True
     },
     "monitor_config": {
         "enabled": True,
+        "tag": "v2",
         "wandb": {
             "enabled": True,
             "team": "00index",
             "project": "collie-experiment",
-            "group": "translation"
+            "group": "flash-attention-tp"
         }
     }
 }
@@ -55,7 +56,7 @@ lr_scheduler = torch.optim.lr_scheduler.StepLR(
 tokenizer = LlamaTokenizer.from_pretrained("decapoda-research/llama-7b-hf", add_eos_token=False, add_bos_token=False)
 # Convert to CoLLie Dataset
 train_dataset = CollieDatasetForTraining(train_dataset,
-                                          tokenizer=tokenizer)
+                                         tokenizer=tokenizer)
 eval_dataset_ppl = CollieDatasetForTraining(eval_dataset_ppl,
                                             tokenizer=tokenizer)
 eval_dataset_bleu = CollieDatasetForGeneration(eval_dataset_bleu,
@@ -89,6 +90,12 @@ evaluator_bleu = EvaluatorForGeneration(
         max_new_tokens=100,
     )
 )
+server = Server(model=model, data_provider=GradioProvider(tokenizer, stream=True,
+                                                          generation_config=GenerationConfig(
+                                                              eos_token_id=tokenizer.eos_token_id,
+                                                              pad_token_id=tokenizer.pad_token_id,
+                                                              max_new_tokens=100,
+                                                          )))
 # Prepare Trainer
 trainer = Trainer(
     model=model,
@@ -103,12 +110,7 @@ trainer = Trainer(
         MemoryMonitor(config),
         LRMonitor(config)
     ],
-    data_provider=DashProvider(tokenizer, port=12888, stream=True,
-                                 generation_config=GenerationConfig(
-                                     eos_token_id=tokenizer.eos_token_id,
-                                     pad_token_id=tokenizer.pad_token_id,
-                                     max_new_tokens=100,
-                                 )),
+    server=server,
     evaluators=[evaluator_ppl, evaluator_bleu]
 )
 trainer.train()

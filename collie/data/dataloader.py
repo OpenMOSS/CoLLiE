@@ -20,6 +20,7 @@ class CollieDataLoader(object):
     :param shuffle:
     :param accumulation_steps:
     :param collate_fn:
+    :param num_workers:
     :param sampler:
     :param drop_last: 当最后一个 batch 样本数不足时是否丢弃。在流水线情况下如果为
         ``False``，则会补齐最后一个 batch。
@@ -117,7 +118,8 @@ class CollieDataLoader(object):
                                                last_batch)
             self.dataloader = DataLoader(self.dataset,
                                          batch_sampler=batch_sampler,
-                                         collate_fn=self.collate_fn)
+                                         collate_fn=self.collate_fn,
+                                         num_workers=self.num_workers)
             self.data = (x for x in self.dataloader)
 
             return self.dataloader

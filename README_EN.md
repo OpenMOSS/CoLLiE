@@ -19,8 +19,9 @@ CoLLiE (Collaborative Tuning of Large Language Models in an Efficient Way) is a 
 </h4>
 
 ## Latest News
-* [2023/12] 🎉 CoLLiE is accepted by EMNLP System Demonstrations: [CoLLiE: Collaborative Training of Large Language Models in an Efficient Way](https://arxiv.org/abs/2312.00407)
-* [2023/07] Release python package collie-lm(1.0.2). You can find more detials in this [link](https://pypi.org/project/collie-lm/#history).
+- [2023/12] 🎉 CoLLiE is accepted by EMNLP System Demonstrations: [CoLLiE: Collaborative Training of Large Language Models in an Efficient Way](https://arxiv.org/abs/2312.00407)
+- [2023/08] [Memory requirements](#memory-requirements) and [throughput](#throughput) are added to Evaluation.
+- [2023/07] Release python package collie-lm(1.0.2). You can find more detials in [PyPI](https://pypi.org/project/collie-lm/#history).
 
 ## Table of Contents
 <ul>
@@ -98,14 +99,18 @@ It primarily includes the following four features:
 
 ## Evaluation
 
-### ThroughPut
-|            | 7B   | 13B  | 30B  | 65B  |
-| ---------- | ---- | ---- | ---- | ---- |
-| Finetune   | 2    | 3    | 6    | 16   |
-| LoRA       | 1    | 1    | 1    | 2    |
-| LOMO       | 1    | 1    | 1    | 2    |
+### Memory Requirements
 
-Note: Minimum number of GPUs (A100) required for each model with Adam's optimiser
+The memory requirements are profiled with tensor parallelism.
+The results with batch size 1, sequence length 2048 and gradient accumulation steps 2 are shown below:
+
+<img src="docs/assets/images/mem_req.png" width="400px">
+
+### Throughput
+The throughput of using Adam optimizer with different batch sizes on A100 and RTX-3090 is shown below:
+
+<img src="docs/assets/images/throughput.png" width="800px">
+
 ## Installation
 ```bash
 pip install git+https://github.com/OpenLMLab/collie.git

@@ -1,8 +1,10 @@
-import os
 import torch
 from torch.optim import Optimizer
 import torch.distributed as dist
-from transformers.deepspeed import is_deepspeed_zero3_enabled
+try:
+    from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
+except ImportError:
+    from transformers.deepspeed import is_deepspeed_zero3_enabled
 
 from ..utils.dist_utils import env
 from collie.log import logger
@@ -26,13 +28,18 @@ class Lomo(Optimizer):
     :param loss_scale_args: 用于初始化 :class:`DynamicLossScaler` 的参数
     """
 
-    def __init__(self, model, lr=1e-3, clip_grad_norm=None, clip_grad_value=None, loss_scale_args={}):
+    def __init__(self, model, lr=1e-3, clip_grad_norm=None, clip_grad_value=None, weight_decay=0.0, loss_scale_args={}):
         self.model = model
         self.lr = lr
         self.clip_grad_norm = clip_grad_norm
         self.clip_grad_value = clip_grad_value
         self.loss_scaler = None
         self.loss_scale_args = loss_scale_args
+        self.weight_decay = weight_decay
+        if self.weight_decay > 0.0:
+            self.do_weight_decay = True
+        else:
+            self.do_weight_decay = False
 
         # for grad norm
         if self.clip_grad_norm is not None and self.clip_grad_norm <= 0:
@@ -98,6 +105,8 @@ class Lomo(Optimizer):
                                 # Normalize the gradient according to its norm (computed in another pass)
                                 grad_fp32.mul_(self.clip_coef)
                             p_fp32 = p.data.to(torch.float32)
+                            if self.do_weight_decay:
+                                p_fp32.mul_(1.0 - self.lr * self.weight_decay)
                             p_fp32.add_(grad_fp32, alpha=-self.lr)
                             p.data.copy_(p_fp32)
 
@@ -146,6 +155,8 @@ class Lomo(Optimizer):
                                 partitioned_grad_fp32.mul_(self.clip_coef)
 
                             partitioned_p = param_fp32.narrow(0, 0, end - start)
+                            if self.do_weight_decay:
+                                partitioned_p.mul_(1.0 - self.lr * self.weight_decay)
                             partitioned_p.add_(partitioned_grad_fp32, alpha=-self.lr)
                             p.ds_tensor[ : end - start] = partitioned_p
             return x
@@ -162,7 +173,7 @@ class Lomo(Optimizer):
         if self.first_backward:
             self.first_backward = False
             if loss.dtype == torch.float16:
-                self.loss_scaler = DynamicLossScaler(self.loss_scale_args)
+                self.loss_scaler = DynamicLossScaler(**self.loss_scale_args)
                 if self.clip_grad_norm is None:
                     self.clip_grad_norm = 1.0
                     logger.rank_zero_warning(
@@ -210,7 +221,6 @@ class Lomo(Optimizer):
                 for n, p in self.model.named_parameters():
                     p.grad = None
             return
-
 
         with torch.no_grad():
             # The norm is computed over all gradients together, as if they were

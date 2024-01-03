@@ -2,12 +2,14 @@ import os
 from copy import deepcopy
 from typing import Callable, Dict, Optional, Tuple, Union
 
-from collie.log.logger import logger
 from collie.driver.io import IODriver
+from collie.log.logger import logger
 from collie.utils import env
+from peft import PeftModel
+
 from .has_monitor_callback import ResultsMonitor
 
-__all__ = ['TopkSaver']
+__all__ = ["TopkSaver"]
 
 
 class Saver:
@@ -32,8 +34,14 @@ class Saver:
         save_model` 的额外参数。
     """
 
-    def __init__(self, folder: Optional[str] = None, model_only: bool = True,
-                 peft_only: bool = True, process_exclusion: bool = False, **kwargs):
+    def __init__(
+        self,
+        folder: Optional[str] = None,
+        model_only: bool = True,
+        peft_only: bool = True,
+        process_exclusion: bool = False,
+        **kwargs,
+    ):
         if folder is None:
             folder = os.path.abspath(os.getcwd())
 
@@ -42,16 +50,12 @@ class Saver:
         self.peft_only = peft_only
         self.process_exclusion = process_exclusion
         self.kwargs = kwargs
+        self.save_fn_name = None  # Will be specified in `save` function because `save` knows whether the model is a PeftModel by the `trainer` parameter.
 
-        if peft_only:
-            self.save_fn_name = "save_peft"
-        else:
-            if model_only:
-                self.save_fn_name = "save_model"
-            else:
-                self.save_fn_name = "save_checkpoint"
-        logger.info('The checkpoint will be saved in this folder '
-                    f'for this time: {self.save_folder}.')
+        logger.info(
+            "The checkpoint will be saved in this folder "
+            f"for this time: {self.save_folder}."
+        )
 
     def save(self, trainer, folder_name):
         """
@@ -65,11 +69,21 @@ class Saver:
         :return: 实际发生保存的 folder 绝对路径。如果为 None 则没有创建。
         """
         folder = os.path.join(self.save_folder, folder_name)
+
+        if self.save_fn_name is None:
+            if isinstance(trainer.model, PeftModel) and self.peft_only:
+                self.save_fn_name = "save_peft"
+            else:
+                if self.model_only:
+                    self.save_fn_name = "save_model"
+                else:
+                    self.save_fn_name = "save_checkpoint"
+
         save_fn = getattr(trainer, self.save_fn_name)
-        save_fn(folder, self.process_exclusion, **self.kwargs)
+        save_fn(path=folder, process_exclusion=self.process_exclusion, **self.kwargs)
 
         return folder
-    
+
     def rm(self, folder_name):
         r"""移除 folder/folder_name 。
 
@@ -82,23 +96,25 @@ class Saver:
             io_driver.delete(folder)
 
     def state_dict(self):
-        states = {'save_folder': str(self.save_folder)}
+        states = {"save_folder": str(self.save_folder)}
         return states
 
     def load_state_dict(self, states):
-        save_folder = states['save_folder']
+        save_folder = states["save_folder"]
         # 用户手动传入的 folder 应有最高的优先级
-        if self.folder is not None:
+        if self.save_folder is not None:
             logger.info(
-                'Detected: The checkpoint was previously saved in '
-                f'{save_folder}, different from the folder {self.save_folder} '
-                'you provided, what you provide has higher priority.')
+                "Detected: The checkpoint was previously saved in "
+                f"{save_folder}, different from the folder {self.save_folder} "
+                "you provided, what you provide has higher priority."
+            )
         elif not os.path.exists(save_folder):
             logger.info(
-                f'The resuming checkpoint folder {save_folder} is not exists, '
-                f'checkpoint will save to {os.path.abspath(self.save_folder)}.')
+                f"The resuming checkpoint folder {save_folder} is not exists, "
+                f"checkpoint will save to {os.path.abspath(self.save_folder)}."
+            )
         else:
-            logger.info(f'Resume to save checkpoint in path: {save_folder}.')
+            logger.info(f"Resume to save checkpoint in path: {save_folder}.")
             self.save_folder = save_folder
 
 
@@ -151,7 +167,7 @@ class TopkQueue:
         self.topk_dict.update(states)
 
     def __str__(self):
-        return f'topk-{self.topk}'
+        return f"topk-{self.topk}"
 
     def __bool__(self):
         # 当 topk 为 0 时，表明该 topk_queue 无意义。
@@ -193,24 +209,26 @@ class TopkSaver(ResultsMonitor, Saver):
         save_model` 的额外参数。
     """
 
-    def __init__(self,
-                 topk: int = 0,
-                 monitor: Optional[Union[str, Callable]] = None,
-                 larger_better: bool = True,
-                 folder: Optional[str] = None,
-                 process_exclusion: bool = False,
-                 model_only: bool = True,
-                 peft_only: bool = True,
-                 **kwargs):
+    def __init__(
+        self,
+        topk: int = 0,
+        monitor: Optional[Union[str, Callable]] = None,
+        larger_better: bool = True,
+        folder: Optional[str] = None,
+        process_exclusion: bool = False,
+        model_only: bool = True,
+        peft_only: bool = True,
+        **kwargs,
+    ):
         if topk is None:
             topk = 0
         ResultsMonitor.__init__(self, monitor, larger_better)
         Saver.__init__(self, folder, model_only, peft_only, process_exclusion, **kwargs)
 
         if monitor is not None and topk == 0:
-            raise RuntimeError('`monitor` is set, but `topk` is 0.')
+            raise RuntimeError("`monitor` is set, but `topk` is 0.")
         if topk != 0 and monitor is None:
-            raise RuntimeError('`topk` is set, but `monitor` is None.')
+            raise RuntimeError("`topk` is set, but `monitor` is None.")
 
         self.topk_queue = TopkQueue(topk)
 
@@ -227,11 +245,14 @@ class TopkSaver(ResultsMonitor, Saver):
             monitor_value = self.get_monitor_value(results)
             if monitor_value is None:
                 return None
-            key = f'epoch_{trainer.epoch_idx}-' \
-                  f'batch_{trainer.batch_idx}' \
-                  f'-{self.monitor_name}_{monitor_value}'
+            key = (
+                f"epoch_{trainer.epoch_idx}-"
+                f"batch_{trainer.batch_idx}"
+                f"-{self.monitor_name}_{monitor_value}"
+            )
             pop_key, pop_value = self.topk_queue.push(
-                key, monitor_value if self.larger_better else -monitor_value)
+                key, monitor_value if self.larger_better else -monitor_value
+            )
             if pop_key == key:  # 说明不足以构成 topk，被退回了
                 return None
             folder = self.save(trainer, key)
@@ -244,32 +265,34 @@ class TopkSaver(ResultsMonitor, Saver):
 
     def state_dict(self):
         states = {
-            'topk_queue': self.topk_queue.state_dict(),
-            'save_folder': str(self.save_folder),
+            "topk_queue": self.topk_queue.state_dict(),
+            "save_folder": str(self.save_folder),
         }
         if isinstance(self._real_monitor, str):
-            states['_real_monitor'] = self._real_monitor
+            states["_real_monitor"] = self._real_monitor
 
         return states
 
     def load_state_dict(self, states):
-        topk_queue_states = states['topk_queue']
+        topk_queue_states = states["topk_queue"]
         self.topk_queue.load_state_dict(topk_queue_states)
 
-        save_folder = states['save_folder']
+        save_folder = states["save_folder"]
         # 用户手动传入的 folder 应有最高的优先级
-        if self.folder is not None:
+        if self.save_folder is not None:
             logger.info(
-                'Detected: The checkpoint was previously saved in '
-                f'{save_folder}, different from the folder {self.save_folder} '
-                'you provided, what you provide has higher priority.')
+                "Detected: The checkpoint was previously saved in "
+                f"{save_folder}, different from the folder {self.save_folder} "
+                "you provided, what you provide has higher priority."
+            )
         elif not os.path.exists(save_folder):
             logger.info(
-                f'The resuming checkpoint folder {save_folder} is not exists, '
-                f'checkpoint will save to {os.path.abspath(self.save_folder)}.')
+                f"The resuming checkpoint folder {save_folder} is not exists, "
+                f"checkpoint will save to {os.path.abspath(self.save_folder)}."
+            )
         else:
-            logger.info(f'Resume to save checkpoint in path: {save_folder}.')
+            logger.info(f"Resume to save checkpoint in path: {save_folder}.")
             self.save_folder = save_folder
 
-        if '_real_monitor' in states:
-            self._real_monitor = states['_real_monitor']
+        if "_real_monitor" in states:
+            self._real_monitor = states["_real_monitor"]

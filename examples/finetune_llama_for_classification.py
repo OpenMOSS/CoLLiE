@@ -87,7 +87,6 @@ trainer = Trainer(
         MemoryMonitor(config),
         LRMonitor(config)
     ],
-    data_provider=GradioProvider(LlamaTokenizer.from_pretrained("decapoda-research/llama-7b-hf"), port=12300, stream=True),
     evaluators=[evaluator_ppl, evaluator_cls]
 )
 trainer.train()

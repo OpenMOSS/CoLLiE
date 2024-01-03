@@ -11,31 +11,7 @@ from collie.callbacks import CheckpointCallback
 from collie.models import Moss003MoonForCausalLM
 from collie.utils import env
 from collie.log import logger
-
-DS_CONFIG = {
-    "fp16": {
-        "enabled": True
-    },
-    "zero_allow_untested_optimizer": True,
-    "zero_force_ds_cpu_optimizer": False,
-
-    "optimizer": {
-        "type": "Adam",
-        "params": {
-            "lr": 2e-5,
-            "weight_decay": 0.1
-        }
-    },
-
-    "zero_optimization": {
-        "stage": 1,
-        "offload_optimizer": {
-            "device": "cpu",
-            "pin_memory": False
-        }
-    },
-    "steps_per_print": 2000,
-}
+from tests.helpers import create_ds_config, import_class
 
 def check_and_load(trainer, folder, subfolder, model_only):
     path = os.path.join(folder, subfolder)
@@ -45,21 +21,23 @@ def check_and_load(trainer, folder, subfolder, model_only):
     else:
         trainer.load_checkpoint(path)
 
-def test_checkpoint_callback(pretrained_model, model_only, folder,
-                             dp_size, tp_size, pp_size):
+def test_checkpoint_callback(model_type, model_path, folder, model_only,
+                             dp_size, tp_size, pp_size, zero):
     try:
+        ds_config = create_ds_config(fp16=True, zero=zero, offload=True, optimizer="Adam", lr=2e-5)
         config = CollieConfig.from_pretrained(
-            pretrained_model, tp_size=tp_size, dp_size=dp_size, pp_size=pp_size, 
+            model_path, tp_size=tp_size, dp_size=dp_size, pp_size=pp_size, 
             train_epochs=5, eval_per_n_steps=0, eval_per_n_epochs=0,
             train_micro_batch_size=2, gradient_accumulation_steps=2,
-            eval_batch_size=1, ds_config=DS_CONFIG, trust_remote_code=True
+            eval_batch_size=1, ds_config=ds_config, trust_remote_code=True
         )
         # tokenizer and dataset
-        tokenizer = AutoTokenizer.from_pretrained(pretrained_model, trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
         train_sample = tokenizer("Collie is a python package for finetuning large language models.", return_tensors="pt").input_ids.squeeze(0)
         train_dataset = [{"input_ids": train_sample, "labels": train_sample} for _ in range(100)]
 
-        model = Moss003MoonForCausalLM.from_pretrained(pretrained_model, config=config)
+        model_cls = import_class(model_type)
+        model = model_cls.from_pretrained(model_path, config=config)
 
         every_n_epochs = 2
         every_n_batches = 10
@@ -77,22 +55,21 @@ def test_checkpoint_callback(pretrained_model, model_only, folder,
         assert os.path.exists(folder)
         ckpts = []
         for epoch in range(config.train_epochs):
-            if (epoch + 1) % every_n_epochs == 0:
-                ckpts.append(f"epoch_{epoch + 1}")
             for n in range(trainer.steps_per_epoch // every_n_batches):
                 ckpts.append(f"epoch_{epoch}-batch_{(n + 1)*every_n_batches}")
+            if (epoch + 1) % every_n_epochs == 0:
+                ckpts.append(f"epoch_{epoch + 1}")
         if last:
             check_and_load(trainer, folder, "last", model_only)
+        print(ckpts)
         if max is not None and max > 0:
             for folder_name in ckpts[:max]:
-                assert not os.path.exists(os.path.join(folder, folder_name))
+                assert not os.path.exists(os.path.join(folder, folder_name)), folder_name
             ckpts = ckpts[-max:]
             for folder_name in ckpts:
-                assert os.path.exists(os.path.join(folder, folder_name))
+                assert os.path.exists(os.path.join(folder, folder_name)), folder_name
         for folder_name in ckpts:
             check_and_load(trainer, folder, folder_name, model_only)
-    except Exception as e:
-        logger.error(traceback.format_exc())
     finally:
         if os.path.exists(folder):
             logger.info(f"folders in checkpoint {folder}/:\n{os.listdir(folder)}")
@@ -101,7 +78,18 @@ def test_checkpoint_callback(pretrained_model, model_only, folder,
 
 
 if __name__ == "__main__":
-    pretrained_model = "/mnt/petrelfs/xingshuhao.dispatch/.cache/huggingface/hub/models--Salesforce--codegen-350M-mono/snapshots/40b7a3b6e99e73bdb497a14b740e7167b3413c74"
-    test_checkpoint_callback(pretrained_model, model_only=True,
-                                folder="_ckpt", dp_size=2, tp_size=1,
-                                pp_size=2)
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--folder", default="_ckpt", type=str)
+    parser.add_argument("--model_path", type=str)
+    parser.add_argument("--model_type", type=str)
+    parser.add_argument("--model_only", action="store_true")
+    parser.add_argument("--dp_size", type=int)
+    parser.add_argument("--tp_size", type=int)
+    parser.add_argument("--pp_size", type=int)
+    parser.add_argument("--zero", default=1, type=int)
+    args = parser.parse_args()
+    test_checkpoint_callback(args.model_type, args.model_path, folder="_ckpt",
+                             model_only=args.model_only, dp_size=args.dp_size,
+                             tp_size=args.tp_size, pp_size=args.pp_size,
+                             zero=args.zero)

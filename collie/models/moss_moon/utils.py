@@ -21,55 +21,6 @@ def apply_rotary_pos_emb(tensor: torch.Tensor, sin: torch.Tensor, cos: torch.Ten
     cos = torch.repeat_interleave(cos[:, :, None, :], 2, 3)
     return (tensor * cos) + (rotate_every_two(tensor) * sin)
 
-def _name_to_pipeline(name):
-    max_pipe_idx = max(env.pipeline_parts)
-    if name.startswith("transformer.wte."):
-        pipe_name = name.replace("transformer.wte.", "1.")
-    elif name.startswith("lm_head."):
-        pipe_name = name.replace("lm_head.", f"{max_pipe_idx - 1}.")
-    elif name.startswith("transformer.ln_f."):
-        pipe_name = name.replace("transformer.ln_f.", f"{max_pipe_idx - 2}.")
-    else:
-        assert name.startswith("transformer.h."), name
-        assert name.split(".")[2].isdigit()
-        name_split = name.split(".")
-        layer_idx = int(name_split[2])
-        name_suffix = name_split[3:]
-        pipe_name = ".".join([str(layer_idx + 3)] + name_suffix)
-
-    return pipe_name
-
-def _name_to_hf(name):
-    """
-    Convert pipeline model's name to normal model.
-
-    Examples: 15.ln_1.bias -> transformer.h.15.ln_1.bias
-    """
-    name_split = name.split(".")
-    parts = env.pipeline_parts
-    layer_pipe_idx = int(name_split[0])
-    if layer_pipe_idx == 1:
-        # 0 -> pre_forward
-        # 1 -> embedding
-        # 2 -> dropout
-        hf_name = 'transformer.wte.weight'
-    elif layer_pipe_idx == parts[-1] - 2:
-        # one before last -> LayerNorm ln_f
-        param_type = name_split[-1] # weight or bias
-        hf_name = 'transformer.ln_f.' + param_type
-    elif layer_pipe_idx == parts[-1] - 1:
-        # last -> Linear lm_head
-        param_type = name_split[-1] # weight or bias
-        hf_name = 'lm_head.' + param_type
-    else:
-        # blocks
-        block_idx = layer_pipe_idx - 3
-        # 15.ln_1.bias -> transformer.h.15.ln_1.bias
-        attr_list = ['transformer', 'h', str(block_idx)] + name_split[1:]
-        hf_name = '.'.join(attr_list)
-
-    return hf_name
-
 def _weight_name_in_current_rank(names):
     if not env.is_pipeline:
         return names
@@ -122,6 +73,8 @@ def _tp_split_dim(name):
     return chunk_dim
 
 def _split_weights(state_dict, tp_rank, tp_size, process_exclusion):
+    if tp_size == 1:
+        return state_dict
     for name in list(state_dict.keys()):
         param = state_dict[name]
         chunk_dim = _tp_split_dim(name)
@@ -142,29 +95,24 @@ def _state_dict_to_load(state_dict, tp_rank, tp_size, process_exclusion):
     """
     Split weights in state_dict and rename if using pipeline.
     """
-    if tp_size > 1:
-        state_dict = _split_weights(state_dict, tp_rank, tp_size,
+    state_dict = _split_weights(state_dict, tp_rank, tp_size,
                                     process_exclusion)
     # 流水线情况下，弹出不需要的并且更名
     if env.is_pipeline:
         cur_names = _weight_name_in_current_rank(state_dict.keys())
         for name in list(state_dict.keys()):
-            if name in cur_names:
-                state_dict[_name_to_pipeline(name)] = state_dict[name]
-            state_dict.pop(name)
-    else:
-        # collie 中的 MOSS 结构不同，lm_head 与其它层在同一级
-        for name in list(state_dict.keys()):
-            new_name = name.replace("transformer.", "")
-            if new_name != name:
-                state_dict[new_name] = state_dict.pop(name)
+            if name not in cur_names:
+                state_dict.pop(name)
 
     return state_dict
 
-def _gather_weights(state_dict, tp_rank, tp_size, tp_group, process_exclusion):
+def _state_dict_to_save(state_dict, tp_rank, tp_size, tp_group,
+                        process_exclusion):
     """
     Gather weights tp tp_rank 0 in tp_group.
     """
+    if tp_size == 1:
+        return state_dict
     for name in list(state_dict.keys()):
         param = state_dict[name]
         chunk_dim = _tp_split_dim(name)
@@ -174,9 +122,9 @@ def _gather_weights(state_dict, tp_rank, tp_size, tp_group, process_exclusion):
         gather_list = [torch.empty_like(param) for _ in range(tp_size)]
         dist.all_gather(gather_list, param, group=tp_group)
         if tp_rank == 0:
-            tensor = concat_tensor(gather_list)
+            tensor = concat_tensor(gather_list, chunk_dim)
             del state_dict[name]
-            del gather_list_cpu
+            del gather_list
             state_dict[name] = tensor
         else:
             del gather_list
@@ -184,26 +132,6 @@ def _gather_weights(state_dict, tp_rank, tp_size, tp_group, process_exclusion):
         if process_exclusion:
             # CPU 内存回收（速度很慢）
             gc.collect()
-
-    return state_dict
-
-def _state_dict_to_save(state_dict, tp_rank, tp_size, tp_group,
-                        process_exclusion):
-    if env.is_pipeline:
-        # rename
-        for name in list(state_dict.keys()):
-            hf_name = _name_to_hf(name)
-            state_dict[hf_name] = state_dict.pop(name)
-    else:
-        for name in list(state_dict.keys()):
-            if name.startswith("lm_head."):
-                continue
-            hf_name = "transformer." + name
-            state_dict[hf_name] = state_dict.pop(name)
-
-    if tp_size > 1:
-        state_dict = _gather_weights(state_dict, tp_rank, tp_size, tp_group,
-                                     process_exclusion)
 
     return state_dict
     

@@ -1,14 +1,13 @@
-rich>=13.3.5
+deepspeed>=0.10.0
 tqdm
 torch>=1.13.0
 einops
-deepspeed>=0.9.5
 transformers>=4.30.2
 sentencepiece
 protobuf==3.20.1
 websockets
 fastapi
-megatron-core
+megatron-core==0.2.0
 tensorboard
 google
 peft
@@ -16,5 +15,6 @@ wandb
 pandas
 psutil
 accelerate>=0.20.3
-bitsandbytes>=0.39.0
+bitsandbytes>=0.41.0
 scipy
+rich>=13.3.5

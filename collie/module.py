@@ -15,31 +15,32 @@ import json
 import torch
 import warnings
 import inspect
+from collections import OrderedDict
 from types import MethodType
-from typing import Optional, List, Sequence, Dict, Any, Tuple
+from typing import Mapping, Optional, List, Sequence, Dict, Any, Tuple
 
 from torch import nn
-from peft import PeftModel
 from torch import distributed as dist
 from transformers.generation.configuration_utils import GenerationConfig
 from megatron.core.tensor_parallel import (ColumnParallelLinear,
                                            RowParallelLinear,
                                            VocabParallelEmbedding)
 from megatron.core import parallel_state
-from deepspeed.runtime.pipe.module import PipelineModule
+from deepspeed.runtime.pipe.module import PipelineModule, LayerSpec, TiedLayerSpec
 from deepspeed.runtime.pipe.topology import (PipeModelDataParallelTopology,
                                              PipelineParallelGrid)
-from deepspeed.runtime.utils import set_random_seed
 from deepspeed.runtime.engine import DeepSpeedEngine
 from deepspeed.runtime.activation_checkpointing import checkpointing
 from deepspeed.accelerator import get_accelerator
 from deepspeed.runtime.pipe.topology import ProcessTopology
+from deepspeed.runtime import utils as ds_utils
 from transformers.generation.utils import GenerationConfig, GenerationMixin
-from transformers.modeling_utils import PretrainedConfig
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from collie.log import logger
-from collie.utils import env, broadcast_tensor, setup_ds_engine
+from collie.utils import env, broadcast_tensor, setup_ds_engine, stack_tensor, concat_tensor
+from collie.models.utils import (kv_cache_to_inputs_for_model, inputs_to_kv_cache_for_model,\
+                                kv_cache_to_inputs_for_layer, inputs_to_kv_cache_for_layer)
 
 class ColumnParallelLinearWithoutBias(ColumnParallelLinear):
     """重写 ``megatron`` 提供的列并行全连接层以去掉结果中的 ``bias``。
@@ -139,7 +140,7 @@ class GPTLMLoss(torch.nn.Module):
         :param logits: 语言模型的输出
         :param labels: 真实标签
         """
-        shift_logits = logits[..., :-1, :].contiguous()
+        shift_logits = logits[..., :-1, :].float().contiguous()
         shift_labels = labels[..., 1:].contiguous().to(logits.device)
         # Flatten the tokens
         return self.loss(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
@@ -177,7 +178,6 @@ class PipelineGenerationMixin(GenerationMixin):
         self.engine_container[-1].eval()
         self.forward_type = "generate"
         res = super().generate(*args, **kwargs)
-        self._clean_past_key_values()
         self._clean_hidden_states()
         # contrastive learning
         if self.is_contrastive_search:
@@ -201,11 +201,6 @@ class PipelineGenerationMixin(GenerationMixin):
                 **kwargs) -> torch.Tensor:
         """ 进行迭代的流水线模型的前向传播（生成）
         """
-        if use_cache:
-            logger.rank_zero_warning(
-                "In Pipeline Parallelism, `use_cache=True` will result in "
-                "slowing down the generate process.", once=True
-            )
         inputs = {}
         if input_ids is not None:
             inputs["input_ids"] = input_ids
@@ -216,11 +211,10 @@ class PipelineGenerationMixin(GenerationMixin):
             inputs["position_ids"] = position_ids
         if inputs_embeds is not None:
             inputs["inputs_embeds"] = inputs_embeds
-        if past_key_values is None:
-            self._clean_past_key_values()
-        else:
-            self._set_past_key_values(past_key_values)
-        outputs = self.engine_container[-1].generate_batch(inputs, use_cache)
+        if past_key_values is not None:
+            inputs.update(kv_cache_to_inputs_for_model(past_key_values))
+
+        outputs = self.engine_container[-1].generate_batch(inputs)
         hidden_states = self._get_hidden_states()
         if self.is_contrastive_search:
             # contrastive search 时每个 stage 拿到的 last_hidden_states
@@ -236,10 +230,19 @@ class PipelineGenerationMixin(GenerationMixin):
                 last_hidden_states, src=src, group=env.pp_group
             )
             hidden_states.append(last_hidden_states)
+
+        if hasattr(self.config, 'num_layers'):  # chatglm
+            num_layer = self.config.num_layers
+        elif hasattr(self.config, 'num_hidden_layers'):  # llama
+            num_layer = self.config.num_hidden_layers
+        else:
+            raise RuntimeError("Cannot find num_layers or num_hidden_layers in config")
+        past_key_values = inputs_to_kv_cache_for_model(num_layer, outputs)
+
         return CausalLMOutputWithPast(
             loss=None,
             logits=outputs["logits"],
-            past_key_values=self._get_past_key_values(),
+            past_key_values=past_key_values,
             hidden_states=hidden_states,
             attentions=None
         )
@@ -263,16 +266,19 @@ class PipelineGenerationMixin(GenerationMixin):
             inputs["position_ids"] = position_ids
         if inputs_embeds is not None:
             inputs["inputs_embeds"] = inputs_embeds
-        if past_key_values is None:
-            self._clean_past_key_values()
-        else:
-            self._set_past_key_values(past_key_values)
+        if past_key_values is not None:
+            # prefix tuning
+            # TODO 这里先按照输入的 past key values 是没有 split 版本的处理
+            if not isinstance(past_key_values, torch.Tensor):
+                # stack 起来
+                past_key_values = torch.stack(past_key_values)
+            inputs["past_key_values"] = past_key_values
         inputs["labels"] = labels
         loss = self.engine_container[-1].train_batch(inputs)
         return CausalLMOutputWithPast(
             loss=loss,
             logits=None,
-            past_key_values=self._get_past_key_values(),
+            past_key_values=None,
             hidden_states=None,
             attentions=None
         )
@@ -296,31 +302,32 @@ class PipelineGenerationMixin(GenerationMixin):
             inputs["position_ids"] = position_ids
         if inputs_embeds is not None:
             inputs["inputs_embeds"] = inputs_embeds
-        if past_key_values is None:
-            self._clean_past_key_values()
-        else:
-            self._set_past_key_values(past_key_values)
+        if past_key_values is not None:
+            # TODO 这里先按照输入的 past key values 是没有 split 版本的处理
+            if not isinstance(past_key_values, torch.Tensor):
+                # stack 起来
+                stack_past_key_values = [None for _ in range(len(past_key_values))]
+                for i, layer_past in enumerate(past_key_values):
+                    if not isinstance(layer_past, torch.Tensor):
+                        stack_past_key_values[i] = stack_tensor(layer_past)
+                    else:
+                        stack_past_key_values[i] = layer_past
+                del past_key_values
+                past_key_values = stack_tensor(stack_past_key_values)
+            inputs["past_key_values"] = past_key_values
+
         inputs["labels"] = labels
         outputs = self.engine_container[-1].eval_batch(inputs)
         hidden_states = self._get_hidden_states()
-        if self.is_contrastive_search:
-            # contrastive search 时每个 stage 拿到的 last_hidden_states
-            # 不一样，所以广播出去
-            src = self.engine_container[-1].grid.stage_to_global(self.engine_container[-1].num_stages - 1)
-            if hidden_states is not None:
-                last_hidden_states = hidden_states[-1]
-            else:
-                # 防止流水线段数过多时某些 stage 没有分到 block
-                hidden_states = []
-                last_hidden_states = None
-            last_hidden_states = broadcast_tensor(
-                last_hidden_states, src=src, group=env.pp_group
-            )
-            hidden_states.append(last_hidden_states)
+        # 还原 past key values
+        if "new_past_key_values" in outputs:
+            past_key_values = outputs["new_past_key_values"]
+        else:
+            past_key_values = None
         return CausalLMOutputWithPast(
             loss=None,
             logits=outputs["logits"],
-            past_key_values=self._get_past_key_values(),
+            past_key_values=past_key_values,
             hidden_states=hidden_states,
             attentions=None
         )
@@ -334,13 +341,13 @@ class PipelineGenerationMixin(GenerationMixin):
                                       **kwargs):
         self._set_use_cache(use_cache)
         if past_key_values is not None:
-            if None in past_key_values:
+            if not isinstance(past_key_values, torch.Tensor) and None in past_key_values:
                 past_key_values = None
         return self.engine_container[-1].module.prepare_inputs(
             input_ids=input_ids, inputs_embeds=inputs_embeds, past_key_values=past_key_values,
             attention_mask=attention_mask, use_cache=use_cache, **kwargs
         )
-        
+
     def _validate_model_kwargs(self, model_kwargs: Dict[str, Any]):
         """Validates model kwargs for generation. Generate argument typos will also be caught here."""
         # Excludes arguments that are handled before calling any model function
@@ -375,30 +382,6 @@ class PipelineGenerationMixin(GenerationMixin):
         """ 从流水线 `engine` 中找到所有的层
         """
         self.layers = self.forward_funcs
-    
-    def _get_past_key_values(self, attr_name: str="past_key_values"):
-        """ 从所有层中获取 `past_key_values`
-        """
-        past_key_values = []
-        for layer in self.layers:
-            if hasattr(layer, attr_name):
-                past_key_values.append(getattr(layer, attr_name))
-        return tuple(past_key_values) if None not in past_key_values else None
-    
-    def _clean_past_key_values(self, attr_name: str="past_key_values"):
-        """ 清除所有层中的 `past_key_values`
-        """
-        for layer in self.layers:
-            if hasattr(layer, attr_name):
-                object.__setattr__(layer, attr_name, None)
-                
-    def _set_past_key_values(self, past_key_values: List[List[torch.Tensor]], attr_name: str="past_key_values"):
-        """ 设置所有层中的 `past_key_values`
-        """
-        past_key_values = iter(past_key_values)
-        for layer in self.layers:
-            if hasattr(layer, attr_name):
-                object.__setattr__(layer, attr_name, next(past_key_values))
             
     def _get_hidden_states(self, attr_name: str="hidden_states"):
         """ 从所有层中获取 `hidden_states`
@@ -497,7 +480,7 @@ class PipelineModel(PipelineModule, PipelineGenerationMixin):
             logger.rank_zero_warning("The world size is not equal to the product of the parallel sizes set."
                                 f"{int(os.environ.get('WORLD_SIZE'))} != {pp_size} * {dp_size} * {tp_size}.")
             dp_size = int(os.environ.get('WORLD_SIZE')) // (tp_size * pp_size)
-            logger.rank_zero_warning("Set dp_size to {dp_size}.")
+            logger.rank_zero_warning(f"Set dp_size to {dp_size}.")
         topology = PipeModelDataParallelTopology(
             num_pp=pp_size, 
             num_dp=dp_size, 
@@ -512,7 +495,9 @@ class PipelineModel(PipelineModule, PipelineGenerationMixin):
         self.stage_id = self._topo.get_coord(self.global_rank).pipe
 
         # Initialize partition information
-        self._layer_specs = list(layers)
+        self._layer_prefix, self._layer_specs = self._flatten_layers(layers)
+        assert len(self._layer_prefix) == len(self._layer_specs)
+        assert len(self._layer_prefix) == len(set(self._layer_prefix))
         self._num_layers = len(self._layer_specs)
         self._local_start = 0
         self._local_stop = None
@@ -524,6 +509,7 @@ class PipelineModel(PipelineModule, PipelineGenerationMixin):
         self.tied_weight_attrs = {}
 
         self._build()
+        self.to(get_accelerator().device_name(self.local_rank))
 
         self.tied_comms = self._index_tied_modules()
         self._synchronize_tied_weights()
@@ -540,7 +526,85 @@ class PipelineModel(PipelineModule, PipelineGenerationMixin):
         self.inner_forward = False
         self.forward_type = "train" # train, eval, generate
         self.skip_input_embedding()
-        
+
+    def _flatten_layers(self, layers):
+        # layers: list of tuple/layer
+        _layers = []
+        _names = []
+        for i, layer in enumerate(layers):
+            if isinstance(layer, tuple):
+                assert len(layer) == 2, len(layer)
+                # name, layer or name, list[layer]
+                if isinstance(layer[1], list):
+                    _n, _l = self._flatten_layers(layer[1])
+                    _layers.extend(_l)
+                    _names.extend([f"{layer[0]}.{n}" for n in _n])
+                else:
+                    _names.append(str(layer[0]))
+                    _layers.append(layer[1])
+            else:
+                assert not isinstance(layer, list)
+                # func, Module, LayerSpec, TiedLayerSpec
+                _names.append(str(len(_names)))
+                _layers.append(layer)
+
+        return _names, _layers
+    
+    def name_to_pipeline(self, name):
+        for idx, prefix in enumerate(self._layer_prefix):
+            if not name.startswith(prefix + "."):
+                continue
+            _layer = self._layer_specs[idx]
+            if isinstance(_layer, TiedLayerSpec):
+                # {prefix}.weight -> tied_modules.{key}.weight
+                return name.replace(prefix, f"tied_modules.{_layer.key}", 1)
+            else:
+                return name.replace(prefix, str(idx), 1)
+
+    def name_from_pipeline(self, name, ):
+        name_split = name.split(".")
+        if name_split[0] == "tied_modules":
+            # 当前 rank 一个 TiedLayerSpec 对应的层可能不唯一，返回一个 list 或者 string
+            name_pp = []
+            tied_key = name_split[1]
+            name_pp_suffix = ".".join(name_split[2:])
+            for i in range(self._local_start, self._local_stop):
+                if not isinstance(self._layer_specs[i], TiedLayerSpec):
+                    continue
+                if self._layer_specs[i].key == tied_key:
+                    name_pp.append(f"{self._layer_prefix[i]}.{name_pp_suffix}")
+            return name_pp if len(name_pp) > 1 else name_pp[0]
+
+        idx = int(name_split[0])
+        name_split[0] = f"{self._layer_prefix[idx]}"
+        if isinstance(self._layer_specs[idx], TiedLayerSpec):
+            # tied_modules.{key}.weight -> {prefix}.weight
+            name_split.pop(1)
+        return ".".join(name_split)
+
+    def state_dict(self, *args, destination=None, prefix='', keep_vars=False):
+        if destination is None:
+            destination = OrderedDict()
+            destination._metadata = OrderedDict()
+        super().state_dict(*args, destination=destination, prefix="", keep_vars=keep_vars)
+        for key in list(destination.keys()):
+            key_pp = self.name_from_pipeline(key)
+            if isinstance(key_pp, list):
+                for _key_pp in key_pp:
+                    destination[prefix + _key_pp] = destination[key].detach().clone()
+                destination.pop(key)
+            else:
+                key_pp = prefix + key_pp
+                destination[key_pp] = destination.pop(key)
+        return destination
+
+    def load_state_dict(self, state_dict: Mapping[str, Any],
+                        strict: bool = True):
+        for key in list(state_dict.keys()):
+            key_pp = self.name_to_pipeline(key)
+            state_dict[key_pp] = state_dict.pop(key)
+        super().load_state_dict(state_dict, strict)
+
     def forward(self, *args, **kwargs):
         if not self.inner_forward:
             if self.forward_type == "generate":

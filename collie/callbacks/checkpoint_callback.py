@@ -51,7 +51,7 @@ class CheckpointCallback(Callback):
     :param max: 最多保留多少个通过 ``every_n_batches`` 和 ``every_n_epochs`` 保存
         的权重（如果设置了的话）；如果为 ``None`` 或 0，则会保留所有的权重文件。
     :param kwargs: 传给 :meth:`.Trainer.save_checkpoint` 或者 :meth:`.Trainer.\
-        save_model` 的额外参数。
+        save_model` 、 :meth:`.Trainer.save_peft` 的额外参数。
     """
 
     def __init__(
