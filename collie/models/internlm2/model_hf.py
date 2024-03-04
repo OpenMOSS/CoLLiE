@@ -1,18 +1,28 @@
+# Copyright (c) The InternLM team and The HuggingFace Inc. team. All rights reserved.
+#
+# This code is based on transformers/src/transformers/models/llama/modeling_llama.py
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """ PyTorch InternLM2 model."""
 import math
 import queue
 import threading
 import warnings
 from typing import List, Optional, Tuple, Union
-import gc
-import json
-import os
-from collections import OrderedDict
 
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
-import torch.distributed as dist
 from einops import rearrange
 from torch import nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
@@ -22,28 +32,12 @@ from transformers.modeling_outputs import (
     CausalLMOutputWithPast,
     SequenceClassifierOutputWithPast,
 )
-from transformers.modeling_utils import PreTrainedModel, dtype_byte_size
+from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import (
     add_start_docstrings,
     add_start_docstrings_to_model_forward,
+    logging,
     replace_return_docstrings,
-)
-from megatron.core import parallel_state, tensor_parallel
-from deepspeed.pipe import LayerSpec, TiedLayerSpec
-
-from collie.config import CollieConfig
-from collie.driver.io import IODriver
-from collie.log.logger import logger
-from collie.module import (
-    ColumnParallelLinearWithoutBias,
-    ColumnParallelLMHead,
-    RowParallelLinearWithoutBias,
-)
-from collie.utils import concat_tensor, dict_as_params, env, progress
-from collie.models.base import CollieModelForCausalLM
-from collie.models.utils import (
-    kv_cache_to_inputs_for_layer, inputs_to_kv_cache_for_layer,
-    kv_cache_to_inputs_for_model, inputs_to_kv_cache_for_model,
 )
 
 try:
@@ -53,6 +47,7 @@ except:  # noqa # pylint: disable=bare-except
 
 from .configuration_internlm2 import InternLM2Config
 
+logger = logging.get_logger(__name__)
 
 _CONFIG_FOR_DOC = "InternLM2Config"
 
@@ -243,28 +238,9 @@ class InternLM2MLP(nn.Module):
         self.config = config
         self.hidden_size = config.hidden_size
         self.intermediate_size = config.intermediate_size
-        # modified for TP
-        self.w1 = ColumnParallelLinearWithoutBias(
-            self.hidden_size,
-            self.intermediate_size,
-            bias=False,
-            gather_output=False,
-            init_method=lambda x: x,
-        )
-        self.w3 = ColumnParallelLinearWithoutBias(
-            self.hidden_size,
-            self.intermediate_size,
-            bias=False,
-            gather_output=False,
-            init_method=lambda x: x,
-        )
-        self.w2 = RowParallelLinearWithoutBias(
-            self.intermediate_size,
-            self.hidden_size,
-            bias=False,
-            input_is_parallel=True,
-            init_method=lambda x: x,
-        )
+        self.w1 = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.w3 = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.w2 = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = ACT2FN[config.hidden_act]
 
     def forward(self, x):
@@ -290,7 +266,7 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
 class InternLM2Attention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
-    def __init__(self, config: CollieConfig):
+    def __init__(self, config: InternLM2Config):
         super().__init__()
         self.config = config
         self.hidden_size = config.hidden_size
@@ -307,48 +283,15 @@ class InternLM2Attention(nn.Module):
                 f" and `num_heads`: {self.num_heads})."
             )
 
-        # self.wqkv = nn.Linear(
-        #     self.hidden_size,
-        #     (self.num_heads + 2 * self.num_key_value_heads) * self.head_dim,
-        #     bias=config.bias,
-        # )
-        self.wq = ColumnParallelLinearWithoutBias(
-            config.hidden_size,
-            self.num_heads * self.head_dim,
-            bias=False,
-            gather_output=False,
-            init_method=lambda x: x,
-        )
-        self.wk = ColumnParallelLinearWithoutBias(
-            config.hidden_size,
-            self.num_key_value_heads * self.head_dim,
-            bias=False,
-            gather_output=False,
-            init_method=lambda x: x,
-        )
-        self.wv = ColumnParallelLinearWithoutBias(
-            config.hidden_size,
-            self.num_key_value_heads * self.head_dim,
-            bias=False,
-            gather_output=False,
-            init_method=lambda x: x,
-        )
-        self.wqkv = ColumnParallelLinearWithoutBias(
-            config.hidden_size,
+        self.wqkv = nn.Linear(
+            self.hidden_size,
             (self.num_heads + 2 * self.num_key_value_heads) * self.head_dim,
-            bias=False,
-            gather_output=False,
-            init_method=lambda x: x,
+            bias=config.bias,
         )
+        print(f"hidden_size: {self.hidden_size}, num_heads: {self.num_heads}, head_dim: {self.head_dim}")
+        print(f"self.wqkv.weight.shape: {self.wqkv.weight.shape}")
 
-        # self.wo = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=config.bias)
-        self.wo = RowParallelLinearWithoutBias(
-            self.num_heads * self.head_dim,
-            config.hidden_size,
-            bias=False,
-            input_is_parallel=True,
-            init_method=lambda x: x,
-        )
+        self.wo = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=config.bias)
         self._init_rope()
 
     def _init_rope(self):
@@ -399,10 +342,9 @@ class InternLM2Attention(nn.Module):
             )
 
         bsz, q_len, _ = hidden_states.size()
-        # print(f"attention_mask: {attention_mask}")
+        # print(attention_mask)
         print(hidden_states[0, 0, :50])
         print(f"hidden_states.shape: {hidden_states.shape}")
-
         qkv_states = self.wqkv(hidden_states)
 
         qkv_states = rearrange(
@@ -416,18 +358,11 @@ class InternLM2Attention(nn.Module):
         query_states = rearrange(query_states, "b q h gs d -> b q (h gs) d")
         key_states = qkv_states[..., -2, :]
         value_states = qkv_states[..., -1, :]
-        # query_states = self.wq(hidden_states)
-        # key_states = self.wk(hidden_states)
-        # value_states = self.wv(hidden_states)
-        #
-        # query_states = rearrange(query_states, "b q (h d) -> b q h d", d=self.head_dim)
-        # key_states = rearrange(key_states, "b q (h d) -> b q h d", d=self.head_dim)
-        # value_states = rearrange(value_states, "b q (h d) -> b q h d", d=self.head_dim)
-
         print(query_states.shape, key_states.shape, value_states.shape)
         # print(query_states[0, 0, 0, :50])
         # print(key_states[0, 0, 0, :50])
         # print(value_states[0, 0, 0, :50])
+        # exit(0)
         query_states = query_states.transpose(1, 2)
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
@@ -516,28 +451,20 @@ class InternLM2FlashAttention2(InternLM2Attention):
 
         bsz, q_len, _ = hidden_states.size()
 
-        # qkv_states = self.wqkv(hidden_states)
-        #
-        # qkv_states = rearrange(
-        #     qkv_states,
-        #     "b q (h gs d) -> b q h gs d",
-        #     gs=2 + self.num_key_value_groups,
-        #     d=self.head_dim,
-        # )
-        #
-        # query_states = qkv_states[..., : self.num_key_value_groups, :]
-        # query_states = rearrange(query_states, "b q h gs d -> b q (h gs) d")
-        # key_states = qkv_states[..., -2, :]
-        # value_states = qkv_states[..., -1, :]
-        query_states = self.wq(hidden_states)
-        key_states = self.wk(hidden_states)
-        value_states = self.wv(hidden_states)
+        qkv_states = self.wqkv(hidden_states)
 
-        query_states = rearrange(query_states, "b q (h d) -> b q h d", d=self.head_dim)
-        key_states = rearrange(key_states, "b q (h d) -> b q h d", d=self.head_dim)
-        value_states = rearrange(value_states, "b q (h d) -> b q h d", d=self.head_dim)
-        print(query_states.shape, key_states.shape, value_states.shape)
-        print(query_states)
+        qkv_states = rearrange(
+            qkv_states,
+            "b q (h gs d) -> b q h gs d",
+            gs=2 + self.num_key_value_groups,
+            d=self.head_dim,
+        )
+
+        query_states = qkv_states[..., : self.num_key_value_groups, :]
+        query_states = rearrange(query_states, "b q h gs d -> b q (h gs) d")
+        key_states = qkv_states[..., -2, :]
+        value_states = qkv_states[..., -1, :]
+
         query_states = query_states.transpose(1, 2)
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
@@ -672,35 +599,24 @@ INTERNLM2_ATTENTION_CLASSES = {
 
 # Modified from transformers.model.llama.modeling_llama.LlamaDecoderLayer
 class InternLM2DecoderLayer(nn.Module):
-    def __init__(self, config: CollieConfig, layer_idx):
+    def __init__(self, config: InternLM2Config):
         super().__init__()
         self.hidden_size = config.hidden_size
 
-        # self.attention = INTERNLM2_ATTENTION_CLASSES[config.attn_implementation](config=config)
-        if config.attn_implementation == "flash_attention_2" or config.use_flash:
-            self.attention = InternLM2FlashAttention2(config=config)
-        else:
-            self.attention = InternLM2Attention(config=config)
+        self.attention = INTERNLM2_ATTENTION_CLASSES[config.attn_implementation](config=config)
 
         self.feed_forward = InternLM2MLP(config)
         self.attention_norm = InternLM2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.ffn_norm = InternLM2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.config = config
-        # add for pp
-        self.idx = layer_idx
-        # 务必保持变量名一致
-        self.use_cache = self.config.model_config.use_cache
-        self.hidden_states = None
-        self.output_attentions = False
 
-    def _forward(
+    def forward(
         self,
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
-        # output_attentions: Optional[bool] = False,
-        # use_cache: Optional[bool] = False,
+        output_attentions: Optional[bool] = False,
+        use_cache: Optional[bool] = False,
         **kwargs,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         """
@@ -717,6 +633,11 @@ class InternLM2DecoderLayer(nn.Module):
                 (see `past_key_values`).
             past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
         """
+        if "padding_mask" in kwargs:
+            warnings.warn(
+                "Passing `padding_mask` is deprecated and will be removed in v4.37. "
+                "Please make sure use `attention_mask` instead.`"
+            )
 
         residual = hidden_states
 
@@ -728,8 +649,8 @@ class InternLM2DecoderLayer(nn.Module):
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_value=past_key_value,
-            output_attentions=self.output_attentions,
-            use_cache=self.use_cache,
+            output_attentions=output_attentions,
+            use_cache=use_cache,
             **kwargs,
         )
         hidden_states = residual + hidden_states
@@ -740,38 +661,15 @@ class InternLM2DecoderLayer(nn.Module):
         hidden_states = self.feed_forward(hidden_states)
         hidden_states = residual + hidden_states
 
-        # outputs = (hidden_states,)
-        #
-        # if self.output_attentions:
-        #     outputs += (self_attn_weights,)
-        #
-        # if self.use_cache:
-        #     outputs += (present_key_value,)
+        outputs = (hidden_states,)
 
-        return hidden_states, present_key_value
+        if output_attentions:
+            outputs += (self_attn_weights,)
 
-    def forward(self, inputs: dict):
-        layer_past = inputs_to_kv_cache_for_layer(idx=self.idx, inputs=inputs)
+        if use_cache:
+            outputs += (present_key_value,)
 
-        if self.config.checkpointing and self.training:
-            hidden_states, new_layer_past = torch.utils.checkpoint.checkpoint(
-                self._forward,
-                inputs["hidden_states"],
-                inputs.get("attention_mask", None),
-                inputs.get("position_ids", None),
-                layer_past,  # inputs.get("past_key_values", None),
-            )
-        else:
-            hidden_states, new_layer_past = self._forward(
-                inputs["hidden_states"],
-                inputs.get("attention_mask", None),
-                inputs.get("position_ids", None),
-                layer_past
-            )  # **inputs
-        inputs["hidden_states"] = hidden_states
-
-        inputs.update(kv_cache_to_inputs_for_layer(idx=self.idx, new_layer_past=new_layer_past))
-        return inputs
+        return outputs
 
 
 InternLM2_START_DOCSTRING = r"""
@@ -885,7 +783,7 @@ InternLM2_INPUTS_DOCSTRING = r"""
     "The bare InternLM2 Model outputting raw hidden-states without any specific head on top.",
     InternLM2_START_DOCSTRING,
 )
-class InternLM2Model(nn.Module):
+class InternLM2Model(InternLM2PreTrainedModel):
     """
     Transformer decoder consisting of *config.num_hidden_layers* layers. Each layer is a [`InternLM2DecoderLayer`]
 
@@ -895,23 +793,20 @@ class InternLM2Model(nn.Module):
 
     _auto_class = "AutoModel"
 
-    def __init__(self, config: CollieConfig):
-        super().__init__()
+    def __init__(self, config: InternLM2Config):
+        super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
         self.config = config
 
-        # self.tok_embeddings = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
-        self.tok_embeddings = tensor_parallel.VocabParallelEmbedding(
-            config.vocab_size, config.hidden_size
-        )
-        self.layers = nn.ModuleList([InternLM2DecoderLayer(config, i) for i in range(config.num_hidden_layers)])
+        self.tok_embeddings = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
+
+        self.layers = nn.ModuleList([InternLM2DecoderLayer(config) for _ in range(config.num_hidden_layers)])
         self.norm = InternLM2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
         self.gradient_checkpointing = False
         # Initialize weights and apply final processing
-        # self.post_init()
-        self.use_cache = self.config.model_config.use_cache
+        self.post_init()
 
     def get_input_embeddings(self):
         return self.tok_embeddings
@@ -948,12 +843,22 @@ class InternLM2Model(nn.Module):
         input_ids: torch.LongTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Tuple[torch.FloatTensor]] = None,
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
-        **kwargs,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        )
+        use_cache = use_cache if use_cache is not None else self.config.use_cache
 
-        if self.config.attn_implementation == "flash_attention_2" or self.config.use_flash:
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        if self.config.attn_implementation == "flash_attention_2":
             _import_flash_attn()
 
         # retrieve input_ids and inputs_embeds
@@ -982,7 +887,7 @@ class InternLM2Model(nn.Module):
         if inputs_embeds is None:
             inputs_embeds = self.tok_embeddings(input_ids)
 
-        if self.config.attn_implementation == "flash_attention_2" or self.config.use_flash:
+        if self.config.attn_implementation == "flash_attention_2":
             # 2d mask is passed through the layers
             attention_mask = attention_mask if (attention_mask is not None and 0 in attention_mask) else None
         else:
@@ -997,151 +902,89 @@ class InternLM2Model(nn.Module):
         # embed positions
         hidden_states = inputs_embeds
 
-        use_cache = self.use_cache
         if self.gradient_checkpointing and self.training:
-            if self.use_cache:
+            if use_cache:
                 logger.warning_once(
                     "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`..."
                 )
                 use_cache = False
 
-        inputs = {"input_ids": input_ids}
-        inputs["attention_mask"] = attention_mask
-        inputs["hidden_states"] = hidden_states
-
-        inputs.update(kv_cache_to_inputs_for_model(past_key_values))
-
-        all_hidden_states = ()
-        for layer in self.layers:
-            all_hidden_states += (inputs["hidden_states"],)
-            inputs.update(layer(inputs))
-        inputs["hidden_states"] = self.norm(inputs["hidden_states"])
-        all_hidden_states += (inputs["hidden_states"],)
-
-        past_key_values = inputs_to_kv_cache_for_model(self.config.num_hidden_layers, inputs)
-
-        return BaseModelOutputWithPast(
-            last_hidden_state=inputs["hidden_states"],
-            hidden_states=all_hidden_states,
-            past_key_values=past_key_values,
-        )
         # decoder layers
-        # all_hidden_states = ()
-        # next_decoder_cache = () if use_cache else None
-        #
-        # for idx, decoder_layer in enumerate(self.layers):
-        #     all_hidden_states += (hidden_states,)
-        #
-        #     past_key_value = past_key_values[idx] if past_key_values is not None else None
-        #
-        #     if self.gradient_checkpointing and self.training:
-        #
-        #         def create_custom_forward(module):
-        #             def custom_forward(*inputs):
-        #                 # None for past_key_value
-        #                 return module(*inputs, None)
-        #
-        #             return custom_forward
-        #
-        #         layer_outputs = torch.utils.checkpoint.checkpoint(
-        #             create_custom_forward(decoder_layer),
-        #             hidden_states,
-        #             attention_mask,
-        #             position_ids,
-        #             None,
-        #         )
-        #     else:
-        #         layer_outputs = decoder_layer(
-        #             hidden_states,
-        #             attention_mask=attention_mask,
-        #             position_ids=position_ids,
-        #             past_key_value=past_key_value,
-        #             use_cache=use_cache,
-        #         )
-        #
-        #     hidden_states = layer_outputs[0]
-        #
-        #     if use_cache:
-        #         next_decoder_cache += (layer_outputs[1],)
-        #
-        # hidden_states = self.norm(hidden_states)
-        #
-        # # add hidden states from the last decoder layer
-        # all_hidden_states += (hidden_states,)
-        #
-        # next_cache = next_decoder_cache if use_cache else None
-        # past_key_values = inputs_to_kv_cache_for_model(self.config.num_hidden_layers, inputs)
-        #
-        # return BaseModelOutputWithPast(
-        #     last_hidden_state=hidden_states,
-        #     past_key_values=next_cache,
-        #     hidden_states=all_hidden_states,
-        # )
+        all_hidden_states = () if output_hidden_states else None
+        all_self_attns = () if output_attentions else None
+        next_decoder_cache = () if use_cache else None
 
-    @classmethod
-    def pipeline_layers(cls, config: CollieConfig):
-        """
-        Get layers of pipeline.
+        for idx, decoder_layer in enumerate(self.layers):
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
 
-        :return: list
-        """
-        if isinstance(config, str):
-            config = CollieConfig.from_pretrained(config)
+            past_key_value = past_key_values[idx] if past_key_values is not None else None
 
-        if config.tie_word_embeddings:
-            embed_tokens = TiedLayerSpec(
-                "embed_tokens",
-                dict_as_params(input_keys="input_ids", output_keys="hidden_states"),
-                tensor_parallel.VocabParallelEmbedding,
-                config.vocab_size,
-                config.hidden_size,
-            )
-        else:
-            embed_tokens = LayerSpec(
-                dict_as_params(input_keys="input_ids", output_keys="hidden_states"),
-                tensor_parallel.VocabParallelEmbedding,
-                config.vocab_size,
-                config.hidden_size,
-            )
+            if self.gradient_checkpointing and self.training:
 
-        layers = [
-            LayerSpec(InternLM2DecoderLayer, config, i) for i in range(config.num_hidden_layers)
-        ]
-        norm = LayerSpec(
-            dict_as_params(input_keys="hidden_states", output_keys="hidden_states"),
-            InternLM2RMSNorm,
-            hidden_size=config.hidden_size,
-            eps=config.rms_norm_eps,
+                def create_custom_forward(module):
+                    def custom_forward(*inputs):
+                        # None for past_key_value
+                        return module(*inputs, output_attentions, None)
+
+                    return custom_forward
+
+                layer_outputs = torch.utils.checkpoint.checkpoint(
+                    create_custom_forward(decoder_layer),
+                    hidden_states,
+                    attention_mask,
+                    position_ids,
+                    None,
+                )
+            else:
+                layer_outputs = decoder_layer(
+                    hidden_states,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    past_key_value=past_key_value,
+                    output_attentions=output_attentions,
+                    use_cache=use_cache,
+                )
+
+            hidden_states = layer_outputs[0]
+
+            if use_cache:
+                next_decoder_cache += (layer_outputs[2 if output_attentions else 1],)
+
+            if output_attentions:
+                all_self_attns += (layer_outputs[1],)
+
+        hidden_states = self.norm(hidden_states)
+
+        # add hidden states from the last decoder layer
+        if output_hidden_states:
+            all_hidden_states += (hidden_states,)
+
+        next_cache = next_decoder_cache if use_cache else None
+        if not return_dict:
+            return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
+        return BaseModelOutputWithPast(
+            last_hidden_state=hidden_states,
+            past_key_values=next_cache,
+            hidden_states=all_hidden_states,
+            attentions=all_self_attns,
         )
 
-        return [
-            ("tok_embeddings", embed_tokens),
-            ("layers", layers),
-            ("norm", norm),
-        ]
 
 # Modified from transformers.model.llama.modeling_llama.LlamaForCausalLM
-class InternLM2ForCausalLM(CollieModelForCausalLM):
+class InternLM2ForCausalLM(InternLM2PreTrainedModel):
     _auto_class = "AutoModelForCausalLM"
 
     _tied_weights_keys = ["output.weight"]
-    base_model_prefix = "model"
 
     def __init__(self, config):
         super().__init__(config)
         self.model = InternLM2Model(config)
         self.vocab_size = config.vocab_size
-        # self.output = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
-        self.output = ColumnParallelLinearWithoutBias(
-            self.collie_config.hidden_size, self.collie_config.vocab_size, bias=False
-        )
+        self.output = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+
         # Initialize weights and apply final processing
-        # self.post_init()
-        # GenerationMixin 需要的额外参数
-        self.config.is_decoder = True
-        if config.model_config.tie_word_embeddings:
-            self.lm_head.weight = self.embed_tokens.weight
-        self.main_input_name = "input_ids"
+        self.post_init()
 
     def get_input_embeddings(self):
         return self.model.tok_embeddings
@@ -1161,115 +1004,93 @@ class InternLM2ForCausalLM(CollieModelForCausalLM):
     def get_decoder(self):
         return self.model
 
-    # @add_start_docstrings_to_model_forward(InternLM2_INPUTS_DOCSTRING)
-    # @replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
-    # def forward(
-    #     self,
-    #     input_ids: torch.LongTensor = None,
-    #     attention_mask: Optional[torch.Tensor] = None,
-    #     position_ids: Optional[torch.LongTensor] = None,
-    #     past_key_values: Optional[List[torch.FloatTensor]] = None,
-    #     inputs_embeds: Optional[torch.FloatTensor] = None,
-    #     labels: Optional[torch.LongTensor] = None,
-    #     use_cache: Optional[bool] = None,
-    #     output_attentions: Optional[bool] = None,
-    #     output_hidden_states: Optional[bool] = None,
-    #     return_dict: Optional[bool] = None,
-    # ) -> Union[Tuple, CausalLMOutputWithPast]:
-    #     r"""
-    #     Args:
-    #         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
-    #             Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
-    #             config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
-    #             (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
-    #
-    #     Returns:
-    #
-    #     Example:
-    #
-    #     ```python
-    #     >>> from transformers import AutoTokenizer, InternLM2ForCausalLM
-    #
-    #     >>> model = InternLM2ForCausalLM.from_pretrained(PATH_TO_CONVERTED_WEIGHTS)
-    #     >>> tokenizer = AutoTokenizer.from_pretrained(PATH_TO_CONVERTED_TOKENIZER)
-    #
-    #     >>> prompt = "Hey, are you conscious? Can you talk to me?"
-    #     >>> inputs = tokenizer(prompt, return_tensors="pt")
-    #
-    #     >>> # Generate
-    #     >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
-    #     >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-    #     "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
-    #     ```"""
-    #
-    #     output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-    #     output_hidden_states = (
-    #         output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-    #     )
-    #     return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-    #
-    #     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
-    #     outputs = self.model(
-    #         input_ids=input_ids,
-    #         attention_mask=attention_mask,
-    #         position_ids=position_ids,
-    #         past_key_values=past_key_values,
-    #         inputs_embeds=inputs_embeds,
-    #         use_cache=use_cache,
-    #         output_attentions=output_attentions,
-    #         output_hidden_states=output_hidden_states,
-    #         return_dict=return_dict,
-    #     )
-    #
-    #     hidden_states = outputs[0]
-    #     logits = self.output(hidden_states)
-    #     logits = logits.float()
-    #
-    #     loss = None
-    #     if labels is not None:
-    #         # Shift so that tokens < n predict n
-    #         shift_logits = logits[..., :-1, :].contiguous()
-    #         shift_labels = labels[..., 1:].contiguous()
-    #         # Flatten the tokens
-    #         loss_fct = CrossEntropyLoss()
-    #         shift_logits = shift_logits.view(-1, self.config.vocab_size)
-    #         shift_labels = shift_labels.view(-1)
-    #         # Enable model parallelism
-    #         shift_labels = shift_labels.to(shift_logits.device)
-    #         loss = loss_fct(shift_logits, shift_labels)
-    #
-    #     if not return_dict:
-    #         output = (logits,) + outputs[1:]
-    #         return (loss,) + output if loss is not None else output
-    #
-    #     return CausalLMOutputWithPast(
-    #         loss=loss,
-    #         logits=logits,
-    #         past_key_values=outputs.past_key_values,
-    #         hidden_states=outputs.hidden_states,
-    #         attentions=outputs.attentions,
-    #     )
-
+    @add_start_docstrings_to_model_forward(InternLM2_INPUTS_DOCSTRING)
+    @replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
     def forward(
         self,
-        input_ids: Optional[torch.Tensor] = None,
+        input_ids: torch.LongTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
-        past_key_values: Optional[Tuple[torch.Tensor]] = None,
-        **kwargs,
-    ):
-        output = self.model(
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> Union[Tuple, CausalLMOutputWithPast]:
+        r"""
+        Args:
+            labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+                Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
+                config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
+                (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
+
+        Returns:
+
+        Example:
+
+        ```python
+        >>> from transformers import AutoTokenizer, InternLM2ForCausalLM
+
+        >>> model = InternLM2ForCausalLM.from_pretrained(PATH_TO_CONVERTED_WEIGHTS)
+        >>> tokenizer = AutoTokenizer.from_pretrained(PATH_TO_CONVERTED_TOKENIZER)
+
+        >>> prompt = "Hey, are you conscious? Can you talk to me?"
+        >>> inputs = tokenizer(prompt, return_tensors="pt")
+
+        >>> # Generate
+        >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
+        >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+        "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
+        ```"""
+
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        )
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
+        outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
+            position_ids=position_ids,
             past_key_values=past_key_values,
-            **kwargs,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
         )
-        logits = self.output(output.last_hidden_state)
+
+        hidden_states = outputs[0]
+        logits = self.output(hidden_states)
+        logits = logits.float()
+
+        loss = None
+        if labels is not None:
+            # Shift so that tokens < n predict n
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+            # Flatten the tokens
+            loss_fct = CrossEntropyLoss()
+            shift_logits = shift_logits.view(-1, self.config.vocab_size)
+            shift_labels = shift_labels.view(-1)
+            # Enable model parallelism
+            shift_labels = shift_labels.to(shift_logits.device)
+            loss = loss_fct(shift_logits, shift_labels)
+
+        if not return_dict:
+            output = (logits,) + outputs[1:]
+            return (loss,) + output if loss is not None else output
+
         return CausalLMOutputWithPast(
-            loss=None,
+            loss=loss,
             logits=logits,
-            past_key_values=output.past_key_values,
-            hidden_states=output.hidden_states,
-            attentions=None,
+            past_key_values=outputs.past_key_values,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
         )
 
     def prepare_inputs_for_generation(
@@ -1454,373 +1275,125 @@ class InternLM2ForCausalLM(CollieModelForCausalLM):
 
         return consumer()
 
-    def clean_cache(self):
-        self._clean_hidden_states([*self.model.layers, self.output])
-        self._set_use_cache(self.model.layers, False)
 
-    def set_cache(self, use_cache):
-        self._set_use_cache(self.model.layers, use_cache)
+# Copied from transformers.model.llama.modeling_llama.LlamaForSequenceClassification with Llama->InternLM2
+@add_start_docstrings(
+    """
+    The InternLM2 Model transformer with a sequence classification head on top (linear layer).
 
-    @classmethod
-    def pipeline_layers(cls, config: CollieConfig):
+    [`InternLM2ForSequenceClassification`] uses the last token in order to do the classification,
+    as other causal models (e.g. GPT-2) do.
+
+    Since it does classification on the last token, it requires to know the position of the last token. If a
+    `pad_token_id` is defined in the configuration, it finds the last token that is not a padding token in each row. If
+    no `pad_token_id` is defined, it simply takes the last value in each row of the batch. Since it cannot guess the
+    padding tokens when `inputs_embeds` are passed instead of `input_ids`, it does the same (take the last value in
+    each row of the batch).
+    """,
+    InternLM2_START_DOCSTRING,
+)
+class InternLM2ForSequenceClassification(InternLM2PreTrainedModel):
+    def __init__(self, config):
+        super().__init__(config)
+        self.num_labels = config.num_labels
+        self.model = InternLM2Model(config)
+        self.score = nn.Linear(config.hidden_size, self.num_labels, bias=False)
+
+        # Initialize weights and apply final processing
+        self.post_init()
+
+    def get_input_embeddings(self):
+        return self.model.tok_embeddings
+
+    def set_input_embeddings(self, value):
+        self.model.tok_embeddings = value
+
+    @add_start_docstrings_to_model_forward(InternLM2_INPUTS_DOCSTRING)
+    def forward(
+        self,
+        input_ids: torch.LongTensor = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> Union[Tuple, SequenceClassifierOutputWithPast]:
+        r"""
+        labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
+            Labels for computing the sequence classification/regression loss. Indices should be in `[0, ...,
+            config.num_labels - 1]`. If `config.num_labels == 1` a regression loss is computed (Mean-Square loss), If
+            `config.num_labels > 1` a classification loss is computed (Cross-Entropy).
         """
-        Get layers of pipeline.
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        :return: list
-        """
-        if isinstance(config, str):
-            config = CollieConfig.from_pretrained(config)
+        transformer_outputs = self.model(
+            input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+        hidden_states = transformer_outputs[0]
+        logits = self.score(hidden_states)
 
-        if config.tie_word_embeddings:
-            output = TiedLayerSpec(
-                "embed_tokens",
-                dict_as_params(input_keys="hidden_states", output_keys="logits"),
-                ColumnParallelLMHead,
-                config.hidden_size,
-                config.vocab_size,
-                bias=False,
-            )
+        if input_ids is not None:
+            batch_size = input_ids.shape[0]
         else:
-            output = LayerSpec(
-                dict_as_params(input_keys="hidden_states", output_keys="logits"),
-                ColumnParallelLMHead,
-                config.hidden_size,
-                config.vocab_size,
-                bias=False,
-            )
+            batch_size = inputs_embeds.shape[0]
 
-        return [("model", InternLM2Model.pipeline_layers(config)), ("output", output)]
-
-    @staticmethod
-    def load_parallel_state_dict(
-            path: str,
-            config: Union[CollieConfig, str],
-            process_exclusion: bool = False,
-            **kwargs,
-    ):
-        ...
-
-    @staticmethod
-    def load_parallel_state_dict(
-            path: str,
-            config: Union[CollieConfig, str],
-            process_exclusion: bool = False,
-            protocol: str = "file",
-            **kwargs,
-    ):
-        """
-        Load state_dict from ``path``.
-
-        The format of pretrained model should be the same as that of
-        `huggingface`.
-
-        :return: state_dict. Note that the state_dict should be processed
-            properly to match the current rank.
-        """
-        if isinstance(config, str):
-            config = CollieConfig.from_pretrained(config)
-        io_driver = IODriver.from_protocol(protocol)
-        if not io_driver.exists(path):
-            raise FileNotFoundError(f"folder {path} not found.")
-        state_dict = OrderedDict()
-        weights = []
-        parts = None
-        # 如果开启了进程互斥，那么每个进程都会显示进度条，否则只显示 RANK0 的
-        hide_progress = not process_exclusion and int(os.environ.get("RANK", "0")) != 0
-        if dist.is_initialized() and process_exclusion:
-            # 如果启动了进程互斥，则要进行 dist.get_world_size() 次循环
-            rank_order = range(dist.get_world_size())
+        if self.config.pad_token_id is None and batch_size != 1:
+            raise ValueError("Cannot handle batch sizes > 1 if no padding token is defined.")
+        if self.config.pad_token_id is None:
+            sequence_lengths = -1
         else:
-            # 不开启只进行一次循环
-            rank_order = range(1)
-        for rank in rank_order:
-            # 如果开启了进程互斥，那么只有对应 RANK 的能进入循环；不开启进程互斥的话就都可以进
-            if int(os.environ.get("RANK", "0")) == rank or not process_exclusion:
-                # PP 分层的方法保存在了 os.environ["COLLIE_PP_PARTS"], 格式类似于 [0, 17, 35], 左闭右开
-                if env.is_pipeline:
-                    # 保存的是 json 格式
-                    parts = env.pipeline_parts
-                if hasattr(config, "num_key_value_heads"):
-                    # llama2 (transformers >= 4.31.0)
-                    num_key_value_heads = config.num_key_value_heads
+            if input_ids is not None:
+                sequence_lengths = (torch.eq(input_ids, self.config.pad_token_id).int().argmax(-1) - 1).to(
+                    logits.device
+                )
+            else:
+                sequence_lengths = -1
+
+        pooled_logits = logits[torch.arange(batch_size, device=logits.device), sequence_lengths]
+
+        loss = None
+        if labels is not None:
+            labels = labels.to(logits.device)
+            if self.config.problem_type is None:
+                if self.num_labels == 1:
+                    self.config.problem_type = "regression"
+                elif self.num_labels > 1 and (labels.dtype == torch.long or labels.dtype == torch.int):
+                    self.config.problem_type = "single_label_classification"
                 else:
-                    num_key_value_heads = config.num_attention_heads
-                head_dim = config.hidden_size // config.num_attention_heads
-                # 如果存在 pytorch_model.bin.index.json 文件的话，此时不同的 pp 进程可以按需加载自己需要的权重
-                if (
-                        io_driver.exists(os.path.join(path, "pytorch_model.bin.index.json"))
-                        and "COLLIE_PP_PARTS" in os.environ.keys()
-                ):
-                    weight_map = json.loads(
-                        io_driver.load(
-                            os.path.join(path, "pytorch_model.bin.index.json"), mode="r"
-                        )
-                    )["weight_map"]
-                    # layers 表示自己需要的层
-                    layers = env.pipeline_layers_idx
-                    # 筛选出形似 model.layers.0 这样的层。包含两个条件：1. 有数字的层；2. 数字加一要在 layers 里面（因为最开始还有个 embedding 占一层）
-                    weights.extend(
-                        [
-                            value
-                            for key, value in weight_map.items()
-                            if len(key.split(".")) > 2
-                               and key.split(".")[2].isdigit()
-                               and (int(key.split(".")[2]) + 1) in layers
-                        ]
-                    )
-                    # 去重
-                    weights = list(set(weights))
-                    # 继续筛选，如果有 0 层，那么就要加载 embedding；如果有最后一层，那么就要加载 lm_head；如果有倒数第二层，那么就要加载 norm
-                    if 0 in layers:
-                        weights.append(weight_map["model.tok_embeddings.weight"])
-                    if max(parts) - 1 in layers:
-                        weights.append(weight_map["output.weight"])
-                    if max(parts) - 2 in layers:
-                        weights.append(weight_map["model.norm.weight"])
+                    self.config.problem_type = "multi_label_classification"
+
+            if self.config.problem_type == "regression":
+                loss_fct = MSELoss()
+                if self.num_labels == 1:
+                    loss = loss_fct(pooled_logits.squeeze(), labels.squeeze())
                 else:
-                    # 如果没有 pytorch_model.bin.index.json 文件的话，那么就加载所有的权重
-                    weights = [
-                        weight
-                        for weight in io_driver.list(path)
-                        if weight.endswith(".bin")
-                    ]
-                with progress(
-                    weights,
-                    desc="Loading state dict",
-                    total=len(weights),
-                    disable=hide_progress,
-                ) as pbar:
-                    for weight in pbar:
-                        part_state_dict = io_driver.load(
-                            os.path.join(path, weight), mode="rb"
-                        )
-                        for key in list(part_state_dict.keys()):
-                            if "attention.wqkv.weight" in key:
-                                # qkv_weights = part_state_dict.pop(key)
-                                qkv_weights = part_state_dict[key]
-                                print(qkv_weights.shape)
-                                (wq, wk, wv) = qkv_weights.split(
-                                    [
-                                        config.hidden_size,
-                                        config.num_key_value_heads * head_dim,
-                                        config.num_key_value_heads * head_dim,
-                                    ],
-                                    dim=0,
-                                )
-                                wq_name = key.replace("wqkv", "wq")
-                                wk_name = key.replace("wqkv", "wk")
-                                wv_name = key.replace("wqkv", "wv")
-                                part_state_dict[wq_name] = wq
-                                part_state_dict[wk_name] = wk
-                                part_state_dict[wv_name] = wv
-                        state_dict.update(part_state_dict)
-                        del part_state_dict
-                if parts is not None:
-                    # 这一步是 pp 的复筛
-                    layers = env.pipeline_layers_idx
-                    for key in list(state_dict.keys()):
-                        if key.startswith("layers"):
-                            layer = int(key.split(".")[1])
-                            if layer + 1 not in layers:
-                                state_dict.pop(key)
-                        if key.endswith("tok_embeddings.weight"):
-                            if 0 not in layers:
-                                state_dict.pop(key)
-                        if key == "norm.weight":
-                            if max(parts) - 2 not in layers:
-                                state_dict.pop(key)
-                        if key.endswith("output.weight"):
-                            if max(parts) - 1 not in layers:
-                                state_dict.pop(key)
-                # 根据用户配置的新的 tp size 进行分割
-                for key in list(state_dict.keys()):
-                    col_filter = [
-                        "wq.weight",
-                        "wk.weight",
-                        "wv.weight",
-                        "wqkv.weight",
-                        "w1.weight",
-                        "w3.weight",
-                        "tok_embeddings.weight",
-                        "output.weight",
-                    ]
-                    col_split = any([key.endswith(filter) for filter in col_filter])
+                    loss = loss_fct(pooled_logits, labels)
+            elif self.config.problem_type == "single_label_classification":
+                loss_fct = CrossEntropyLoss()
+                loss = loss_fct(pooled_logits.view(-1, self.num_labels), labels.view(-1))
+            elif self.config.problem_type == "multi_label_classification":
+                loss_fct = BCEWithLogitsLoss()
+                loss = loss_fct(pooled_logits, labels)
+        if not return_dict:
+            output = (pooled_logits,) + transformer_outputs[1:]
+            return ((loss,) + output) if loss is not None else output
 
-                    if col_split:
-                        tensor = (
-                            list(torch.chunk(state_dict[key], config.tp_size, dim=0))[
-                                env.tp_rank
-                            ]
-                            .detach()
-                            .clone()
-                        )
-                        del state_dict[key]
-                        if process_exclusion:
-                            # CPU 内存回收（速度很慢）
-                            gc.collect()
-                        state_dict[key] = tensor
-                    elif key.endswith("wo.weight") or key.endswith("w2.weight"):
-                        tensor = (
-                            list(torch.chunk(state_dict[key], config.tp_size, dim=1))[
-                                env.tp_rank
-                            ]
-                            .detach()
-                            .clone()
-                        )
-                        del state_dict[key]
-                        if process_exclusion:
-                            # CPU 内存回收（速度很慢）
-                            gc.collect()
-                        state_dict[key] = tensor
-            if dist.is_initialized() and process_exclusion:
-                # 如果选择了进程互斥，那么本次循环中不需要加载权重的进程需等待
-                dist.barrier()
-        return state_dict
-
-    @staticmethod
-    def save_parallel_state_dict(
-            state_dict: dict,
-            path: str,
-            config: CollieConfig,
-            process_exclusion: bool = False,
-            **kwargs,
-    ):
-        ...
-
-    @staticmethod
-    def save_parallel_state_dict(
-            state_dict: dict,
-            path: str,
-            config: CollieConfig,
-            process_exclusion: bool = False,
-            protocol: str = "file",
-    ):
-        """
-        Save state_dict to ``path``.
-
-        The format of saved state dict should be the same as that of
-        `huggingface`.
-        """
-        io_driver = IODriver.from_protocol(protocol)
-        # gather to tp rank 0
-        if dist.is_initialized() and process_exclusion:
-            # 如果启动了进程互斥，则要进行 pp_size 次循环
-            rank_order = range(config.pp_size)
-        else:
-            # 不开启只进行一次循环
-            rank_order = range(1)
-        dst = parallel_state.get_tensor_model_parallel_src_rank()
-        with progress(
-                rank_order,
-                desc="Saving model",
-                disable=int(os.environ.get("RANK", "0")) != 0,
-        ) as pbar:
-            for rank in pbar:
-                if env.dp_rank == 0 and (env.pp_rank == rank or not process_exclusion):
-                    for key in sorted(list(state_dict.keys())):
-                        tensor_list = None
-                        if env.tp_rank == 0:
-                            tensor_list = [
-                                torch.zeros_like(state_dict[key])
-                                .to(state_dict[key].dtype)
-                                .cuda()
-                                for _ in range(config.tp_size)
-                            ]
-                        dist.gather(
-                            state_dict[key].cuda(),
-                            dst=dst,
-                            gather_list=tensor_list,
-                            group=env.tp_group,
-                        )
-                        if env.tp_rank == 0:
-                            col_filter = [
-                                "wq.weight",
-                                "wk.weight",
-                                "wv.weight",
-                                "w1.weight",
-                                "w3.weight",
-                                "tok_embeddings.weight",
-                                "output.weight",
-                            ]
-                            col_split = any(
-                                [key.endswith(filter) for filter in col_filter]
-                            )
-
-                            if col_split:
-                                state_dict[key] = concat_tensor(tensor_list, dim=0)
-
-                                if process_exclusion:
-                                    # CPU 内存回收（速度很慢）
-                                    gc.collect()
-
-                            elif key.endswith("wo.weight") or key.endswith("w2.weight"):
-                                state_dict[key] = concat_tensor(tensor_list, dim=1)
-
-                                if process_exclusion:
-                                    # CPU 内存回收（速度很慢）
-                                    gc.collect()
-
-                    state_dict_keys = state_dict.keys()
-                    for layer_id in range(config.num_layers):
-                        qkv_names = [None, None, None]
-                        for key in state_dict_keys:
-                            if f"layers.{layer_id}.attention.wq.weight" in key:
-                                qkv_names[0] = key
-                            elif f"layers.{layer_id}.attention.wk.weight" in key:
-                                qkv_names[1] = key
-                            elif f"layers.{layer_id}.attention.wv.weight" in key:
-                                qkv_names[2] = key
-                        qkv_name = qkv_names[0].replace("wq", "wqkv")
-                        state_dict[qkv_name] = torch.cat(
-                            [
-                                state_dict.pop(qkv_names[0]),
-                                state_dict.pop(qkv_names[1]),
-                                state_dict.pop(qkv_names[2]),
-                            ],
-                            dim=0
-                        )
-
-                    if env.tp_rank == 0:
-                        # Save gathered weights
-                        if env.is_pipeline:
-                            ckpt_name = f"pytorch_model-{env.pp_rank + 1:05d}-of-{config.pp_size:05d}.bin"
-                            total_size = 0
-                            weight_map = {}
-                            for name, weight in state_dict.items():
-                                weight_size = weight.numel() * dtype_byte_size(
-                                    weight.dtype
-                                )
-                                weight_map[name] = ckpt_name
-                                total_size += weight_size
-                            index_dict = dict(
-                                total_size=total_size, weight_map=weight_map
-                            )
-                            index_dicts = [None for _ in range(env.pp_size)]
-                            dist.gather_object(
-                                index_dict, index_dicts if env.pp_rank == 0 else None, group=env.pp_group
-                            )
-                            if env.pp_rank == 0:
-                                total_size = 0
-                                weight_map = {}
-                                for _index_dict in index_dicts:
-                                    total_size += _index_dict["total_size"]
-                                    weight_map.update(_index_dict["weight_map"])
-                                merged_dict = {
-                                    "metadata": {"total_size": total_size},
-                                    "weight_map": weight_map,
-                                }
-                                io_driver.save(
-                                    json.dumps(merged_dict, indent=2, sort_keys=True)
-                                    + "\n",
-                                    os.path.join(path, "pytorch_model.bin.index.json"),
-                                )
-
-                        else:
-                            ckpt_name = f"pytorch_model.bin"
-                        ckpt_path = os.path.join(path, ckpt_name)
-                        io_driver.save(state_dict, ckpt_path)
-                if dist.is_initialized() and process_exclusion:
-                    dist.barrier()
-        if env.rank == 0:
-            config.save_pretrained(path, protocol=protocol)
-        dist.barrier()
+        return SequenceClassifierOutputWithPast(
+            loss=loss,
+            logits=pooled_logits,
+            past_key_values=transformer_outputs.past_key_values,
+            hidden_states=transformer_outputs.hidden_states,
+            attentions=transformer_outputs.attentions,
+        )

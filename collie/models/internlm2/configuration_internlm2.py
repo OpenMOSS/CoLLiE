@@ -17,9 +17,8 @@
 """ InternLM2 model configuration"""
 
 from transformers.configuration_utils import PretrainedConfig
-from transformers.utils import logging
+from collie.log.logger import logger
 
-logger = logging.get_logger(__name__)
 
 INTERNLM2_PRETRAINED_CONFIG_ARCHIVE_MAP = {}
 
