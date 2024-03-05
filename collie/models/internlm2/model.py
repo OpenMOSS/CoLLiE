@@ -15,18 +15,15 @@ import torch.utils.checkpoint
 import torch.distributed as dist
 from einops import rearrange
 from torch import nn
-from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 from transformers.activations import ACT2FN
 from transformers.modeling_outputs import (
     BaseModelOutputWithPast,
     CausalLMOutputWithPast,
-    SequenceClassifierOutputWithPast,
 )
 from transformers.modeling_utils import PreTrainedModel, dtype_byte_size
 from transformers.utils import (
     add_start_docstrings,
     add_start_docstrings_to_model_forward,
-    replace_return_docstrings,
 )
 from megatron.core import parallel_state, tensor_parallel
 from deepspeed.pipe import LayerSpec, TiedLayerSpec
@@ -307,32 +304,6 @@ class InternLM2Attention(nn.Module):
                 f" and `num_heads`: {self.num_heads})."
             )
 
-        # self.wqkv = nn.Linear(
-        #     self.hidden_size,
-        #     (self.num_heads + 2 * self.num_key_value_heads) * self.head_dim,
-        #     bias=config.bias,
-        # )
-        self.wq = ColumnParallelLinearWithoutBias(
-            config.hidden_size,
-            self.num_heads * self.head_dim,
-            bias=False,
-            gather_output=False,
-            init_method=lambda x: x,
-        )
-        self.wk = ColumnParallelLinearWithoutBias(
-            config.hidden_size,
-            self.num_key_value_heads * self.head_dim,
-            bias=False,
-            gather_output=False,
-            init_method=lambda x: x,
-        )
-        self.wv = ColumnParallelLinearWithoutBias(
-            config.hidden_size,
-            self.num_key_value_heads * self.head_dim,
-            bias=False,
-            gather_output=False,
-            init_method=lambda x: x,
-        )
         self.wqkv = ColumnParallelLinearWithoutBias(
             config.hidden_size,
             (self.num_heads + 2 * self.num_key_value_heads) * self.head_dim,
@@ -341,7 +312,6 @@ class InternLM2Attention(nn.Module):
             init_method=lambda x: x,
         )
 
-        # self.wo = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=config.bias)
         self.wo = RowParallelLinearWithoutBias(
             self.num_heads * self.head_dim,
             config.hidden_size,
@@ -350,6 +320,8 @@ class InternLM2Attention(nn.Module):
             init_method=lambda x: x,
         )
         self._init_rope()
+        if self.config.attn_implementation == "flash_attention_2" or self.config.use_flash:
+            _import_flash_attn()
 
     def _init_rope(self):
         if self.config.rope_scaling is None:
@@ -399,9 +371,6 @@ class InternLM2Attention(nn.Module):
             )
 
         bsz, q_len, _ = hidden_states.size()
-        # print(f"attention_mask: {attention_mask}")
-        print(hidden_states[0, 0, :50])
-        print(f"hidden_states.shape: {hidden_states.shape}")
 
         qkv_states = self.wqkv(hidden_states)
 
@@ -416,21 +385,14 @@ class InternLM2Attention(nn.Module):
         query_states = rearrange(query_states, "b q h gs d -> b q (h gs) d")
         key_states = qkv_states[..., -2, :]
         value_states = qkv_states[..., -1, :]
-        # query_states = self.wq(hidden_states)
-        # key_states = self.wk(hidden_states)
-        # value_states = self.wv(hidden_states)
-        #
-        # query_states = rearrange(query_states, "b q (h d) -> b q h d", d=self.head_dim)
-        # key_states = rearrange(key_states, "b q (h d) -> b q h d", d=self.head_dim)
-        # value_states = rearrange(value_states, "b q (h d) -> b q h d", d=self.head_dim)
 
-        print(query_states.shape, key_states.shape, value_states.shape)
-        # print(query_states[0, 0, 0, :50])
-        # print(key_states[0, 0, 0, :50])
-        # print(value_states[0, 0, 0, :50])
         query_states = query_states.transpose(1, 2)
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
+        if self.config.pp_size > 1:
+            query_states = query_states.contiguous()
+            key_states = key_states.contiguous()
+            value_states = value_states.contiguous()
 
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
@@ -452,7 +414,7 @@ class InternLM2Attention(nn.Module):
 
         if attn_weights.size() != (bsz, self.num_heads/self.config.tp_size, q_len, kv_seq_len):
             raise ValueError(
-                f"Attention weights should be of size {(bsz, self.num_heads, q_len, kv_seq_len)}, but is"
+                f"Attention weights should be of size {(bsz, self.num_heads/self.config.tp_size, q_len, kv_seq_len)}, but is"
                 f" {attn_weights.size()}"
             )
 
@@ -467,9 +429,9 @@ class InternLM2Attention(nn.Module):
         attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
         attn_output = torch.matmul(attn_weights, value_states)
 
-        if attn_output.size() != (bsz, self.num_heads/env.tp_size, q_len, self.head_dim):
+        if attn_output.size() != (bsz, self.num_heads/self.config.tp_size, q_len, self.head_dim):
             raise ValueError(
-                f"`attn_output` should be of size {(bsz, self.num_heads, q_len, self.head_dim)}, but is"
+                f"`attn_output` should be of size {(bsz, self.num_heads/self.config.tp_size, q_len, self.head_dim)}, but is"
                 f" {attn_output.size()}"
             )
 
@@ -516,32 +478,26 @@ class InternLM2FlashAttention2(InternLM2Attention):
 
         bsz, q_len, _ = hidden_states.size()
 
-        # qkv_states = self.wqkv(hidden_states)
-        #
-        # qkv_states = rearrange(
-        #     qkv_states,
-        #     "b q (h gs d) -> b q h gs d",
-        #     gs=2 + self.num_key_value_groups,
-        #     d=self.head_dim,
-        # )
-        #
-        # query_states = qkv_states[..., : self.num_key_value_groups, :]
-        # query_states = rearrange(query_states, "b q h gs d -> b q (h gs) d")
-        # key_states = qkv_states[..., -2, :]
-        # value_states = qkv_states[..., -1, :]
-        query_states = self.wq(hidden_states)
-        key_states = self.wk(hidden_states)
-        value_states = self.wv(hidden_states)
+        qkv_states = self.wqkv(hidden_states)
 
-        query_states = rearrange(query_states, "b q (h d) -> b q h d", d=self.head_dim)
-        key_states = rearrange(key_states, "b q (h d) -> b q h d", d=self.head_dim)
-        value_states = rearrange(value_states, "b q (h d) -> b q h d", d=self.head_dim)
-        print(query_states.shape, key_states.shape, value_states.shape)
-        print(query_states)
+        qkv_states = rearrange(
+            qkv_states,
+            "b q (h gs d) -> b q h gs d",
+            gs=2 + self.num_key_value_groups,
+            d=self.head_dim,
+        )
+        query_states = qkv_states[..., : self.num_key_value_groups, :]
+        query_states = rearrange(query_states, "b q h gs d -> b q (h gs) d")
+        key_states = qkv_states[..., -2, :]
+        value_states = qkv_states[..., -1, :]
+
         query_states = query_states.transpose(1, 2)
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
-
+        if self.config.pp_size > 1:
+            query_states = query_states.contiguous()
+            key_states = key_states.contiguous()
+            value_states = value_states.contiguous()
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
             kv_seq_len += past_key_value[0].shape[-2]
@@ -564,7 +520,7 @@ class InternLM2FlashAttention2(InternLM2Attention):
         attn_output = self._flash_attention_forward(
             query_states, key_states, value_states, attention_mask, q_len
         )
-        attn_output = attn_output.reshape(bsz, q_len, self.hidden_size).contiguous()
+        attn_output = attn_output.reshape(bsz, q_len, int(self.hidden_size/self.config.tp_size)).contiguous()
         attn_output = self.wo(attn_output)
 
         if not output_attentions:
@@ -639,7 +595,7 @@ class InternLM2FlashAttention2(InternLM2Attention):
 
         if query_length == kv_seq_len:
             query_layer = index_first_axis(
-                query_layer.reshape(batch_size * kv_seq_len, self.num_heads, head_dim), indices_k
+                query_layer.reshape(batch_size * kv_seq_len, int(self.num_heads/self.config.tp_size), head_dim), indices_k
             )
             cu_seqlens_q = cu_seqlens_k
             max_seqlen_in_batch_q = max_seqlen_in_batch_k
@@ -719,8 +675,18 @@ class InternLM2DecoderLayer(nn.Module):
         """
 
         residual = hidden_states
-
         hidden_states = self.attention_norm(hidden_states)
+
+        if position_ids is None:  # for pp
+            seq_length = hidden_states.shape[1]
+            past_key_values_length = 0
+            if past_key_value is not None:
+                past_key_values_length = past_key_value[0][0].shape[1]
+            device = hidden_states.device
+            position_ids = torch.arange(
+                past_key_values_length, seq_length + past_key_values_length, dtype=torch.long, device=device
+            )
+            position_ids = position_ids.unsqueeze(0)
 
         # Self Attention
         hidden_states, self_attn_weights, present_key_value = self.attention(
@@ -740,14 +706,6 @@ class InternLM2DecoderLayer(nn.Module):
         hidden_states = self.feed_forward(hidden_states)
         hidden_states = residual + hidden_states
 
-        # outputs = (hidden_states,)
-        #
-        # if self.output_attentions:
-        #     outputs += (self_attn_weights,)
-        #
-        # if self.use_cache:
-        #     outputs += (present_key_value,)
-
         return hidden_states, present_key_value
 
     def forward(self, inputs: dict):
@@ -759,7 +717,7 @@ class InternLM2DecoderLayer(nn.Module):
                 inputs["hidden_states"],
                 inputs.get("attention_mask", None),
                 inputs.get("position_ids", None),
-                layer_past,  # inputs.get("past_key_values", None),
+                layer_past,
             )
         else:
             hidden_states, new_layer_past = self._forward(
@@ -1005,9 +963,12 @@ class InternLM2Model(nn.Module):
                 )
                 use_cache = False
 
-        inputs = {"input_ids": input_ids}
-        inputs["attention_mask"] = attention_mask
-        inputs["hidden_states"] = hidden_states
+        inputs = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "hidden_states": hidden_states,
+            "position_ids": position_ids,
+        }
 
         inputs.update(kv_cache_to_inputs_for_model(past_key_values))
 
@@ -1025,58 +986,6 @@ class InternLM2Model(nn.Module):
             hidden_states=all_hidden_states,
             past_key_values=past_key_values,
         )
-        # decoder layers
-        # all_hidden_states = ()
-        # next_decoder_cache = () if use_cache else None
-        #
-        # for idx, decoder_layer in enumerate(self.layers):
-        #     all_hidden_states += (hidden_states,)
-        #
-        #     past_key_value = past_key_values[idx] if past_key_values is not None else None
-        #
-        #     if self.gradient_checkpointing and self.training:
-        #
-        #         def create_custom_forward(module):
-        #             def custom_forward(*inputs):
-        #                 # None for past_key_value
-        #                 return module(*inputs, None)
-        #
-        #             return custom_forward
-        #
-        #         layer_outputs = torch.utils.checkpoint.checkpoint(
-        #             create_custom_forward(decoder_layer),
-        #             hidden_states,
-        #             attention_mask,
-        #             position_ids,
-        #             None,
-        #         )
-        #     else:
-        #         layer_outputs = decoder_layer(
-        #             hidden_states,
-        #             attention_mask=attention_mask,
-        #             position_ids=position_ids,
-        #             past_key_value=past_key_value,
-        #             use_cache=use_cache,
-        #         )
-        #
-        #     hidden_states = layer_outputs[0]
-        #
-        #     if use_cache:
-        #         next_decoder_cache += (layer_outputs[1],)
-        #
-        # hidden_states = self.norm(hidden_states)
-        #
-        # # add hidden states from the last decoder layer
-        # all_hidden_states += (hidden_states,)
-        #
-        # next_cache = next_decoder_cache if use_cache else None
-        # past_key_values = inputs_to_kv_cache_for_model(self.config.num_hidden_layers, inputs)
-        #
-        # return BaseModelOutputWithPast(
-        #     last_hidden_state=hidden_states,
-        #     past_key_values=next_cache,
-        #     hidden_states=all_hidden_states,
-        # )
 
     @classmethod
     def pipeline_layers(cls, config: CollieConfig):
@@ -1594,25 +1503,6 @@ class InternLM2ForCausalLM(CollieModelForCausalLM):
                         part_state_dict = io_driver.load(
                             os.path.join(path, weight), mode="rb"
                         )
-                        for key in list(part_state_dict.keys()):
-                            if "attention.wqkv.weight" in key:
-                                # qkv_weights = part_state_dict.pop(key)
-                                qkv_weights = part_state_dict[key]
-                                print(qkv_weights.shape)
-                                (wq, wk, wv) = qkv_weights.split(
-                                    [
-                                        config.hidden_size,
-                                        config.num_key_value_heads * head_dim,
-                                        config.num_key_value_heads * head_dim,
-                                    ],
-                                    dim=0,
-                                )
-                                wq_name = key.replace("wqkv", "wq")
-                                wk_name = key.replace("wqkv", "wk")
-                                wv_name = key.replace("wqkv", "wv")
-                                part_state_dict[wq_name] = wq
-                                part_state_dict[wk_name] = wk
-                                part_state_dict[wv_name] = wv
                         state_dict.update(part_state_dict)
                         del part_state_dict
                 if parts is not None:
@@ -1635,9 +1525,6 @@ class InternLM2ForCausalLM(CollieModelForCausalLM):
                 # 根据用户配置的新的 tp size 进行分割
                 for key in list(state_dict.keys()):
                     col_filter = [
-                        "wq.weight",
-                        "wk.weight",
-                        "wv.weight",
                         "wqkv.weight",
                         "w1.weight",
                         "w3.weight",
@@ -1734,9 +1621,7 @@ class InternLM2ForCausalLM(CollieModelForCausalLM):
                         )
                         if env.tp_rank == 0:
                             col_filter = [
-                                "wq.weight",
-                                "wk.weight",
-                                "wv.weight",
+                                "wqkv.weight",
                                 "w1.weight",
                                 "w3.weight",
                                 "tok_embeddings.weight",
@@ -1759,26 +1644,6 @@ class InternLM2ForCausalLM(CollieModelForCausalLM):
                                 if process_exclusion:
                                     # CPU 内存回收（速度很慢）
                                     gc.collect()
-
-                    state_dict_keys = state_dict.keys()
-                    for layer_id in range(config.num_layers):
-                        qkv_names = [None, None, None]
-                        for key in state_dict_keys:
-                            if f"layers.{layer_id}.attention.wq.weight" in key:
-                                qkv_names[0] = key
-                            elif f"layers.{layer_id}.attention.wk.weight" in key:
-                                qkv_names[1] = key
-                            elif f"layers.{layer_id}.attention.wv.weight" in key:
-                                qkv_names[2] = key
-                        qkv_name = qkv_names[0].replace("wq", "wqkv")
-                        state_dict[qkv_name] = torch.cat(
-                            [
-                                state_dict.pop(qkv_names[0]),
-                                state_dict.pop(qkv_names[1]),
-                                state_dict.pop(qkv_names[2]),
-                            ],
-                            dim=0
-                        )
 
                     if env.tp_rank == 0:
                         # Save gathered weights
