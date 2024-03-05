@@ -26,4 +26,6 @@ export NCCL_SOCKET_IFNAME=eth0
 
 #source /cpfs01/shared/pj-test/llm-env/llm-test/bin/activate $BASEDIR/llm-test
 
-torchrun --nproc_per_node 2 test_generation.py
+#torchrun --nproc_per_node 4 test_generation.py
+#torchrun --nproc_per_node 4 test_train.py
+torchrun --nproc_per_node 4 test_save.py

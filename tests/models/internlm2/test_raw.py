@@ -1,5 +1,7 @@
 import sys
 
+import torch
+
 sys.path.append("../../../")
 
 from transformers import AutoTokenizer, GenerationConfig, AutoModelForCausalLM
