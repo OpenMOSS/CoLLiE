@@ -15,6 +15,12 @@ PORT          = 8000
 help:
 	@$(SPHINXBUILD) -M help "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS)
 
+clean:
+	rm -rf html source/_build
+
+build:
+	cd $(SOURCEDIR) && python -m sphinx -T -b html -d _build/doctrees -D language=zh . ../html
+
 server:
 	cd $(BUILDDIR)/html && python -m http.server $(PORT)
 
