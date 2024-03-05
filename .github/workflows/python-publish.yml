@@ -9,9 +9,8 @@
 name: Upload Python Package
 
 on:
-  pull_request:
-    branches:
-      - main
+  release:
+    types: [published]
 
 permissions:
   contents: read
