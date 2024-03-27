@@ -943,7 +943,6 @@ class Qwen2DecoderLayer(nn.Module):
         use_cache = inputs.get("use_cache", None)
         
         if self.config.checkpointing and self.training:
-            assert 0, "Not checked yet"
             hidden_states = torch.utils.checkpoint.checkpoint(
                 self._forward,
                 inputs["hidden_states"],
@@ -1237,7 +1236,6 @@ class Qwen2Model(nn.Module):
                 all_hidden_states += (inputs["hidden_states"],)
 
             if self.gradient_checkpointing and self.training:
-                assert 0, "Haven't been checked yet, I will finish this part tomorrow."
                 layer_outputs = self._gradient_checkpointing_func(
                     decoder_layer.__call__,
                     inputs,
