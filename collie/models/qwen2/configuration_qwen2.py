@@ -14,7 +14,7 @@
 # limitations under the License.
 """ Qwen2 model configuration"""
 
-from ...configuration_utils import PretrainedConfig
+from transformers.configuration_utils import PretrainedConfig
 from collie.log.logger import logger
 
 
@@ -113,6 +113,7 @@ class Qwen2Config(PretrainedConfig):
         sliding_window=4096,
         max_window_layers=28,
         attention_dropout=0.0,
+        _attn_implementation="flash_attention_2",
         **kwargs,
     ):
         self.vocab_size = vocab_size

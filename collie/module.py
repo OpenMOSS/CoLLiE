@@ -517,6 +517,7 @@ class PipelineModel(PipelineModule, PipelineGenerationMixin):
         self.activation_checkpoint_interval = activation_checkpoint_interval
         self.activation_checkpoint_func = activation_checkpoint_func
 
+        self.parts = [int(x) for x in self.parts]  # deepspeed版本问题，新版会使用numpy，这边要转成int才能json.dump
         os.environ["COLLIE_PP_PARTS"] = json.dumps(self.parts)
         os.environ["COLLIE_PP_RANK"] = str(self.stage_id)
         os.environ["COLLIE_DP_RANK"] = str(self._grid.data_parallel_id)

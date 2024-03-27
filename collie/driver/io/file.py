@@ -4,11 +4,14 @@ import os
 import io
 import torch
 import shutil
+from safetensors.torch import save_file, load_file
 
 class FileIODriver(IODriver):
     @staticmethod
     def load(path: str, mode: str):
         assert os.path.exists(path), f"File {path} does not exist."
+        if 's' in mode.lower():
+            return load_file(path, device='cpu')
         if 'b' in mode.lower():
             return torch.load(path, map_location=torch.device('cpu'))
         else:

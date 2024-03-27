@@ -1,22 +1,3 @@
-# coding=utf-8
-# Copyright 2024 The Qwen team, Alibaba Group and the HuggingFace Inc. team. All rights reserved.
-#
-# This code is based on EleutherAI's GPT-NeoX library and the GPT-NeoX
-# and OPT implementations in this library. It has been modified from its
-# original forms to accommodate minor architectural differences compared
-# to GPT-NeoX and OPT used by the Meta AI team that trained the model.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 """ PyTorch Qwen2 model."""
 import gc
 import inspect
@@ -72,12 +53,6 @@ if is_flash_attn_2_available():
 
 _CHECKPOINT_FOR_DOC = "Qwen/Qwen2-7B-beta"
 _CONFIG_FOR_DOC = "Qwen2Config"
-
-QWEN2_PRETRAINED_MODEL_ARCHIVE_LIST = [
-    "Qwen/Qwen2-7B-beta",
-    # See all Qwen2 models at https://huggingface.co/models?filter=qwen2
-]
-
 
 # Copied from transformers.models.llama.modeling_llama._get_unpad_data
 def _get_unpad_data(attention_mask):
@@ -192,10 +167,6 @@ class Qwen2MLP(nn.Module):
         self.hidden_size = config.hidden_size
         self.intermediate_size = config.intermediate_size
         
-        # self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        # self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        # self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
-        
         self.up_proj = ColumnParallelLinearWithoutBias(
             self.hidden_size,
             self.intermediate_size,
@@ -269,11 +240,6 @@ class Qwen2Attention(nn.Module):
                 f"hidden_size must be divisible by num_heads (got `hidden_size`: {self.hidden_size}"
                 f" and `num_heads`: {self.num_heads})."
             )
-        # self.q_proj = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=True)
-        # self.k_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=True)
-        # self.v_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=True)
-        # self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=False)
-        
         self.q_proj = ColumnParallelLinearWithoutBias(
             self.hidden_size,
             self.num_heads * self.head_dim,
@@ -329,10 +295,6 @@ class Qwen2Attention(nn.Module):
         key_states = self.k_proj(hidden_states)
         value_states = self.v_proj(hidden_states)
 
-        #query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-        #key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-        #value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-
         query_states, key_states, value_states = (
             rearrange(query_states, "b n (h d) -> b n h d", d=self.head_dim),
             rearrange(key_states, "b n (h d) -> b n h d", d=self.head_dim),
@@ -345,11 +307,6 @@ class Qwen2Attention(nn.Module):
         query_states = query_states.transpose(1, 2)
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
-        
-        if self.config.pp_size > 1:
-            query_states = query_states.contiguous()
-            key_states = key_states.contiguous()
-            value_states = value_states.contiguous()
 
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
@@ -399,7 +356,6 @@ class Qwen2Attention(nn.Module):
             )
 
         attn_output = attn_output.transpose(1, 2).contiguous()
-
         attn_output = attn_output.reshape(bsz, q_len, self.hidden_size // self.tp_size)
 
         attn_output = self.o_proj(attn_output)
@@ -445,16 +401,11 @@ class Qwen2FlashAttention2(Qwen2Attention):
 
             # overwrite attention_mask with padding_mask
             attention_mask = kwargs.pop("padding_mask")
-
         bsz, q_len, _ = hidden_states.size()
 
         query_states = self.q_proj(hidden_states)
         key_states = self.k_proj(hidden_states)
         value_states = self.v_proj(hidden_states)
-
-        # query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-        # key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-        # value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
         query_states, key_states, value_states = (
             rearrange(query_states, "b n (h d) -> b n h d", d=self.head_dim),
@@ -468,11 +419,6 @@ class Qwen2FlashAttention2(Qwen2Attention):
         query_states = query_states.transpose(1, 2)
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
-        
-        if self.config.pp_size > 1:
-            query_states = query_states.contiguous()
-            key_states = key_states.contiguous()
-            value_states = value_states.contiguous()
 
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
@@ -770,10 +716,6 @@ class Qwen2SdpaAttention(Qwen2Attention):
         key_states = self.k_proj(hidden_states)
         value_states = self.v_proj(hidden_states)
 
-        # query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-        # key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-        # value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-
         query_states, key_states, value_states = (
             rearrange(query_states, "b n (h d) -> b n h d", d=self.head_dim),
             rearrange(key_states, "b n (h d) -> b n h d", d=self.head_dim),
@@ -855,17 +797,14 @@ class Qwen2DecoderLayer(nn.Module):
                 "unexpected results may be encountered."
             )
         # self.self_attn = QWEN2_ATTENTION_CLASSES[config._attn_implementation](config, layer_idx)
-        self.self_attn = Qwen2FlashAttention2(config, layer_idx)
         # self.self_attn = Qwen2SdpaAttention(config, layer_idx)
-        
+        self.self_attn = Qwen2FlashAttention2(config, layer_idx)
         self.mlp = Qwen2MLP(config)
         self.input_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.config = config
-        # add for pp
-        self.idx = layer_idx
 
-    def _forward(
+    def forward(
         self,
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
@@ -893,21 +832,11 @@ class Qwen2DecoderLayer(nn.Module):
                 (see `past_key_values`).
             past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
         """
+
         residual = hidden_states
 
         hidden_states = self.input_layernorm(hidden_states)
 
-        if position_ids is None:  # for pp
-            seq_length = hidden_states.shape[1]
-            past_key_values_length = 0
-            if past_key_value is not None:
-                past_key_values_length = past_key_value[0][0].shape[1]
-            device = hidden_states.device
-            position_ids = torch.arange(
-                past_key_values_length, seq_length + past_key_values_length, dtype=torch.long, device=device
-            )
-            position_ids = position_ids.unsqueeze(0)
-        
         # Self Attention
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states=hidden_states,
@@ -916,9 +845,7 @@ class Qwen2DecoderLayer(nn.Module):
             past_key_value=past_key_value,
             output_attentions=output_attentions,
             use_cache=use_cache,
-            **kwargs,
         )
-
         hidden_states = residual + hidden_states
 
         # Fully Connected
@@ -936,39 +863,6 @@ class Qwen2DecoderLayer(nn.Module):
             outputs += (present_key_value,)
 
         return outputs
-    
-    def forward(self, inputs: dict):
-        # layer_past = inputs_to_kv_cache_for_layer(idx=self.idx, inputs=inputs)
-        output_attentions = inputs.get("output_attentions", None)
-        use_cache = inputs.get("use_cache", None)
-        
-        if self.config.checkpointing and self.training:
-            assert 0, "Not checked yet"
-            hidden_states = torch.utils.checkpoint.checkpoint(
-                self._forward,
-                inputs["hidden_states"],
-                inputs.get("attention_mask", None),
-                inputs.get("position_ids", None),
-                inputs.get("past_key_values", None),
-                output_attentions,  # inputs.get("output_attentions", None),
-                use_cache,  # inputs.get("use_cache", None),
-            )
-        else:
-            hidden_states = self._forward(
-                inputs["hidden_states"],
-                inputs.get("attention_mask", None),
-                inputs.get("position_ids", None),
-                inputs.get("past_key_values", None),
-                output_attentions,  # inputs.get("output_attentions", None),
-                use_cache,  # inputs.get("use_cache", None),
-            )  # **inputs
-        inputs["hidden_states"] = hidden_states[0]
-
-        if use_cache or output_attentions:
-            inputs["addition_info"] = hidden_states[1:]
-
-        # inputs.update(kv_cache_to_inputs_for_layer(idx=self.idx, new_layer_past=new_layer_past))
-        return inputs
 
 
 QWEN2_START_DOCSTRING = r"""
@@ -1102,15 +996,14 @@ class Qwen2Model(nn.Module):
         self.vocab_size = config.vocab_size
         self.config = config
 
-        # self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.embed_tokens = tensor_parallel.VocabParallelEmbedding(
             config.vocab_size, config.hidden_size, params_dtype=torch.float32
         )
-        self.layers = nn.ModuleList([Qwen2DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)])
-        
+        self.layers = nn.ModuleList(
+            [Qwen2DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+        )
         config._attn_implementation = "flash_attention_2"
-        self._attn_implementation = config._attn_implementation
-        
+        self._attn_implementation = config._attn_implementation  # TODO
         self.norm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
         self.gradient_checkpointing = False
@@ -1129,7 +1022,7 @@ class Qwen2Model(nn.Module):
         input_ids: torch.LongTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[List[torch.FloatTensor]] = None,  # TODO: 这边为什么改成tuple了我看，还没测试？
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
@@ -1214,57 +1107,48 @@ class Qwen2Model(nn.Module):
 
         hidden_states = inputs_embeds
 
-        inputs = {
-            "input_ids": input_ids,
-            "hidden_states": hidden_states,
-            "attention_mask": attention_mask,
-            "position_ids": position_ids,
-            "past_key_values": past_key_values,
-            "output_attentions": output_attentions,
-            "use_cache": use_cache,
-        }
-
-        # inputs.update(kv_cache_to_inputs_for_model(past_key_values))
-
         # decoder layers
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
         next_decoder_cache = None
 
-        for idx, decoder_layer in enumerate(self.layers):
-            # print(inputs)
+        for decoder_layer in self.layers:
             if output_hidden_states:
-                all_hidden_states += (inputs["hidden_states"],)
+                all_hidden_states += (hidden_states,)
 
             if self.gradient_checkpointing and self.training:
-                assert 0, "Haven't been checked yet, I will finish this part tomorrow."
                 layer_outputs = self._gradient_checkpointing_func(
                     decoder_layer.__call__,
-                    inputs,
+                    hidden_states,
+                    attention_mask,
+                    position_ids,
+                    past_key_values,
+                    output_attentions,
+                    use_cache,
                 )
             else:
                 layer_outputs = decoder_layer(
-                    inputs,
+                    hidden_states,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    past_key_value=past_key_values,
+                    output_attentions=output_attentions,
+                    use_cache=use_cache,
                 )
-            inputs.update(layer_outputs)
 
-            hidden_states = inputs["hidden_states"]
+            hidden_states = layer_outputs[0]
 
             if use_cache:
-                next_decoder_cache = inputs["addition_info"][1 if output_attentions else 0]
+                next_decoder_cache = layer_outputs[2 if output_attentions else 1]
 
             if output_attentions:
-                all_self_attns += (inputs["addition_info"][0],)
-                
-            # inputs["hidden_states"] = inputs["hidden_states"][0]  # 否则这边还是个tuple
+                all_self_attns += (layer_outputs[1],)
 
         hidden_states = self.norm(hidden_states)
 
         # add hidden states from the last decoder layer
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
-
-        # past_key_values = inputs_to_kv_cache_for_model(self.config.num_hidden_layers, inputs)
 
         next_cache = None
         if use_cache:
@@ -1274,53 +1158,11 @@ class Qwen2Model(nn.Module):
             return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
         return BaseModelOutputWithPast(
             last_hidden_state=hidden_states,
-            # past_key_values=next_cache,
+            past_key_values=next_cache,
             hidden_states=all_hidden_states,
             attentions=all_self_attns,
-            past_key_values=past_key_values,
         )
 
-    @classmethod
-    def pipeline_layers(cls, config: CollieConfig):
-        """
-        Get layers of pipeline.
-
-        :return: list
-        """
-        if isinstance(config, str):
-            config = CollieConfig.from_pretrained(config)
-
-        if config.tie_word_embeddings:
-            embed_tokens = TiedLayerSpec(
-                "embed_tokens",
-                dict_as_params(input_keys="input_ids", output_keys="hidden_states"),
-                tensor_parallel.VocabParallelEmbedding,
-                config.vocab_size,
-                config.hidden_size,
-            )
-        else:
-            embed_tokens = LayerSpec(
-                dict_as_params(input_keys="input_ids", output_keys="hidden_states"),
-                tensor_parallel.VocabParallelEmbedding,
-                config.vocab_size,
-                config.hidden_size,
-            )
-            
-        layers = [
-            LayerSpec(Qwen2DecoderLayer, config, i) for i in range(config.num_hidden_layers)
-        ]
-        norm = LayerSpec(
-            dict_as_params(input_keys="hidden_states", output_keys="hidden_states"),
-            Qwen2RMSNorm,
-            hidden_size=config.hidden_size,
-            eps=config.rms_norm_eps,
-        )
-        
-        return [
-            ("embed_tokens", embed_tokens),
-            ("layers", layers),
-            ("norm", norm),
-        ]
 
 class Qwen2ForCausalLM(CollieModelForCausalLM):
     _tied_weights_keys = ["lm_head.weight"]
@@ -1329,10 +1171,10 @@ class Qwen2ForCausalLM(CollieModelForCausalLM):
         super().__init__(config)
         self.model = Qwen2Model(config)
         self.vocab_size = config.vocab_size
-        # self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         self.lm_head = ColumnParallelLinearWithoutBias(
             self.collie_config.hidden_size, self.collie_config.vocab_size, bias=False
         )
+        self.config = config
         # Initialize weights and apply final processing
         # self.post_init()
         # GenerationMixin 需要的额外参数
@@ -1340,13 +1182,7 @@ class Qwen2ForCausalLM(CollieModelForCausalLM):
         if config.model_config.tie_word_embeddings:
             self.lm_head.weight = self.embed_tokens.weight
         self.main_input_name = "input_ids"
-
-        self.config = config
-        self.use_cache = self.config.model_config.use_cache
-        self.output_attentions = self.config.model_config.output_attentions
-        self.output_hidden_states = self.config.model_config.output_hidden_states
-        self.return_dict = self.config.model_config.return_dict
-
+        
     def clean_cache(self):
         self._clean_hidden_states([*self.model.layers, self.lm_head])
         self._set_use_cache(self.model.layers, False)
@@ -1380,14 +1216,12 @@ class Qwen2ForCausalLM(CollieModelForCausalLM):
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional[List[torch.FloatTensor]] = None,
-        
         inputs_embeds: Optional[torch.FloatTensor] = None,
         labels: Optional[torch.LongTensor] = None,
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-        **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         r"""
         Args:
@@ -1415,16 +1249,10 @@ class Qwen2ForCausalLM(CollieModelForCausalLM):
         "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
         ```"""
 
-        # output_attentions = self.output_attentions
-        # output_hidden_states = self.output_hidden_states
-        # use_cache = self.use_cache
-        # return_dict = self.return_dict
-
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
-        # use_cache = use_cache if use_cache is not None else self.config.use_cache
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
@@ -1456,6 +1284,7 @@ class Qwen2ForCausalLM(CollieModelForCausalLM):
             # Enable model parallelism
             shift_labels = shift_labels.to(shift_logits.device)
             loss = loss_fct(shift_logits, shift_labels)
+
         if not return_dict:
             output = (logits,) + outputs[1:]
             return (loss,) + output if loss is not None else output
@@ -1533,37 +1362,7 @@ class Qwen2ForCausalLM(CollieModelForCausalLM):
                 tuple(past_state.index_select(0, beam_idx.to(past_state.device)) for past_state in layer_past),
             )
         return reordered_past
-    
-    @classmethod
-    def pipeline_layers(cls, config: CollieConfig):
-        """
-        Get layers of pipeline.
 
-        :return: list
-        """
-        if isinstance(config, str):
-            config = CollieConfig.from_pretrained(config)
-
-        if config.tie_word_embeddings:
-            output = TiedLayerSpec(
-                "embed_tokens",
-                dict_as_params(input_keys="hidden_states", output_keys="logits"),
-                ColumnParallelLMHead,
-                config.hidden_size,
-                config.vocab_size,
-                bias=False,
-            )
-        else:
-            output = LayerSpec(
-                dict_as_params(input_keys="hidden_states", output_keys="logits"),
-                ColumnParallelLMHead,
-                config.hidden_size,
-                config.vocab_size,
-                bias=False,
-            )
-
-        return [("model", Qwen2Model.pipeline_layers(config)), ("lm_head", output)]
-    
     @staticmethod
     def load_parallel_state_dict(
             path: str,
