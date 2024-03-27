@@ -1665,7 +1665,7 @@ class Qwen2ForCausalLM(CollieModelForCausalLM):
                 ) as pbar:
                     for weight in pbar:
                         part_state_dict = io_driver.load(
-                            os.path.join(path, weight), mode="srb"
+                            os.path.join(path, weight), mode="rb"
                         )
                         state_dict.update(part_state_dict)
                         del part_state_dict

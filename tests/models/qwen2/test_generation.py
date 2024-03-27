@@ -13,7 +13,7 @@ tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
 config = CollieConfig.from_pretrained(model_name_or_path)
 
 config.dp_size = 1
-config.tp_size = 1
+config.tp_size = 2
 config.pp_size = 1
 
 model = Qwen2ForCausalLM.from_pretrained(model_name_or_path, config=config).cuda()
