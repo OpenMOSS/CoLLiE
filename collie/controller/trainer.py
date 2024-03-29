@@ -372,6 +372,7 @@ class Trainer(TrainerEventTrigger):
                     self.engine.module.get_base_model(), PipelineModel
                 ):
                     self.engine.module.get_base_model().forward_type = "train"
+                '''
                 with self.monitor as item:
                     loss = self.train_fn(self, batch, self.global_batch_idx)
                     item.update(
@@ -386,6 +387,23 @@ class Trainer(TrainerEventTrigger):
                             "mode": "train",
                         }
                     )
+                '''
+                loss = self.train_fn(self, batch, self.global_batch_idx)
+                self.monitor.item.update(
+                    {
+                        "loss": round(loss, 4),
+                        "lr": self.lr,
+                        "batch": batch,
+                        "batch_idx": self.batch_idx,
+                        "epoch_idx": self.epoch_idx,
+                        "global_batch_idx": self.global_batch_idx,
+                        "memory_allocated": torch.cuda.max_memory_allocated(),
+                        "mode": "train",
+                    }
+                )
+                with self.monitor as item:
+                    pass
+                
                 tqbar_batch.set_postfix(Loss=round(loss, 4))
                 self.on_train_batch_end(loss)
                 if (
