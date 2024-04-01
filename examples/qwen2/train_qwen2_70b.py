@@ -53,13 +53,14 @@ lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=1000)
 with open("./zero_shot.json") as fin:
     data_list = json.load(fin)
 dataset = []
-for data in data_list[:1]:
-    dataset.append(
-        {
-            "input": data["conversations"][0]["value"],
-            "output": data["conversations"][1]["value"],
-        }
-    )
+for data in data_list:
+    for i in range(len(data["conversations"])):
+        dataset.append(
+            {
+                "input": data["conversations"][2*i]["value"],
+                "output": data["conversations"][2*i+1]["value"],
+            }
+        )
 
 ratio = 0.01
 eval_dataset_ppl, train_dataset = dataset[:int(len(dataset) * ratio)], dataset[int(len(dataset) * ratio):]

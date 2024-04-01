@@ -135,7 +135,7 @@ class CollieDatasetForTraining(Dataset):
         ]
 
     当使用第二种数据格式时，只有 `output` 部分的 token 会参与 loss计算。
-    当使用第二种数据格式时，`labels` 字段是可选的，如果不提供 `labels` 默认计算所有 token 的 loss
+    当使用第三种数据格式时，`labels` 字段是可选的，如果不提供 `labels` 默认计算所有 token 的 loss
     """
 
     def __init__(

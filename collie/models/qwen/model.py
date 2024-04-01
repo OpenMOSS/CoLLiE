@@ -1020,6 +1020,7 @@ class QWenLMHeadModel(CollieModelForCausalLM):
     def __init__(self, config: CollieConfig):
         super().__init__(config)
         self.config = config
+        config.fp32=True
         assert (
             config.bf16 + config.fp16 + config.fp32 <= 1
         ), "Only one of \"bf16\", \"fp16\", \"fp32\" can be true"
