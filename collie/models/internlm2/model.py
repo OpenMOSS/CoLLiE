@@ -1399,11 +1399,19 @@ class InternLM2ForCausalLM(CollieModelForCausalLM):
                         weights.append(weight_map["model.norm.weight"])
                 else:
                     # 如果没有 pytorch_model.bin.index.json 文件的话，那么就加载所有的权重
+                    # 优先加载 safetensors 存储的权重
                     weights = [
                         weight
                         for weight in io_driver.list(path)
-                        if weight.endswith(".bin")
+                        if weight.endswith(".safetensors")
                     ]
+                    if len(weights) == 0:
+                        # 如果没有 safetensors 文件，那么就加载 bin 文件
+                        weights = [
+                            weight
+                            for weight in io_driver.list(path)
+                            if weight.endswith(".bin")
+                        ]
                 with progress(
                     weights,
                     desc="Loading state dict",

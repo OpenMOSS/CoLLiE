@@ -3,6 +3,7 @@ from collie.driver.io.base import IODriver
 import os
 import io
 import torch
+from safetensors.torch import load_file
 import shutil
 
 class FileIODriver(IODriver):
@@ -10,7 +11,10 @@ class FileIODriver(IODriver):
     def load(path: str, mode: str):
         assert os.path.exists(path), f"File {path} does not exist."
         if 'b' in mode.lower():
-            return torch.load(path, map_location=torch.device('cpu'))
+            if path.endswith(".safetensors"):
+                return load_file(path, device='cpu')
+            else:
+                return torch.load(path, map_location=torch.device('cpu'))
         else:
             with open(path, 'r') as f:
                 return f.read()
