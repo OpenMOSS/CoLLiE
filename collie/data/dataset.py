@@ -7,7 +7,7 @@ import os
 import random
 import threading
 from functools import reduce
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple, Callable
 
 import numpy as np
 import torch
@@ -16,9 +16,11 @@ from torch.utils.data.dataset import Dataset
 from transformers import PreTrainedTokenizer
 
 from collie.driver.io import FileIODriver
+from .template_utils import tokenize_conversation
 
 __all__ = [
     "CollieDatasetForTraining",
+    "CollieDatasetForTemplatedMultiTurnChat",
     "CollieDatasetForGeneration",
     "CollieDatasetForClassification",
 ]
@@ -55,9 +57,9 @@ class _ShardContainer(list):
                 mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
                 self.threadlocal.handles = [f, mm]
                 if (
-                    path.endswith(".gz")
-                    or path.endswith(".bz")
-                    or path.endswith(".bz2")
+                        path.endswith(".gz")
+                        or path.endswith(".bz")
+                        or path.endswith(".bz2")
                 ):
                     raise NotImplementedError(
                         "Compressed files are not supported because .seek() would require "
@@ -72,9 +74,9 @@ class _ShardContainer(list):
         meta = self.meta[self.indices[index]]
         file_name: str = meta["file"]
         if (
-            self.file is None
-            or self.file_name != file_name.replace(".meta", "")
-            or (isinstance(self.file, mmap.mmap) and self.file.closed)
+                self.file is None
+                or self.file_name != file_name.replace(".meta", "")
+                or (isinstance(self.file, mmap.mmap) and self.file.closed)
         ):
             self.file_name = file_name.replace(".meta", "")
             if self.file is not None:
@@ -92,7 +94,7 @@ def _inspect_special_tokens_length(tokenizer):
         if ids_with_special_tokens[bos_length] == ids_without_special_tokens[0]:
             break
     eos_length = (
-        len(ids_with_special_tokens) - len(ids_without_special_tokens) - bos_length
+            len(ids_with_special_tokens) - len(ids_without_special_tokens) - bos_length
     )
     return bos_length, eos_length
 
@@ -139,13 +141,13 @@ class CollieDatasetForTraining(Dataset):
     """
 
     def __init__(
-        self,
-        dataset: Sequence[Dict],
-        tokenizer: Optional[PreTrainedTokenizer] = None,
-        add_special_tokens: bool = True,
-        shuffle: bool = False,
-        seed: int = 1024,
-        max_length: int = -1,
+            self,
+            dataset: Sequence[Dict],
+            tokenizer: Optional[PreTrainedTokenizer] = None,
+            add_special_tokens: bool = True,
+            shuffle: bool = False,
+            seed: int = 1024,
+            max_length: int = -1,
     ):
         self.dataset = dataset
         self.tokenizer = tokenizer
@@ -187,7 +189,7 @@ class CollieDatasetForTraining(Dataset):
                     torch.ones_like(torch.tensor(input_ids)).cpu().tolist(),
                 )
             elif (
-                "input" in self.dataset[0].keys() and "output" in self.dataset[0].keys()
+                    "input" in self.dataset[0].keys() and "output" in self.dataset[0].keys()
             ):
                 inputs = self.tokenizer(
                     self.dataset[index]["input"] + self.dataset[index]["output"],
@@ -229,11 +231,11 @@ class CollieDatasetForTraining(Dataset):
 
     @classmethod
     def from_json(
-        cls,
-        path: str,
-        tokenizer: Optional[PreTrainedTokenizer] = None,
-        shuffle: bool = False,
-        seed: int = 1024,
+            cls,
+            path: str,
+            tokenizer: Optional[PreTrainedTokenizer] = None,
+            shuffle: bool = False,
+            seed: int = 1024,
     ):
         dataset = cls(
             dataset=json.loads(FileIODriver.load(path, mode="r")),
@@ -275,6 +277,70 @@ class CollieDatasetForTraining(Dataset):
 
 class CollieDatasetForPerplexity(CollieDatasetForTraining):
     ...
+
+
+class CollieDatasetForTemplatedMultiTurnChat(CollieDatasetForTraining):
+    """**CoLLie** 中的多轮对话数据集，会根据模板进行处理
+    需提供的数据格式形似：
+
+    .. code-block::
+
+            [
+                {
+                    "history": [
+                        {
+                            "role": "user",
+                            "content": "这是用户的问题"
+                        },
+                        {
+                            "role": "assistant",
+                            "content": "这是助手的回答"
+                        },
+                        ...
+                    ]
+                },
+                ...
+            ]
+    """
+    def __init__(
+            self,
+            dataset: Sequence[Dict],
+            tokenizer: Optional[PreTrainedTokenizer],
+            shuffle: bool = False,
+            seed: int = 1024,
+            max_length: int = -1,
+            template_fn: Optional[Callable] = None,
+            add_generation_prompt: bool = False,
+    ):
+        super().__init__(
+            dataset=dataset,
+            tokenizer=tokenizer,
+            shuffle=shuffle,
+            seed=seed,
+            max_length=max_length,
+        )
+        self.template_fn = template_fn
+        self.add_generation_prompt = add_generation_prompt
+
+    def __getitem__(self, index) -> Dict:
+        if index > len(self):
+            raise IndexError("Index out of range in dataset.")
+
+        input_ids, labels, attention_mask = tokenize_conversation(
+            self.dataset[index],
+            self.tokenizer,
+            prepare_template_fn=self.template_fn,
+            add_generation_prompt=self.add_generation_prompt,
+        )
+        if self.max_length > 0:
+            input_ids = input_ids[: self.max_length]
+            attention_mask = attention_mask[: self.max_length]
+            labels = labels[: self.max_length]
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "labels": labels,
+        }
 
 
 class CollieDatasetForGeneration(CollieDatasetForTraining):
@@ -351,14 +417,14 @@ class CollieDatasetForClassification(CollieDatasetForTraining):
     """
 
     def __init__(
-        self,
-        dataset: Sequence[Dict],
-        tokenizer: Optional[PreTrainedTokenizer] = None,
-        add_special_tokens: bool = True,
-        shuffle: bool = False,
-        seed: int = 1024,
-        max_length: int = -1,
-        style: str = "harness",
+            self,
+            dataset: Sequence[Dict],
+            tokenizer: Optional[PreTrainedTokenizer] = None,
+            add_special_tokens: bool = True,
+            shuffle: bool = False,
+            seed: int = 1024,
+            max_length: int = -1,
+            style: str = "harness",
     ):
         super().__init__(
             dataset=dataset,
@@ -384,9 +450,9 @@ class CollieDatasetForClassification(CollieDatasetForTraining):
         else:
             if self.style == "harness":
                 if (
-                    "input" in self.dataset[0].keys()
-                    and "output" in self.dataset[0].keys()
-                    and "target" in self.dataset[0].keys()
+                        "input" in self.dataset[0].keys()
+                        and "output" in self.dataset[0].keys()
+                        and "target" in self.dataset[0].keys()
                 ):
                     input_ids = []
                     attention_mask = []
@@ -438,9 +504,9 @@ class CollieDatasetForClassification(CollieDatasetForTraining):
                 }
             elif self.style == "helm":
                 if (
-                    "input" in self.dataset[0].keys()
-                    and "output" in self.dataset[0].keys()
-                    and "target" in self.dataset[0].keys()
+                        "input" in self.dataset[0].keys()
+                        and "output" in self.dataset[0].keys()
+                        and "target" in self.dataset[0].keys()
                 ):
                     inputs = self.tokenizer(
                         self.dataset[index]["input"],

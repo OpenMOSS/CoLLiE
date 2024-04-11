@@ -28,7 +28,7 @@ from .metrics import BaseMetric, DecodeMetric, AccuracyMetric, \
     PPLMetric, BleuMetric, ClassifyFPreRecMetric
 from .data import CollieDatasetForClassification, CollieBatchSampler, \
     CollieDataLoader, CollieDatasetForTraining, CollieDatasetForGeneration, \
-        CollieDatasetForPerplexity
+    CollieDatasetForPerplexity, CollieDatasetForTemplatedMultiTurnChat
 from .optim import Lomo, Lion, SophiaG, Adan
 
 __all__ = [
@@ -81,8 +81,8 @@ __all__ = [
     'broadcast_tensor',
     'concat_tensor',
     'find_tensors',
-    'BaseProvider', 
-    'GradioProvider', 
+    'BaseProvider',
+    'GradioProvider',
     'BaseMonitor',
     'StepTimeMonitor',
     'TGSMonitor',
@@ -100,23 +100,24 @@ __all__ = [
     "CPUMemoryMonitor",
     "ColliePadder",
     "get_keys_to_not_convert",
-    
+
     # metrics
     'BaseMetric',
-    'DecodeMetric', 
-    'AccuracyMetric', 
+    'DecodeMetric',
+    'AccuracyMetric',
     'PPLMetric',
     'BleuMetric',
     'ClassifyFPreRecMetric',
-    
-    #data
-    'CollieDatasetForClassification', 
-    'CollieBatchSampler', 
-    'CollieDataLoader', 
+
+    # data
+    'CollieDatasetForClassification',
+    'CollieBatchSampler',
+    'CollieDataLoader',
     'CollieDatasetForTraining',
+    'CollieDatasetForTemplatedMultiTurnChat',
     'CollieDatasetForGeneration',
     'CollieDatasetForPerplexity',
-    
+
     # optim
     "Lomo",
     "Lion",
