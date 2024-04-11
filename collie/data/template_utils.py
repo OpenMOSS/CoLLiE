@@ -22,7 +22,8 @@ def prepare_chatml_messages(messages, special_tokens_map, add_generation_prompt=
             prepared_messages += [{"content": '<|im_end|>' + '\n', "require_loss": False}]
         else:
             prepared_messages += [
-                {"content": f"<|im_start|>{message['role']}\n{message['content']}<|im_end|>\n", "require_loss": False}]
+                {"content": f"<|im_start|>{message['role']}\n{message['content']}<|im_end|>\n", "require_loss": False}
+            ]
     if add_generation_prompt:
         prepared_messages += [{"content": '<|im_start|>assistant\n', "require_loss": False}]
     return prepared_messages
@@ -52,7 +53,13 @@ def tokenize_conversation(conversation, tokenizer, prepare_template_fn: Callable
     labels = []
     attention_mask = []
     for m in prepared_messages:
-        # add_special_token=False
-        pass
+        output = tokenizer(m['content'], add_special_tokens=False)
+        if m['require_loss']:
+            label = output['input_ids']
+        else:
+            label = [-100] * len(output['input_ids'])
+        input_ids += output['input_ids']
+        labels += label
+        attention_mask += output['attention_mask']
 
     return input_ids, labels, attention_mask
