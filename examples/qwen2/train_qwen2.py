@@ -8,7 +8,6 @@ from collie import (
 import torch
 from transformers import AutoTokenizer
 
-BASE_MODEL_PATH = "huggyllama/llama-7b"
 BASE_MODEL_PATH = "Qwen/Qwen1.5-7B"
 MODEL_PATH = BASE_MODEL_PATH
 
@@ -53,7 +52,7 @@ lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=1000)
 with open("./zero_shot.json") as fin:
     data_list = json.load(fin)
 dataset = []
-for data in data_list[:1]:
+for data in data_list:
     dataset.append(
         {
             "input": data["conversations"][0]["value"],
