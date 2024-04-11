@@ -41,7 +41,10 @@ TOKENIZER_PREPARE_TEMPLATE_FN_MAPPING = {
 def tokenize_conversation(conversation, tokenizer, prepare_template_fn: Callable or None = None,
                           add_generation_prompt=False):
     if prepare_template_fn is None:
-        prepare_template_fn = TOKENIZER_PREPARE_TEMPLATE_FN_MAPPING[type(tokenizer).__name__]
+        if type(tokenizer).__name__ not in TOKENIZER_PREPARE_TEMPLATE_FN_MAPPING:
+            raise ValueError(f"Tokenizer {type(tokenizer).__name__} has no preset template. Please provide one.")
+        else:
+            prepare_template_fn = TOKENIZER_PREPARE_TEMPLATE_FN_MAPPING[type(tokenizer).__name__]
     prepared_messages = prepare_template_fn(messages=conversation, special_tokens_map=tokenizer.special_tokens_map,
                                             add_generation_prompt=add_generation_prompt)
 
