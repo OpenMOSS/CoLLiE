@@ -101,7 +101,7 @@ def _inspect_special_tokens_length(tokenizer):
 
 class CollieDatasetForTraining(Dataset):
     """**CoLLie** 中的基本数据格式，可用于预训练、微调任务。
-    需提供的数据格式形似：
+    需提供的dataset数据格式形似：
 
     .. code-block::
 
@@ -281,7 +281,7 @@ class CollieDatasetForPerplexity(CollieDatasetForTraining):
 
 class CollieDatasetForTemplatedMultiTurnChat(CollieDatasetForTraining):
     """**CoLLie** 中的多轮对话数据集，会根据模板进行处理
-    需提供的数据格式形似：
+    :param dataset: 提供的多轮对话数据，形如：
 
     .. code-block::
 
@@ -301,6 +301,14 @@ class CollieDatasetForTemplatedMultiTurnChat(CollieDatasetForTraining):
                 },
                 ...
             ]
+
+    :tokenizer: 用于处理数据的 tokenizer
+    :shuffle: 是否打乱数据
+    :seed: 随机种子
+    :max_length: 每条数据最大长度
+    :template_fn: 模板函数，为多轮对话数据添加模板
+    :add_generation_prompt: 是否添加用于生成的 prompt，训练时不需要
+    :text_field: 对话数据中文本字段的名称，默认为 `history`
     """
     def __init__(
             self,
@@ -311,6 +319,7 @@ class CollieDatasetForTemplatedMultiTurnChat(CollieDatasetForTraining):
             max_length: int = -1,
             template_fn: Optional[Callable] = None,
             add_generation_prompt: bool = False,
+            text_field: str = "history",
     ):
         super().__init__(
             dataset=dataset,
@@ -321,6 +330,7 @@ class CollieDatasetForTemplatedMultiTurnChat(CollieDatasetForTraining):
         )
         self.template_fn = template_fn
         self.add_generation_prompt = add_generation_prompt
+        self.text_field = text_field
 
     def __getitem__(self, index) -> Dict:
         if index > len(self):
@@ -329,6 +339,7 @@ class CollieDatasetForTemplatedMultiTurnChat(CollieDatasetForTraining):
         input_ids, labels, attention_mask = tokenize_conversation(
             self.dataset[index],
             self.tokenizer,
+            text_field=self.text_field,
             prepare_template_fn=self.template_fn,
             add_generation_prompt=self.add_generation_prompt,
         )
