@@ -61,7 +61,8 @@ def prepare_moss_messages(messages, special_tokens_map, text_field, add_generati
         "video": "<|end_of_video|>",  # 暂时没用
         "moss": "<|end_of_moss|>",  # 每轮对话的最终回复
     }
-    first_user_message = True
+    first_user_message = True  # 用于决定是否添加"<|end_of_moss|>"
+    first_response_this_turn = True  # 用于决定是否将"<|im_start|>"设置为需要学习
 
     for message in messages[text_field]:
         role = message['role']
@@ -74,27 +75,40 @@ def prepare_moss_messages(messages, special_tokens_map, text_field, add_generati
                 # 上一轮 moss 完成了回复，预测的最后一个 token 是 <|end_of_moss|>
                 prepared_messages.append({"content": end_token_dict['moss'], "require_loss": True})
                 prepared_messages.append({"content": f"\n{message_content}", "require_loss": False})
+                first_response_this_turn = True
         elif role == "assistant":
-            prepared_messages.append({"content": '<|im_start|>assistant\n', "require_loss": False})
-            prepared_messages.append({"content": message['content'] + end_token_dict['assistant'], "require_loss": True})
-            prepared_messages.append({"content": '\n', "require_loss": False})
-        elif role == "func_call":
-            func_call_content = json.dumps(message["func_call"])
-            prepared_messages.append(
-                {
-                    "content": f"<|im_start|>func_call\n{func_call_content}{end_token_dict['func_call']}",
-                    "require_loss": True
-                }
-            )
-            prepared_messages.append({"content": '\n', "require_loss": False})
-        elif role == "func_ret":
-            func_ret_content = json.dumps(message["func_ret"])
-            prepared_messages.append(
-                {
-                    "content": f"<|im_start|>func_ret\n{func_ret_content}{end_token_dict['func_ret']}\n",
-                    "require_loss": False
-                }
-            )
+            if "content" in message:
+                if first_response_this_turn:
+                    prepared_messages.append({"content": '<|im_start|>', "require_loss": False})
+                    first_response_this_turn = False
+                else:
+                    prepared_messages.append({"content": '<|im_start|>', "require_loss": True})
+                prepared_messages.append({"content": f"assistant\n{message['content']}{end_token_dict['assistant']}", "require_loss": True})
+                prepared_messages.append({"content": '\n', "require_loss": False})
+            elif "func_call" in message:
+                func_call_content = json.dumps(message["func_call"])
+                if first_response_this_turn:
+                    prepared_messages.append({"content": '<|im_start|>', "require_loss": False})
+                    prepared_messages.append({"content": f"func_call\n{func_call_content}{end_token_dict['func_call']}\n", "require_loss": True})
+                    first_response_this_turn = False
+                else:
+                    prepared_messages.append(
+                        {
+                            "content": f"<|im_start|>func_call\n{func_call_content}{end_token_dict['func_call']}",
+                            "require_loss": True
+                        }
+                    )
+                    prepared_messages.append({"content": '\n', "require_loss": False})
+            elif "func_ret" in message:
+                func_ret_content = json.dumps(message["func_ret"])
+                prepared_messages.append(
+                    {
+                        "content": f"<|im_start|>func_ret\n{func_ret_content}{end_token_dict['func_ret']}\n",
+                        "require_loss": False
+                    }
+                )
+            else:
+                raise ValueError(f"Unknown assistant message: {message}")
         else:
             prepared_messages.append(
                 {"content": f"<|im_start|>{role}\n{message['content']}{end_token_dict[role]}\n", "require_loss": False}
@@ -102,7 +116,7 @@ def prepare_moss_messages(messages, special_tokens_map, text_field, add_generati
 
     prepared_messages.append({"content": end_token_dict['moss'] + "\n", "require_loss": True})
     if add_generation_prompt:
-        prepared_messages += [{"content": '<|im_start|>assistant\n', "require_loss": False}]
+        prepared_messages += [{"content": '<|im_start|>', "require_loss": False}]
     return prepared_messages
 
 
