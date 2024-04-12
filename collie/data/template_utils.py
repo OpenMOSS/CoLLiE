@@ -16,10 +16,10 @@ def prepare_chatml_messages(messages, special_tokens_map, add_generation_prompt=
     prepared_messages = []
     prepared_messages += [{"content": special_tokens_map['bos_token'], "require_loss": False}]
     for message in messages['history']:
-        if message['role'] == "assitant":
-            prepared_messages += [{"content": '<|im_start|>' + message['role'] + '\n', "require_loss": False}]
-            prepared_messages += [{"content": message['content'], "require_loss": True}]
-            prepared_messages += [{"content": '<|im_end|>' + '\n', "require_loss": False}]
+        if message['role'] == "assistant":
+            prepared_messages += [{"content": '<|im_start|>assistant\n', "require_loss": False}]
+            prepared_messages += [{"content": message['content'] + '<|im_end|>', "require_loss": True}]
+            prepared_messages += [{"content": '\n', "require_loss": False}]
         else:
             prepared_messages += [
                 {"content": f"<|im_start|>{message['role']}\n{message['content']}<|im_end|>\n", "require_loss": False}
