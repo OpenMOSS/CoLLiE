@@ -154,3 +154,159 @@ def tokenize_conversation(conversation, tokenizer, text_field='history', prepare
         attention_mask += output['attention_mask']
 
     return input_ids, labels, attention_mask
+
+
+if __name__ == "__main__":
+    T = {
+        "chat": [
+            {
+                "role": "system",
+                "content": "I have nothing to tell you, just be yourself."
+            }, {
+                "role": "user",
+                "content": "Give me the current weather (use Celcius) for Toronto, Canada."
+            },
+            {
+                "role": "assistant",
+                # "hidden": True,
+                "content": "I need to use the function Weather.get_weather to get the current weather for Toronto, Canada."
+            },
+            {
+                "role": "assistant",
+                # "hidden": True,
+                "func_call": {
+                    "name": "Weather.get_weather",
+                    "parameters": {
+                        "city": "Toronto, Canada"
+                    }
+                }
+            },
+            {
+                "role": "assistant",
+                # "hidden": True,
+                "func_ret": {"min_temperature": 22, "max_temperature": 25, "weather": "Sunny"}
+            },
+            {
+                "role": "assistant",
+                "content": "The current weather in Toronto is 22C."
+            }, {
+                "role": "user",
+                "content": "Draw a picture of Toronto."
+            },
+            {
+                "role": "assistant",
+                "content": "Ok, I will draw a picture for you."
+            },
+            {
+                "role": "assistant",
+                "func_call": {
+                    "name": "text2img",
+                    "parameters": {
+                        "query": "Draw a picture of Toronto"
+                    }
+                }
+            },
+            {
+                "role": "assistant",
+                "func_ret": {
+                    "image": "xxxxx"
+                }
+            },
+            {
+                "role": "assistant",
+                "content": "这幅图展示了xxxx"
+            }
+        ]
+    }
+    T['history'] = [t for t in T['chat'] if "content" in t]
+
+
+    def _colored_string(string: str, color: str or int) -> str:
+        """在终端中显示一串有颜色的文字
+
+        :param string: 在终端中显示的文字
+        :param color: 文字的颜色
+        :return:
+        """
+        if isinstance(color, str):
+            color = {
+                "black": 30,
+                "red": 31,
+                "green": 32,
+                "yellow": 33,
+                "blue": 34,
+                "purple": 35,
+                "cyan": 36,
+                "white": 37
+            }[color]
+        return "\033[%dm%s\033[0m" % (color, string)
+
+
+    result = prepare_moss_messages(T, special_tokens_map={'bos_token': '<BOS>'}, text_field='chat')
+
+    print("\n\n====moss2====\n")
+    for t in result:
+        print(_colored_string(t['content'], 'green' if t["require_loss"] else 'red'), end="")
+
+    result = prepare_chatml_messages(T, special_tokens_map={'bos_token': '<BOS>'}, text_field='history')
+
+    print("\n\n====chatml====\n")
+    for t in result:
+        print(_colored_string(t['content'], 'green' if t["require_loss"] else 'red'), end="")
+
+    T['history'] = [
+        {
+            "role": "user",
+            "content": "Give me the current weather (use Celcius) for Toronto, Canada."
+        },
+        {
+            "role": "assistant",
+            "func_call": {
+                "name": "Weather.get_weather",
+                "parameters": {
+                    "city": "Toronto, Canada"
+                }
+            }
+        },
+        {
+            "role": "assistant",
+            "func_ret": {"min_temperature": 22, "max_temperature": 25, "weather": "Sunny"}
+        },
+        {
+            "role": "assistant",
+            "content": "Ok, I will draw a picture for you."
+        },
+        {
+            "role": "user",
+            "content": "Draw a picture of Toronto."
+        },
+        {
+            "role": "assistant",
+            "content": "Ok, I will draw a picture for you."
+        },
+        {
+            "role": "assistant",
+            "func_call": {
+                "name": "text2img",
+                "parameters": {
+                    "query": "Draw a picture of Toronto"
+                }
+            }
+        },
+        {
+            "role": "assistant",
+            "func_ret": {
+                "image": "xxxxx"
+            }
+        },
+        # {
+        #     "role": "assistant",
+        #     "content": "这幅图展示了xxxx"
+        # }
+    ]
+
+    result = prepare_moss_messages(T, special_tokens_map={'bos_token': '<BOS>'}, text_field='history')
+
+    print("\n\n====moss2====\n")
+    for t in result:
+        print(_colored_string(t['content'], 'green' if t["require_loss"] else 'red'), end="")
