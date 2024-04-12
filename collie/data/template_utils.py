@@ -83,13 +83,16 @@ def prepare_moss_messages(messages, special_tokens_map, text_field, add_generati
                     first_response_this_turn = False
                 else:
                     prepared_messages.append({"content": '<|im_start|>', "require_loss": True})
-                prepared_messages.append({"content": f"assistant\n{message['content']}{end_token_dict['assistant']}", "require_loss": True})
+                prepared_messages.append(
+                    {"content": f"assistant\n{message['content']}{end_token_dict['assistant']}", "require_loss": True})
                 prepared_messages.append({"content": '\n', "require_loss": False})
             elif "func_call" in message:
                 func_call_content = json.dumps(message["func_call"])
                 if first_response_this_turn:
                     prepared_messages.append({"content": '<|im_start|>', "require_loss": False})
-                    prepared_messages.append({"content": f"func_call\n{func_call_content}{end_token_dict['func_call']}\n", "require_loss": True})
+                    prepared_messages.append(
+                        {"content": f"func_call\n{func_call_content}{end_token_dict['func_call']}\n",
+                         "require_loss": True})
                     first_response_this_turn = False
                 else:
                     prepared_messages.append(
