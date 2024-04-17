@@ -82,8 +82,8 @@ CoLLiE 基于 *DeepSpeed* 和 *PyTorch*，为大型语言模型提供协作式�
 ## CoLLiE支持的模型
 - MOSS系列：[MOSS-MOON](https://github.com/OpenMOSS/MOSS)
 - InternLM系列：[InternLM2](https://github.com/InternLM/InternLM)
-- LLaMA系列：[LLaMA](https://github.com/facebookresearch/llama)、[LLaMA-2](https://github.com/facebookresearch/llama)
-- ChatGLM系列: [ChatGLM](https://github.com/THUDM/ChatGLM2-6B)、[chatglm2-6b](https://huggingface.co/THUDM/chatglm2-6b)
+- LLaMA系列：[LLaMA](https://github.com/meta-llama/llama)、[LLaMA-2](https://github.com/meta-llama/llama)
+- ChatGLM系列：[ChatGLM](https://github.com/THUDM/ChatGLM2-6B)、[ChatGLM2](https://github.com/THUDM/ChatGLM2-6B)
 
 
 ## 评测
