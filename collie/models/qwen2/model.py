@@ -338,9 +338,6 @@ class Qwen2Attention(nn.Module):
             rearrange(key_states, "b n (h d) -> b n h d", d=self.head_dim),
             rearrange(value_states, "b n (h d) -> b n h d", d=self.head_dim),
         )
-
-        self.num_heads_tp = query_states.shape[2]
-        self.tp_size = self.num_heads // self.num_heads_tp
         
         query_states = query_states.transpose(1, 2)
         key_states = key_states.transpose(1, 2)
@@ -373,9 +370,9 @@ class Qwen2Attention(nn.Module):
 
         attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
 
-        if attn_weights.size() != (bsz, self.num_heads_tp, q_len, kv_seq_len):
+        if attn_weights.size() != (bsz, self.num_heads // self.config.tp_size, q_len, kv_seq_len):
             raise ValueError(
-                f"Attention weights should be of size {(bsz, self.num_heads_tp, q_len, kv_seq_len)}, but is"
+                f"Attention weights should be of size {(bsz, self.num_heads // self.config.tp_size, q_len, kv_seq_len)}, but is"
                 f" {attn_weights.size()}"
             )
 
@@ -392,15 +389,15 @@ class Qwen2Attention(nn.Module):
         attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
         attn_output = torch.matmul(attn_weights, value_states)
 
-        if attn_output.size() != (bsz, self.num_heads_tp, q_len, self.head_dim):
+        if attn_output.size() != (bsz, self.num_heads // self.config.tp_size, q_len, self.head_dim):
             raise ValueError(
-                f"`attn_output` should be of size {(bsz, self.num_heads_tp, q_len, self.head_dim)}, but is"
+                f"`attn_output` should be of size {(bsz, self.num_heads // self.config.tp_size, q_len, self.head_dim)}, but is"
                 f" {attn_output.size()}"
             )
 
         attn_output = attn_output.transpose(1, 2).contiguous()
 
-        attn_output = attn_output.reshape(bsz, q_len, self.hidden_size // self.tp_size)
+        attn_output = attn_output.reshape(bsz, q_len, self.hidden_size // self.config.tp_size)
 
         attn_output = self.o_proj(attn_output)
 
@@ -462,9 +459,6 @@ class Qwen2FlashAttention2(Qwen2Attention):
             rearrange(value_states, "b n (h d) -> b n h d", d=self.head_dim),
         )
 
-        self.num_heads_tp = query_states.shape[2]
-        self.tp_size = self.num_heads // self.num_heads_tp
-        
         query_states = query_states.transpose(1, 2)
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
@@ -575,7 +569,7 @@ class Qwen2FlashAttention2(Qwen2Attention):
             use_sliding_windows=use_sliding_windows,
         )
 
-        attn_output = attn_output.reshape(bsz, q_len, self.hidden_size // self.tp_size).contiguous()
+        attn_output = attn_output.reshape(bsz, q_len, self.hidden_size // self.config.tp_size).contiguous()
         attn_output = self.o_proj(attn_output)
 
         if not output_attentions:
@@ -779,9 +773,6 @@ class Qwen2SdpaAttention(Qwen2Attention):
             rearrange(key_states, "b n (h d) -> b n h d", d=self.head_dim),
             rearrange(value_states, "b n (h d) -> b n h d", d=self.head_dim),
         )
-
-        self.num_heads_tp = query_states.shape[2]
-        self.tp_size = self.num_heads // self.num_heads_tp
         
         query_states = query_states.transpose(1, 2)
         key_states = key_states.transpose(1, 2)
@@ -830,7 +821,7 @@ class Qwen2SdpaAttention(Qwen2Attention):
         )
 
         attn_output = attn_output.transpose(1, 2).contiguous()
-        attn_output = attn_output.view(bsz, q_len, self.hidden_size // self.tp_size)
+        attn_output = attn_output.view(bsz, q_len, self.hidden_size // self.config.tp_size)
 
         attn_output = self.o_proj(attn_output)
 
@@ -854,10 +845,10 @@ class Qwen2DecoderLayer(nn.Module):
                 f"Sliding Window Attention is enabled but not implemented for `{config._attn_implementation}`; "
                 "unexpected results may be encountered."
             )
-        # self.self_attn = QWEN2_ATTENTION_CLASSES[config._attn_implementation](config, layer_idx)
-        self.self_attn = Qwen2FlashAttention2(config, layer_idx)
-        # self.self_attn = Qwen2SdpaAttention(config, layer_idx)
-        
+        if config._attn_implementation == "flash_attention_2" or config.use_flash:
+            self.self_attn = Qwen2FlashAttention2(config, layer_idx)
+        else:
+            self.self_attn = QWEN2_ATTENTION_CLASSES[config._attn_implementation](config, layer_idx)
         self.mlp = Qwen2MLP(config)
         self.input_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -1106,10 +1097,7 @@ class Qwen2Model(nn.Module):
             config.vocab_size, config.hidden_size, params_dtype=torch.float32
         )
         self.layers = nn.ModuleList([Qwen2DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)])
-        
-        config._attn_implementation = "flash_attention_2"
         self._attn_implementation = config._attn_implementation
-        
         self.norm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
         self.gradient_checkpointing = False
@@ -1378,7 +1366,6 @@ class Qwen2ForCausalLM(CollieModelForCausalLM):
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional[List[torch.FloatTensor]] = None,
-        
         inputs_embeds: Optional[torch.FloatTensor] = None,
         labels: Optional[torch.LongTensor] = None,
         use_cache: Optional[bool] = None,
@@ -1412,11 +1399,6 @@ class Qwen2ForCausalLM(CollieModelForCausalLM):
         >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
         "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
         ```"""
-
-        # output_attentions = self.output_attentions
-        # output_hidden_states = self.output_hidden_states
-        # use_cache = self.use_cache
-        # return_dict = self.return_dict
 
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (

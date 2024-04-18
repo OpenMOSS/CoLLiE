@@ -125,7 +125,7 @@ class Qwen2Config(PretrainedConfig):
         self.use_sliding_window = use_sliding_window
         self.sliding_window = sliding_window
         self.max_window_layers = max_window_layers
-
+        self._attn_implementation = _attn_implementation
         # for backward compatibility
         if num_key_value_heads is None:
             num_key_value_heads = num_attention_heads
