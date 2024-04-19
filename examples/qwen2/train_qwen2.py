@@ -3,12 +3,14 @@ import sys
 sys.path.append('../../')
 from collie import (
     CheckpointCallback, CollieConfig, CollieDatasetForTraining, EvalMonitor, EvaluatorForPerplexity,
-    Qwen2ForCausalLM, LRMonitor, LlamaForCausalLM, LossMonitor, MemoryMonitor, PPLMetric, TGSMonitor, Trainer,
+    Qwen2ForCausalLM, LRMonitor, LlamaForCausalLM, LossMonitor, MemoryMonitor, PPLMetric, TGSMonitor, 
+    Trainer, ColliePadder
 )
 import torch
 from transformers import AutoTokenizer
 
 BASE_MODEL_PATH = "Qwen/Qwen1.5-7B"
+# BASE_MODEL_PATH = "/remote-home/share/models/Qwen1.5-7B"
 MODEL_PATH = BASE_MODEL_PATH
 
 config = CollieConfig.from_pretrained(MODEL_PATH, trust_remote_code=True)
@@ -49,21 +51,23 @@ model = Qwen2ForCausalLM.from_pretrained(MODEL_PATH, config=config, trust_remote
 optimizer = torch.optim.AdamW(model.parameters(), lr=2e-15)
 lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=1000)
 
-with open("./zero_shot.json") as fin:
+with open("./simple_data.json") as fin:
     data_list = json.load(fin)
 dataset = []
-for data in data_list:
-    dataset.append(
-        {
-            "input": data["conversations"][0]["value"],
-            "output": data["conversations"][1]["value"],
-        }
-    )
+for data in data_list[0:5]:
+    for i in range(int(len(data["conversation"])/2)):
+        dataset.append(
+            {
+                "input": data["conversation"][2*i]["value"],
+                "output": data["conversation"][2*i+1]["value"],
+            }
+        )
 
 ratio = 0.01
 eval_dataset_ppl, train_dataset = dataset[:int(len(dataset) * ratio)], dataset[int(len(dataset) * ratio):]
 
-tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_PATH, trust_remote_code=True, add_eos_token=True)
+tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_PATH, trust_remote_code=True, add_eos_token=True, padding_side="left")
+tokenizer.padding_side  = "left"
 traine_dataset = CollieDatasetForTraining(
     train_dataset,
     tokenizer=tokenizer,
@@ -111,6 +115,7 @@ trainer = Trainer(
     ],
     evaluators=[evaluator_ppl],
     callbacks=callbacks,
+    train_dataset_collate_fn = ColliePadder(padding_left=True)
     # evaluators=[evaluator_ppl, evaluator_cls]
 )
 trainer.train()
