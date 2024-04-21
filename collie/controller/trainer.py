@@ -612,13 +612,7 @@ class Trainer(TrainerEventTrigger):
                 self._checkpoint_epilogue()
             env.barrier()
             if env.rank == 0:
-                inference_mode = peft_config.inference_mode
-                peft_config.inference_mode = True
-                io_driver.save(
-                    json.dumps(peft_config.__dict__),
-                    os.path.join(path, "adapter_config.json"),
-                )
-                peft_config.inference_mode = inference_mode
+                peft_config.save_pretrained(output_dir)
                 if pp_save:
                     pp_merge_peft(path, name_prefix, io_driver)
 
