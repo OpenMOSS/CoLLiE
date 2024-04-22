@@ -839,7 +839,6 @@ class Qwen2DecoderLayer(nn.Module):
     def __init__(self, config: CollieConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
-        config._attn_implementation = "flash_attention_2"
         if config.use_sliding_window and config._attn_implementation != "flash_attention_2":
             logger.warning_once(
                 f"Sliding Window Attention is enabled but not implemented for `{config._attn_implementation}`; "
