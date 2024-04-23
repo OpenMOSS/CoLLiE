@@ -1,18 +1,19 @@
 import torch
-from torch import nn
 import torch.distributed as dist
-from deepspeed.runtime.pipe.engine import PipelineEngine, _tensor_bytes
-from deepspeed.runtime.pipe import schedule, p2p, PipelineModule
-from deepspeed.runtime.utils import PartitionedTensor
 from deepspeed.runtime.activation_checkpointing import checkpointing as ds_checkpointing
 from deepspeed.runtime.engine import DeepSpeedEngine
-from deepspeed.utils.timer import ThroughputTimer
+from deepspeed.runtime.pipe import PipelineModule, p2p, schedule
+from deepspeed.runtime.pipe.engine import PipelineEngine, _tensor_bytes
+from deepspeed.runtime.utils import PartitionedTensor
 from deepspeed.utils import logger
+from deepspeed.utils.timer import ThroughputTimer
 from peft import PeftModel
+from torch import nn
 
-from .utils import _split_batch, auto_param_call, _split_past_key_values
-from .dist_utils import broadcast_tensor, env
 from ..module import PipelineModel
+from .dist_utils import broadcast_tensor, env
+from .utils import _split_batch, _split_past_key_values, auto_param_call
+
 
 def is_even(number):
     return number % 2 == 0
