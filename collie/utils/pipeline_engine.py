@@ -20,7 +20,7 @@ def is_even(number):
 
 class ColliePipelineEngine(PipelineEngine):
     def __init__(self, has_bool_tensors=False, *args, **kwargs):
-        DeepSpeedEngine.__init__(self, *args, **kwargs)
+        super().__init__(self, *args, **kwargs)
         if isinstance(self.module, PipelineModel):
             pipeline_module = self.module
         elif isinstance(self.module, PeftModel) and isinstance(self.module.get_base_model(), PipelineModel):
@@ -118,7 +118,7 @@ class ColliePipelineEngine(PipelineEngine):
                         f'TOTAL_PARAMS={total_params} ({total_params/1e6:0.3f}M) '
                         f'UNIQUE_PARAMS={unique_params} ({unique_params/1e6:0.3f}M)')
 
-        #initialize peer-2-peer communication and allreduce groups
+        # initialize peer-2-peer communication and allreduce groups
         if self.is_pipe_parallel:
             p2p.init_process_groups(self.grid)
 
@@ -138,10 +138,10 @@ class ColliePipelineEngine(PipelineEngine):
         self.first_output_send = True
         self.first_gradient_send = True
 
-        #stores the loss for the current micro batch being processed
+        # stores the loss for the current micro batch being processed
         self.loss = torch.tensor(0.0).to(self.device)
 
-        #stores the loss for the entire batch
+        # stores the loss for the entire batch
         self.total_loss = None
         self.agg_loss = torch.tensor(0.0, requires_grad=False).to(self.device)
         self.dp_group_loss = torch.tensor(0.0, requires_grad=False).to(self.device)
@@ -225,7 +225,7 @@ class ColliePipelineEngine(PipelineEngine):
 
         self.pipeline_module.inner_forward = False
         return result
-    
+
     def eval_batch(self, batch):
         self.pipeline_module.inner_forward = True
         self.pipeline_module.forward_type = "eval"
@@ -250,7 +250,7 @@ class ColliePipelineEngine(PipelineEngine):
 
         self.pipeline_module.inner_forward = False
         return logits
-    
+
     def generate_batch(self, batch):
         self.pipeline_module.inner_forward = True
         self.pipeline_module.forward_type = "generate"
@@ -312,9 +312,9 @@ class ColliePipelineEngine(PipelineEngine):
         self.set_dataiterator(train_iterator)
 
         # Reset any buffers that may have been populated during the forward passes.
-        #ds_checkpointing.reset()
+        # ds_checkpointing.reset()
         self.eval_return_logits = False
-        
+
         # logits: list
         # len(logits) = micro_batch_nums
         # Assume batch first
@@ -323,7 +323,7 @@ class ColliePipelineEngine(PipelineEngine):
 
         self.pipeline_module.inner_forward = False
         return logits
-    
+
     def broadcast_logits(self, logits):
         src_rank = self.grid.stage_to_global(self.num_stages - 1)
         if logits is not None:
@@ -388,7 +388,7 @@ class ColliePipelineEngine(PipelineEngine):
             inputs[self.inputs_extra["_grad_key"]] = part_input.full()
             inputs[self.inputs_extra["_grad_key"]].requires_grad = True
             # skip mask
-            #inputs[1].requires_grad = True
+            # inputs[1].requires_grad = True
             part_input = None
             if isinstance(inputs, dict):
                 self.pipe_buffers['inputs'][buffer_id] = {k:v for k, v in inputs.items()}
@@ -413,8 +413,8 @@ class ColliePipelineEngine(PipelineEngine):
                     assert _grad_key is None, "More than one tensors requires grad."
                     if self.is_pipe_partitioned and not self.is_last_stage():
                         part = PartitionedTensor(tensor=value, group=self.grid.get_slice_parallel_group())
-                    # Clear the large output data, but save the computation graph
-                    # TODO 这里源代码没有.to，但现在必须加.to否则会无法send
+                        # Clear the large output data, but save the computation graph
+                        # TODO 这里源代码没有.to，但现在必须加.to否则会无法send
                         value.data = torch.zeros(1).to(self.device)
                         self.pipe_buffers['output_tensors'][buffer_id] = value
                         self.outputs_extra["_meta"] = part.to_meta()
@@ -455,7 +455,7 @@ class ColliePipelineEngine(PipelineEngine):
                 self.total_loss += self.loss.detach()
             elif isinstance(self.loss, dict):
                 self.fwd_outputs.append({k:v.detach() for k, v in self.loss.items()})
-                
+
                 if self.total_loss is None:
                     self.total_loss = {k:torch.zeros_like(l) for k, l in self.loss.items()}
                 for k, l in self.loss.items():
@@ -544,7 +544,7 @@ class ColliePipelineEngine(PipelineEngine):
     def _exec_load_micro_batch(self, buffer_id):
         if self.wall_clock_breakdown():
             self.timers('batch_input').start()
-            
+
         batch = self._next_batch() # {"input_ids": torch.Tensor, "labels": torch.Tensor}
         # batch = self._next_batch() # (inputs, labels)
 
@@ -572,7 +572,7 @@ class ColliePipelineEngine(PipelineEngine):
         #     else:
         #         raise NotImplementedError
         #     self.pipe_buffers['labels'][buffer_id] = loaded
-        
+
         if self.is_first_stage() or self.is_last_stage():
             loaded = {}
             for key, tensor in batch.items():
@@ -665,7 +665,7 @@ class ColliePipelineEngine(PipelineEngine):
             if recv_type == 2:
                 buffers = tuple(buffers)
             return buffers
-        
+
         elif recv_type == 3:
             # dict
             count_tensor = torch.LongTensor(data=[0]).to(self.device)
@@ -748,7 +748,7 @@ class ColliePipelineEngine(PipelineEngine):
         inputs = self.pipe_buffers['inputs'][buffer_id]
 
         # Partition the gradient
-        
+
         if self.is_grad_partitioned:
             part = None
             _grad_key = None
@@ -842,7 +842,7 @@ class ColliePipelineEngine(PipelineEngine):
             # if self.has_attention_mask or self.has_bool_tensors:
             #     recvd[-1] = recvd[-1].bool()
             for key, buffer in recvd.items():
-                    buffer.requires_grad = self.module.training and \
+                buffer.requires_grad = self.module.training and \
                         (key == self.inputs_extra["_grad_key"])
         if isinstance(recvd, dict):
             self.pipe_buffers['inputs'][buffer_id] = {k:v for k, v in recvd.items()}
@@ -906,7 +906,7 @@ class ColliePipelineEngine(PipelineEngine):
 
     def _exec_reduce_grads(self):
         return super()._exec_reduce_grads()
-    
+
     def _exec_reduce_tied_grads(self):
         return super()._exec_reduce_tied_grads()
 
@@ -971,7 +971,7 @@ class ColliePipelineEngine(PipelineEngine):
                 self.warn_unscaled_loss = False
 
         return scaled_loss
-    
+
     def _reduce_outputs(self, outputs, reduce='avg', reduce_dp=True):
         if reduce is None:
             return outputs
@@ -981,7 +981,7 @@ class ColliePipelineEngine(PipelineEngine):
             if torch.is_tensor(outputs[0]):
                 reduced = sum(outputs)
             elif isinstance(outputs[0], dict):
-                # list of dict 
+                # list of dict
                 reduced = {k:torch.zeros_like[o] for k, o in outputs[0].items()}
                 for idx, out in enumerate(outputs):
                     for key, o in out.items():
