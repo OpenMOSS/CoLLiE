@@ -18,7 +18,7 @@ tokenizer = AutoTokenizer.from_pretrained(
 config = CollieConfig.from_pretrained(model_name_or_path,
         trust_remote_code=True)
 config.dp_size = 1
-config.tp_size = 2
+config.tp_size = 1
 config.pp_size = 2
 # config.use_flash = False
 model = InternLM2ForCausalLM.from_pretrained(model_name_or_path, config=config).cuda()
