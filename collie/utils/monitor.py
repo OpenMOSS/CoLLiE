@@ -219,7 +219,7 @@ class LRMonitor(BaseMonitor):
 class _MultiMonitors:
     def __init__(self, monitors: Sequence[BaseMonitor]) -> None:
         self.monitors = monitors
-        self.item = {}
+        self.item = {"mode": "init"}
     
     def __enter__(self):
         for monitor in self.monitors:
