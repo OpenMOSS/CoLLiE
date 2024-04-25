@@ -171,11 +171,14 @@ class CollieDatasetForTraining(Dataset):
         index = self.indices[index]
         if self.tokenizer is None:
             input_ids = self.dataset[index]["tokens"]
-            labels = self.dataset[index].get("labels", input_ids.detach().clone())
+            if isinstance(input_ids, list):
+                labels = self.dataset[index].get("labels", input_ids.copy())
+            else:
+                labels = self.dataset[index].get("labels", input_ids.detach().clone())
             if "attention_mask" in self.dataset[index].keys():
                 attention_mask = self.dataset[index]["attention_mask"]
             else:
-                attention_mask = torch.ones_like(torch.tensor(input_ids)).cpu().tolist()
+                attention_mask = [1 for i in range(len(input_ids))]
         else:
             if "text" in self.dataset[0].keys():
                 inputs = self.tokenizer(
@@ -186,7 +189,7 @@ class CollieDatasetForTraining(Dataset):
                 labels = torch.tensor(input_ids).cpu().tolist()
                 attention_mask = inputs.get(
                     "attention_mask",
-                    torch.ones_like(torch.tensor(input_ids)).cpu().tolist(),
+                    [1 for i in range(len(input_ids))],
                 )
             elif (
                     "input" in self.dataset[0].keys() and "output" in self.dataset[0].keys()
@@ -198,7 +201,7 @@ class CollieDatasetForTraining(Dataset):
                 input_ids = inputs["input_ids"]
                 attention_mask = inputs.get(
                     "attention_mask",
-                    torch.ones_like(torch.tensor(input_ids)).cpu().tolist(),
+                    [1 for i in range(len(input_ids))],
                 )
                 labels = torch.tensor(input_ids)
                 target_length = len(
@@ -379,7 +382,7 @@ class CollieDatasetForGeneration(CollieDatasetForTraining):
             if "attention_mask" in self.dataset[index].keys():
                 attention_mask = self.dataset[index]["attention_mask"]
             else:
-                attention_mask = torch.ones_like(torch.tensor(input_ids).cpu().tolist())
+                attention_mask = [1 for i in range(len(input_ids))]
             target = self.dataset[index].get("target", None)
         else:
             inputs = self.tokenizer(
@@ -388,7 +391,7 @@ class CollieDatasetForGeneration(CollieDatasetForTraining):
             input_ids = inputs["input_ids"]
             attention_mask = inputs.get(
                 "attention_mask",
-                torch.ones_like(torch.tensor(input_ids)).cpu().tolist(),
+                [1 for i in range(len(input_ids))],
             )
             if "target" in self.dataset[index].keys():
                 if isinstance(self.dataset[index]["target"], str):
@@ -526,7 +529,7 @@ class CollieDatasetForClassification(CollieDatasetForTraining):
                     input_ids = inputs["input_ids"]
                     attention_mask = inputs.get(
                         "attention_mask",
-                        torch.ones_like(torch.tensor(input_ids)).cpu().tolist(),
+                        [1 for i in range(len(input_ids))],
                     )
                     output = tuple([option for option in self.dataset[index]["output"]])
                     target = self.dataset[index]["target"]
