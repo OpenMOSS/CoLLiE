@@ -185,6 +185,7 @@ def setup_distribution(config) -> None:
         config = load_config(config)
     if isinstance(config.ds_config, str):
         config.ds_config = load_config(config.ds_config)
+    config.valid_config()
     patch_bitesandbytes(config)
     patch_transformers(config)
     patch_deepspeed(config)
