@@ -163,7 +163,7 @@ class CollieDatasetForTraining(Dataset):
     def __len__(self):
         return len(self.dataset)
 
-    def __getitem__(self, index) -> Dict:
+    def __getitem__(self, index) -> Dict or List[Dict]:
         if isinstance(index, slice):
             return self._get_slice(index)
         if index > len(self):
@@ -254,7 +254,7 @@ class CollieDatasetForTraining(Dataset):
         dataset = cls(dataset=_ShardContainer(path), shuffle=shuffle, seed=seed)
         return dataset
 
-    def save_propressed(self, path: str, shard_size: int = 4):
+    def save_processed(self, path: str, shard_size: int = 4):
         shard = io.BytesIO()
         shard_idx = 0
         meta = np.empty((0, 2), int)
