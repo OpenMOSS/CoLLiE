@@ -17,7 +17,7 @@ from collie import (
     Trainer,
 )
 from collie.data.template_utils import prepare_chatml_messages
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, get_linear_schedule_with_warmup
 
 model_path = "meta-llama/Llama-2-7b-hf"
 
@@ -38,11 +38,7 @@ config.seed = 196705814
 # Prepare model
 model = LlamaForCausalLM.from_pretrained(model_path, config=config)
 optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5)
-lr_scheduler = torch.optim.lr_scheduler.StepLR(
-    optimizer=optimizer, step_size=1, gamma=0.9
-)
 tokenizer = AutoTokenizer.from_pretrained(model_path)
-
 
 # Prepare dataset
 def map_fn(e):
@@ -102,6 +98,13 @@ eval_dataset = CollieDatasetForTemplatedMultiTurnChat(
     tokenizer=tokenizer,
     template_fn=prepare_chatml_messages,
     text_field="conversations",
+)
+
+total_step = len(train_dataset) * config.train_epochs // config.train_micro_batch_size
+lr_scheduler = get_linear_schedule_with_warmup(
+    optimizer,
+    num_warmup_steps=int(total_step * 0.03),
+    num_training_steps=total_step
 )
 
 # Prepare Evaluator
