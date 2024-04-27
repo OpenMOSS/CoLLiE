@@ -24,9 +24,9 @@ model_path = "meta-llama/Llama-2-7b-hf"
 config = CollieConfig.from_pretrained(model_path)
 config.pp_size = 8
 config.pp_partition_method = "uniform"
-config.train_micro_batch_size = 1
+config.train_micro_batch_size = 4
 config.eval_batch_size = 1
-config.gradient_accumulation_steps = 4
+config.gradient_accumulation_steps = 32
 config.eval_per_n_epochs = 1
 config.train_epochs = 2
 config.use_flash = False
@@ -39,6 +39,7 @@ config.seed = 196705814
 model = LlamaForCausalLM.from_pretrained(model_path, config=config)
 optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5)
 tokenizer = AutoTokenizer.from_pretrained(model_path)
+
 
 # Prepare dataset
 def map_fn(e):
@@ -79,7 +80,6 @@ dataset = (
     .map(map_fn)
     .train_test_split(test_size=128)
 )
-
 
 train_dataset = list(dataset["train"])  # 1024
 eval_dataset = list(dataset["test"])  # 128
