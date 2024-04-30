@@ -616,8 +616,10 @@ class Moss003MoonForCausalLM(CollieModelForCausalLM):
                 dist.barrier()
             if cur_rank != env.rank:
                 continue
-            # 如果存在 pytorch_model.bin.index.json 文件的话，此时不同的 pp 进程可以按需加载自己需要的权重
-            index_file = os.path.join(path, "pytorch_model.bin.index.json")
+            # 如果存在 .index.json 文件的话，此时不同的 pp 进程可以按需加载自己需要的权重
+            index_file_list = [file_name for file_name in os.listdir(path)
+                               if file_name.endswith(".index.json")]
+            index_file = index_file_list[0]
             # start load
             state_dict = OrderedDict()
             if io_driver.exists(index_file) and env.is_pipeline:
@@ -629,10 +631,20 @@ class Moss003MoonForCausalLM(CollieModelForCausalLM):
                 cur_names = _weight_name_in_current_rank(weight_map.keys())
                 weights = set(weight_map[name] for name in cur_names)
             else:
-                # 如果没有 pytorch_model.bin.index.json 文件的话，那么就加载所有的权重
+                # 如果没有 .index.json 文件的话，那么就加载所有的权重
+                # 优先加载 safetensors 存储的权重
                 weights = [
-                    weight for weight in io_driver.list(path) if weight.endswith(".bin")
+                    weight
+                    for weight in io_driver.list(path)
+                    if weight.endswith(".safetensors")
                 ]
+                if len(weights) == 0:
+                    # 如果没有 safetensors 文件，那么就加载 bin 文件
+                    weights = [
+                        weight
+                        for weight in io_driver.list(path)
+                        if weight.endswith(".bin")
+                    ]
 
             desc = "Loading state dict"
             if process_exclusion:
