@@ -5,6 +5,7 @@ import json
 import os
 import re
 import subprocess
+import socket
 
 import deepspeed
 import torch
@@ -167,6 +168,24 @@ def _decompose_slurm_nodes(s):
     return results
 
 
+def port_used(host: str, port: int) -> bool:
+    "检查端口是否被占用"
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind((host, port))  # 尝试绑定到本地地址和指定端口
+            return True  # 如果绑定成功，返回True，表示端口是空闲的
+        except socket.error as e:
+            return False  # 如果绑定失败，返回False，表示端口已被占用
+
+
+def find_free_port(host: str) -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind((host, 0))
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        return s.getsockname()[1]
+
+
+
 def setup_distribution(config) -> None:
     """设置分布式环境。
 
@@ -227,8 +246,15 @@ def setup_distribution(config) -> None:
         if "MASTER_PORT" in os.environ.keys():
             master_port = os.environ["MASTER_PORT"]
         else:
-            master_port = 27002
-            os.environ["MASTER_PORT"] = f"{master_port}"
+            master_port = "27002"
+            os.environ["MASTER_PORT"] = master_port
+        if port_used(master_addr, int(master_port)):
+            raw_port = master_port
+            master_port = find_free_port(master_addr)
+            master_port = f"{master_port}"
+            os.environ["MASTER_PORT"] = master_port
+            print(f"Port {raw_port} is already in use, Switching to port {master_port}.")
+
         os.environ["LOCAL_RANK"] = os.environ["SLURM_LOCALID"]
         os.environ["RANK"] = os.environ["SLURM_PROCID"]
         os.environ["WORLD_SIZE"] = os.environ["SLURM_NTASKS"]
