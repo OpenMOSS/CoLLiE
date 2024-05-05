@@ -617,9 +617,14 @@ class Moss003MoonForCausalLM(CollieModelForCausalLM):
             if cur_rank != env.rank:
                 continue
             # 如果存在 .index.json 文件的话，此时不同的 pp 进程可以按需加载自己需要的权重
+            # 优先加载 model.safetensors.index.json 文件中的权重
             index_file_list = [file_name for file_name in os.listdir(path)
                                if file_name.endswith(".index.json")]
-            index_file = index_file_list[0]
+            index_file = ""
+            if "model.safetensors.index.json" in index_file_list:
+                index_file = "model.safetensors.index.json"
+            elif len(index_file_list) > 0:
+                index_file = index_file_list[0]
             # start load
             state_dict = OrderedDict()
             if io_driver.exists(index_file) and env.is_pipeline:
