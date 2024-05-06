@@ -19,7 +19,7 @@ from deepspeed.runtime.engine import DeepSpeedSchedulerCallable
 from deepspeed.runtime.zero.parameter_offload import DeepSpeedZeRoOffload
 from torch import nn
 from torch.optim.lr_scheduler import _LRScheduler
-from transformers import PreTrainedTokenizerBase
+from transformers import PreTrainedTokenizerBase, AutoTokenizer, AutoConfig
 from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import ContextManagers
 
@@ -338,11 +338,11 @@ class Trainer(TrainerEventTrigger):
             desc="Training Batch: ",
             disable=env.rank != 0,
             total=self.steps_per_epoch,
-        )    
+        )
         for self.epoch_idx in tqbar_epoch:
             if not train_dataloader.curriculum_learning_enabled:
                 tqbar_batch.sequence.sampler.set_epoch(self.epoch_idx)
-            
+
             self.on_train_epoch_begin()
             tqbar_epoch.set_description(
                 f"Training Epoch: {self.epoch_idx} / {self.config.train_epochs}"
@@ -612,7 +612,13 @@ class Trainer(TrainerEventTrigger):
                 self._checkpoint_epilogue()
             env.barrier()
             if env.rank == 0:
-                peft_config.save_pretrained(output_dir)
+                inference_mode = peft_config.inference_mode
+                peft_config.inference_mode = True
+                io_driver.save(
+                    json.dumps(peft_config.__dict__),
+                    os.path.join(path, "adapter_config.json"),
+                )
+                peft_config.inference_mode = inference_mode
                 if pp_save:
                     pp_merge_peft(path, name_prefix, io_driver)
 
@@ -681,9 +687,24 @@ class Trainer(TrainerEventTrigger):
         io_driver = IODriver.from_protocol(protocol)
         io_driver.makedirs(path, exist_ok=True)
         self.on_save_model()
+
+        # 复制除模型权重文件外的其他文件到保存目录
+        if hasattr(self.config.model_config, '_name_or_path'):
+            source_model_dir = self.config.model_config._name_or_path
+            # 使用transformers加载config和tokenizer并保存
+            try:
+                config_item = AutoConfig.from_pretrained(source_model_dir, trust_remote_code=True)
+                config_item.save_pretrained(path)
+                tokenizer_item = AutoTokenizer.from_pretrained(source_model_dir, trust_remote_code=True)
+                tokenizer_item.save_pretrained(path)
+            except Exception as e:
+                print("Warning: An error occurred while saving config and tokenizer")
+                print(f"Details: {str(e)}")
+
         if isinstance(self.engine.module, CollieModelForCausalLM) or isinstance(
             self.engine.module, PipelineModel
         ):
+
             if is_zero3_enabled(self.config):
                 state_dict = {}
                 self._checkpoint_prologue()
@@ -705,6 +726,7 @@ class Trainer(TrainerEventTrigger):
                 protocol=protocol,
             )
         elif isinstance(self.engine.module, PreTrainedModel):
+
             if is_zero3_enabled(self.config):
                 self._checkpoint_prologue()
                 with deepspeed.zero.GatheredParameters(
