@@ -113,6 +113,11 @@ pip install collie-lm
 git clone https://github.com/OpenLMLab/collie
 python setup.py install
 ```
+### MOSS 2 (alpha)
+如需使用 MOSS 2 (alpha)，请安装 `triton-nightly`。命令如下：
+```bash
+pip install -U --index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/Triton-Nightly/pypi/simple/ triton-nightly
+```
 
 ## Docker安装
 
