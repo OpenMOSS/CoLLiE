@@ -688,18 +688,16 @@ class Trainer(TrainerEventTrigger):
         io_driver.makedirs(path, exist_ok=True)
         self.on_save_model()
 
-        # 复制除模型权重文件外的其他文件到保存目录
-        if hasattr(self.config.model_config, 'name_or_path'):
-            source_model_dir = self.config.model_config.name_or_path
-            # 使用transformers加载config和tokenizer并保存
-            try:
-                config_item = AutoConfig.from_pretrained(source_model_dir, trust_remote_code=True)
-                config_item.save_pretrained(path)
-                tokenizer_item = AutoTokenizer.from_pretrained(source_model_dir, trust_remote_code=True)
-                tokenizer_item.save_pretrained(path)
-            except Exception as e:
-                print("Warning: An error occurred while saving config and tokenizer")
-                print(f"Details: {str(e)}")
+        # 保存 config 和 tokenizer
+        if env.rank == 0:
+            if hasattr(self.config.model_config, 'name_or_path'):
+                source_model_dir = self.config.model_config.name_or_path
+                try:
+                    AutoConfig.from_pretrained(source_model_dir, trust_remote_code=True).save_pretrained(path)
+                    AutoTokenizer.from_pretrained(source_model_dir, trust_remote_code=True).save_pretrained(path)
+                except Exception as e:
+                    logger.rank_zero_warning("Save config and tokenizer failed")
+                    logger.rank_zero_warning(str(e))
 
         if isinstance(self.engine.module, CollieModelForCausalLM) or isinstance(
             self.engine.module, PipelineModel
