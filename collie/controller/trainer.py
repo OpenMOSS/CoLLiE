@@ -684,16 +684,13 @@ class Trainer(TrainerEventTrigger):
 
         # 保存 config 和 tokenizer
         if env.rank == 0:
-            if hasattr(self.config.model_config, 'name_or_path'):
+            try:
                 model_id = self.config.model_config.name_or_path
-                try:
-                    AutoConfig.from_pretrained(model_id, trust_remote_code=True).save_pretrained(path)
-                    AutoTokenizer.from_pretrained(model_id, trust_remote_code=True).save_pretrained(path)
-                except Exception as e:
-                    logger.rank_zero_warning("Save config and tokenizer failed")
-                    logger.rank_zero_warning(str(e))
-            else:
-                logger.rank_zero_warning("Save config and tokenizer failed, name_or_path not found in config")
+                AutoConfig.from_pretrained(model_id, trust_remote_code=True).save_pretrained(path)
+                AutoTokenizer.from_pretrained(model_id, trust_remote_code=True).save_pretrained(path)
+            except Exception as e:
+                logger.rank_zero_warning("Save config and tokenizer failed")
+                logger.rank_zero_warning(str(e))
 
         if isinstance(self.engine.module, CollieModelForCausalLM) or isinstance(
             self.engine.module, PipelineModel
