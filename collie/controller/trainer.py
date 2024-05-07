@@ -692,6 +692,8 @@ class Trainer(TrainerEventTrigger):
                 except Exception as e:
                     logger.rank_zero_warning("Save config and tokenizer failed")
                     logger.rank_zero_warning(str(e))
+            else:
+                logger.rank_zero_warning("Save config and tokenizer failed, name_or_path not found in config")
 
         if isinstance(self.engine.module, CollieModelForCausalLM) or isinstance(
             self.engine.module, PipelineModel
