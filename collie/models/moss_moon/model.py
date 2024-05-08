@@ -618,18 +618,17 @@ class Moss003MoonForCausalLM(CollieModelForCausalLM):
                 continue
             # 如果存在 .index.json 文件的话，此时不同的 pp 进程可以按需加载自己需要的权重
             # 优先加载 model.safetensors.index.json 文件中的权重
-            index_file_list = [file_name for file_name in os.listdir(path)
-                               if file_name.endswith(".index.json")]
-            index_file = ""
-            if "model.safetensors.index.json" in index_file_list:
-                index_file = "model.safetensors.index.json"
-            elif len(index_file_list) > 0:
-                index_file = index_file_list[0]
+            if io_driver.exists(os.path.join(path, "model.safetensors.index.json")):
+                index_json_file_path = os.path.join(path, "model.safetensors.index.json")
+            elif io_driver.exists(os.path.join(path, "pytorch_model.bin.index.json")):
+                index_json_file_path = os.path.join(path, "pytorch_model.bin.index.json")
+            else:
+                index_json_file_path = None
             # start load
             state_dict = OrderedDict()
-            if io_driver.exists(index_file) and env.is_pipeline and os.path.isfile(os.path.join(path, index_file)):
+            if index_json_file_path is not None and env.is_pipeline:
                 # 有 index 且是流水线
-                weight_map = json.loads(io_driver.load(index_file, mode="r"))[
+                weight_map = json.loads(io_driver.load(index_json_file_path, mode="r"))[
                     "weight_map"
                 ]
                 # layers 表示当前 rank 自己需要的层

@@ -511,21 +511,19 @@ class InternLMForCausalLM(CollieModelForCausalLM):
                     parts = env.pipeline_parts
                 # 如果存在 .index.json 文件的话，此时不同的 pp 进程可以按需加载自己需要的权重
                 # 优先加载 model.safetensors.index.json 文件中的权重
-                json_file_list = [file_name for file_name in os.listdir(path)
-                                  if file_name.endswith(".index.json")]
-                json_file = ""
-                if "model.safetensors.index.json" in json_file_list:
-                    json_file = "model.safetensors.index.json"
-                elif len(json_file_list) > 0:
-                    json_file = json_file_list[0]
+                if io_driver.exists(os.path.join(path, "model.safetensors.index.json")):
+                    index_json_file_path = os.path.join(path, "model.safetensors.index.json")
+                elif io_driver.exists(os.path.join(path, "pytorch_model.bin.index.json")):
+                    index_json_file_path = os.path.join(path, "pytorch_model.bin.index.json")
+                else:
+                    index_json_file_path = None
                 if (
-                    io_driver.exists(os.path.join(path, json_file))
+                    index_json_file_path is not None
                     and "COLLIE_PP_PARTS" in os.environ.keys()
-                    and os.path.isfile(os.path.join(path, json_file))
                 ):
                     weight_map = json.loads(
                         io_driver.load(
-                            os.path.join(path, json_file), mode="r"
+                            index_json_file_path, mode="r"
                         )
                     )["weight_map"]
                     # layers 表示自己需要的层
