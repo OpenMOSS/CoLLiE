@@ -898,14 +898,21 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
                 if env.is_pipeline:
                     # 保存的是 json 格式
                     parts = env.pipeline_parts
-                # 如果存在 pytorch_model.bin.index.json 文件的话，此时不同的 pp 进程可以按需加载自己需要的权重
+                # 如果存在 .index.json 文件的话，此时不同的 pp 进程可以按需加载自己需要的权重
+                # 优先加载 model.safetensors.index.json 文件中的权重
+                if io_driver.exists(os.path.join(path, "model.safetensors.index.json")):
+                    index_json_file_path = os.path.join(path, "model.safetensors.index.json")
+                elif io_driver.exists(os.path.join(path, "pytorch_model.bin.index.json")):
+                    index_json_file_path = os.path.join(path, "pytorch_model.bin.index.json")
+                else:
+                    index_json_file_path = None
                 if (
-                    io_driver.exists(os.path.join(path, "pytorch_model.bin.index.json"))
+                    index_json_file_path is not None
                     and "COLLIE_PP_PARTS" in os.environ.keys()
                 ):
                     weight_map = json.loads(
                         io_driver.load(
-                            os.path.join(path, "pytorch_model.bin.index.json"), mode="r"
+                            index_json_file_path, mode="r"
                         )
                     )["weight_map"]
                     # layers 表示自己需要的层
@@ -940,12 +947,19 @@ class ChatGLM2ForCausalLM(CollieModelForCausalLM):
                         )
                         # weights.append(weight_map["transformer.final_layernorm.bias"])
                 else:
-                    # 如果没有 pytorch_model.bin.index.json 文件的话，那么就加载所有的权重
+                    # 如果没有 .index.json 文件的话，那么就加载所有的权重
+                    # 优先加载 safetensors 存储的权重
                     weights = [
                         weight
                         for weight in io_driver.list(path)
-                        if weight.endswith(".bin")
+                        if weight.endswith(".safetensors")
                     ]
+                    if len(weights) == 0:
+                        weights = [
+                            weight
+                            for weight in io_driver.list(path)
+                            if weight.endswith(".bin")
+                        ]
                 with progress(
                     weights,
                     desc="Loading state dict",
