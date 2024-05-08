@@ -627,7 +627,7 @@ class Moss003MoonForCausalLM(CollieModelForCausalLM):
                 index_file = index_file_list[0]
             # start load
             state_dict = OrderedDict()
-            if io_driver.exists(index_file) and env.is_pipeline:
+            if io_driver.exists(index_file) and env.is_pipeline and os.path.isfile(os.path.join(path, index_file)):
                 # 有 index 且是流水线
                 weight_map = json.loads(io_driver.load(index_file, mode="r"))[
                     "weight_map"

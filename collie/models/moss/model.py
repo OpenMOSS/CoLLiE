@@ -509,6 +509,7 @@ class MossForCausalLM(CollieModelForCausalLM):
                 if (
                     io_driver.exists(os.path.join(path, json_file))
                     and "COLLIE_PP_PARTS" in os.environ.keys()
+                    and os.path.isfile(os.path.join(path, json_file))
                 ):
                     weight_map = json.loads(
                         io_driver.load(
