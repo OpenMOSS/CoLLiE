@@ -616,23 +616,39 @@ class Moss003MoonForCausalLM(CollieModelForCausalLM):
                 dist.barrier()
             if cur_rank != env.rank:
                 continue
-            # 如果存在 pytorch_model.bin.index.json 文件的话，此时不同的 pp 进程可以按需加载自己需要的权重
-            index_file = os.path.join(path, "pytorch_model.bin.index.json")
+            # 如果存在 .index.json 文件的话，此时不同的 pp 进程可以按需加载自己需要的权重
+            # 优先加载 model.safetensors.index.json 文件中的权重
+            if io_driver.exists(os.path.join(path, "model.safetensors.index.json")):
+                index_json_file_path = os.path.join(path, "model.safetensors.index.json")
+            elif io_driver.exists(os.path.join(path, "pytorch_model.bin.index.json")):
+                index_json_file_path = os.path.join(path, "pytorch_model.bin.index.json")
+            else:
+                index_json_file_path = None
             # start load
             state_dict = OrderedDict()
-            if io_driver.exists(index_file) and env.is_pipeline:
+            if index_json_file_path is not None and env.is_pipeline:
                 # 有 index 且是流水线
-                weight_map = json.loads(io_driver.load(index_file, mode="r"))[
+                weight_map = json.loads(io_driver.load(index_json_file_path, mode="r"))[
                     "weight_map"
                 ]
                 # layers 表示当前 rank 自己需要的层
                 cur_names = _weight_name_in_current_rank(weight_map.keys())
                 weights = set(weight_map[name] for name in cur_names)
             else:
-                # 如果没有 pytorch_model.bin.index.json 文件的话，那么就加载所有的权重
+                # 如果没有 .index.json 文件的话，那么就加载所有的权重
+                # 优先加载 safetensors 存储的权重
                 weights = [
-                    weight for weight in io_driver.list(path) if weight.endswith(".bin")
+                    weight
+                    for weight in io_driver.list(path)
+                    if weight.endswith(".safetensors")
                 ]
+                if len(weights) == 0:
+                    # 如果没有 safetensors 文件，那么就加载 bin 文件
+                    weights = [
+                        weight
+                        for weight in io_driver.list(path)
+                        if weight.endswith(".bin")
+                    ]
 
             desc = "Loading state dict"
             if process_exclusion:

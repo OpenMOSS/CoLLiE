@@ -9,17 +9,19 @@ from transformers import AutoTokenizer, GenerationConfig
 from collie.models import InternLM2ForCausalLM
 from collie import CollieConfig, env
 
+model_name_or_path = "internlm/internlm2-7b"
+
 tokenizer = AutoTokenizer.from_pretrained(
-        "internlm/internlm2-7b",
+        model_name_or_path,
         trust_remote_code=True,
     )
-config = CollieConfig.from_pretrained("internlm/internlm2-7b",
+config = CollieConfig.from_pretrained(model_name_or_path,
         trust_remote_code=True)
 config.dp_size = 1
-config.tp_size = 2
+config.tp_size = 1
 config.pp_size = 2
 # config.use_flash = False
-model = InternLM2ForCausalLM.from_pretrained("internlm/internlm2-7b", config=config).cuda()
+model = InternLM2ForCausalLM.from_pretrained(model_name_or_path, config=config).cuda()
 # model = model.to(torch.float32)
 # model.set_cache(False)
 prompt = "Llama is a"

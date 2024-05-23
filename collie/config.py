@@ -100,9 +100,9 @@ class CollieConfig:
     init_method: dict = field(
         default_factory=lambda: {'init_func': torch.nn.init.normal_, 'init_kwargs': {'mean': 0.0, 'std': 0.02}},
         metadata={
-        "help": "Initialization method. Possible values are 'normal', 'xavier_normal', "
-        "'xavier_uniform', 'kaiming_normal', 'kaiming_uniform', 'orthogonal', 'sparse', "
-        "'eye', 'dirac'. Default is 'torch.nn.init.normal_' with mean = 0.0 and std = 0.02."
+            "help": "Initialization method. Possible values are 'normal', 'xavier_normal', "
+                    "'xavier_uniform', 'kaiming_normal', 'kaiming_uniform', 'orthogonal', 'sparse', "
+                    "'eye', 'dirac'. Default is 'torch.nn.init.normal_' with mean = 0.0 and std = 0.02."
         }
     )
     low_cpu_mem_usage: bool = field(
@@ -195,6 +195,10 @@ class CollieConfig:
         return r
 
     def valid_config(self):
+        """
+        验证配置是否合法。
+        """
+        # sanity check
         if (
             "zero_optimization" in self.ds_config.keys()
             and "stage" in self.ds_config["zero_optimization"].keys()
@@ -209,6 +213,11 @@ class CollieConfig:
                 not self.quantization_config.load_in_4bit
                 and not self.quantization_config.load_in_8bit
             ), "Tensor parallelism is not compatible with int8 quantization and int4 quantization"
+
+        if 'train_micro_batch_size_per_gpu' not in self.ds_config:
+            self.ds_config['train_micro_batch_size_per_gpu'] = self.train_micro_batch_size
+        if 'gradient_accumulation_steps' not in self.ds_config:
+            self.ds_config['gradient_accumulation_steps'] = self.gradient_accumulation_steps
 
 
 def load_config(path: str):

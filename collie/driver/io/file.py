@@ -3,6 +3,7 @@ from collie.driver.io.base import IODriver
 import os
 import io
 import torch
+from safetensors.torch import load_file
 import shutil
 from safetensors.torch import save_file, load_file
 

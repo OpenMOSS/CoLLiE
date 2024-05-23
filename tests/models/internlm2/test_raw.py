@@ -5,7 +5,6 @@ import torch
 sys.path.append("../../../")
 
 from transformers import AutoTokenizer, GenerationConfig, AutoModelForCausalLM
-from collie.models.internlm2.model_hf import InternLM2ForCausalLM
 # from collie import CollieConfig, env
 
 model_name_or_path = "internlm/internlm2-7b"
@@ -14,12 +13,12 @@ tokenizer = AutoTokenizer.from_pretrained(
     model_name_or_path,
     trust_remote_code=True,
 )
-model = InternLM2ForCausalLM.from_pretrained(model_name_or_path, trust_remote_code=True, ).cuda()
+model = AutoModelForCausalLM.from_pretrained(model_name_or_path, trust_remote_code=True, ).cuda()
 model.eval()
 prompt = "Llama is a"
 inputs = tokenizer(prompt, return_tensors="pt")
 print(inputs)
-gen_config = GenerationConfig(max_new_tokens=2, early_stopping=True, eos_token_id=2)
+gen_config = GenerationConfig(max_new_tokens=32, early_stopping=True, eos_token_id=2)
 
 outs = model.generate(inputs["input_ids"].cuda(), generation_config=gen_config)
 # if env.local_rank == 0:

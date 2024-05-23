@@ -59,7 +59,7 @@ def get_monitor(config: CollieConfig):
         if "csv_monitor" not in config.ds_config["monitor_config"].keys():
             config.ds_config["monitor_config"]["csv_monitor"] = {"enabled": False}
         else:
-            config.ds_config["monitor_config"]["csv_monitor"]["job_name"] = tag + datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+            config.ds_config["monitor_config"]["csv_monitor"]["job_name"] = tag + datetime.datetime.now().strftime("-%Y-%m-%d-%H-%M-%S")
         monitor = MonitorMaster(dictToObj(config.ds_config["monitor_config"]))
         config.ds_config["monitor_config"]["wandb"].pop("config", {})
         return monitor
@@ -219,7 +219,7 @@ class LRMonitor(BaseMonitor):
 class _MultiMonitors:
     def __init__(self, monitors: Sequence[BaseMonitor]) -> None:
         self.monitors = monitors
-        self.item = {}
+        self.item = {"mode": "init"}
     
     def __enter__(self):
         for monitor in self.monitors:

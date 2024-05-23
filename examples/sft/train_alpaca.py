@@ -3,7 +3,6 @@
 """
 import sys
 sys.path.append('../../')
-sys.path.append("/mnt/petrelfs/gutianle/Megatron-LM/")
 import json
 import torch
 
@@ -27,7 +26,7 @@ from collie.module import GPTLMLoss
 # 1.1 预训练模型路径
 pretrained_model = 'decapoda-research/llama-7b-hf'
 # 1.2 数据集路径
-data_path = 'alpaca.json'
+data_path = './alpaca.json'
 # 1.3 Eval的decode结果保存路径
 save_path = './result'
 

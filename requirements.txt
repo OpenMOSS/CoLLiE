@@ -18,3 +18,4 @@ accelerate>=0.20.3
 bitsandbytes>=0.41.0
 scipy
 rich>=13.3.5
+safetensors

@@ -19,7 +19,7 @@ from deepspeed.runtime.engine import DeepSpeedSchedulerCallable
 from deepspeed.runtime.zero.parameter_offload import DeepSpeedZeRoOffload
 from torch import nn
 from torch.optim.lr_scheduler import _LRScheduler
-from transformers import PreTrainedTokenizerBase
+from transformers import PreTrainedTokenizerBase, AutoTokenizer, AutoConfig
 from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import ContextManagers
 
@@ -338,11 +338,11 @@ class Trainer(TrainerEventTrigger):
             desc="Training Batch: ",
             disable=env.rank != 0,
             total=self.steps_per_epoch,
-        )    
+        )
         for self.epoch_idx in tqbar_epoch:
             if not train_dataloader.curriculum_learning_enabled:
                 tqbar_batch.sequence.sampler.set_epoch(self.epoch_idx)
-            
+
             self.on_train_epoch_begin()
             tqbar_epoch.set_description(
                 f"Training Epoch: {self.epoch_idx} / {self.config.train_epochs}"
@@ -613,13 +613,7 @@ class Trainer(TrainerEventTrigger):
                 self._checkpoint_epilogue()
             env.barrier()
             if env.rank == 0:
-                inference_mode = peft_config.inference_mode
-                peft_config.inference_mode = True
-                io_driver.save(
-                    json.dumps(peft_config.__dict__),
-                    os.path.join(path, "adapter_config.json"),
-                )
-                peft_config.inference_mode = inference_mode
+                peft_config.save_pretrained(output_dir)
                 if pp_save:
                     pp_merge_peft(path, name_prefix, io_driver)
 
@@ -688,6 +682,17 @@ class Trainer(TrainerEventTrigger):
         io_driver = IODriver.from_protocol(protocol)
         io_driver.makedirs(path, exist_ok=True)
         self.on_save_model()
+
+        # 保存 config 和 tokenizer
+        if env.rank == 0:
+            try:
+                model_id = self.config.model_config.name_or_path
+                AutoConfig.from_pretrained(model_id, trust_remote_code=True).save_pretrained(path)
+                AutoTokenizer.from_pretrained(model_id, trust_remote_code=True).save_pretrained(path)
+            except Exception as e:
+                logger.rank_zero_warning("Save config and tokenizer failed")
+                logger.rank_zero_warning(str(e))
+
         if isinstance(self.engine.module, CollieModelForCausalLM) or isinstance(
             self.engine.module, PipelineModel
         ):
