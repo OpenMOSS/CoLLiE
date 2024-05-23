@@ -271,6 +271,10 @@ class MossBlock(nn.Module):
         self.use_cache = False
         self.hidden_states = None
 
+    def set_norm_precision_to_float32(self):
+        self.ln_1.weight.data = self.ln_1.weight.data.to(torch.float32) 
+        self.ln_1.bias.data   = self.ln_1.bias.data.to(torch.float32) 
+
     def _forward(
         self,
         hidden_states: Optional[torch.FloatTensor],
@@ -393,6 +397,10 @@ class Moss003MoonModel(nn.Module):
         self.drop = nn.Dropout(config.embd_pdrop)
         self.h = nn.ModuleList([MossBlock(config, i) for i in range(config.n_layer)])
         self.ln_f = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_epsilon)
+
+    def set_norm_precision_to_float32(self):
+        self.ln_f.weight.data = self.ln_f.weight.data.to(torch.float32) 
+        self.ln_f.bias.data   = self.ln_f.bias.data.to(torch.float32) 
 
     def forward(
         self,

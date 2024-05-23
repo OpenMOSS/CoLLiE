@@ -122,6 +122,9 @@ class InternLM2RMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(hidden_size))
         self.variance_epsilon = eps
 
+    def set_norm_precision_to_float32(self):
+        self.weight.data = self.weight.data.to(torch.float32) 
+
     def forward(self, hidden_states):
         input_dtype = hidden_states.dtype
         hidden_states = hidden_states.to(torch.float32)
