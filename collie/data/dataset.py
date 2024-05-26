@@ -172,10 +172,13 @@ class CollieDatasetForTraining(Dataset):
         if self.tokenizer is None:
             if isinstance(self.dataset[index]["tokens"], torch.Tensor):
                 self.dataset[index]["tokens"] = self.dataset[index]["tokens"].numpy().tolist()
-            if isinstance(self.dataset[index]["labels"], torch.Tensor):
-                self.dataset[index]["labels"] = self.dataset[index]["labels"].numpy().tolist()
             input_ids = self.dataset[index]["tokens"]
-            labels = self.dataset[index].get("labels", input_ids.copy())
+            if "labels" in self.dataset[index].keys():
+                if isinstance(self.dataset[index]["labels"], torch.Tensor):
+                    self.dataset[index]["labels"] = self.dataset[index]["labels"].numpy().tolist()
+                labels = self.dataset[index]["labels"]
+            else:
+                labels = input_ids.copy()
             if "attention_mask" in self.dataset[index].keys():
                 attention_mask = self.dataset[index]["attention_mask"]
             else:
