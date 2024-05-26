@@ -390,7 +390,7 @@ class Trainer(TrainerEventTrigger):
                 self.on_train_batch_end(loss)
                 if (
                     self.config.eval_per_n_steps > 0
-                    and (self.batch_idx + 1) % self.config.eval_per_n_steps == 0
+                    and (self.batch_idx + 1) % (self.config.eval_per_n_steps * self.config.gradient_accumulation_steps) == 0
                 ):
                     self.eval()
             if self.resume_from_checkpoint is False:
