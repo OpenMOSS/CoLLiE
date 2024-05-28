@@ -691,40 +691,51 @@ class Trainer(TrainerEventTrigger):
             except Exception as e:
                 logger.rank_zero_warning("Save config and tokenizer failed")
                 logger.rank_zero_warning(str(e))
-
-        if isinstance(self.engine.module, CollieModelForCausalLM) or isinstance(
-            self.engine.module, PipelineModel
+        
+        if isinstance(self.model, PeftModel):
+            self.save_peft(
+                path=path,
+                protocol=protocol,
+                process_exclusion=process_exclusion,
+                **kwargs,
+            )
+            model_to_save = self.engine.module.get_base_model()
+        else:
+            model_to_save = self.engine.module
+        
+        if isinstance(model_to_save, CollieModelForCausalLM) or isinstance(
+            model_to_save, PipelineModel
         ):
             if is_zero3_enabled(self.config):
                 state_dict = {}
                 self._checkpoint_prologue()
-                for name, param in self.engine.module.named_parameters():
+                for name, param in model_to_save.named_parameters():
                     with deepspeed.zero.GatheredParameters(param):
                         if env.dp_rank == 0:
                             state_dict[name] = param.detach().cpu()
                 self._checkpoint_epilogue()
             else:
                 if env.dp_rank == 0:
-                    state_dict = self.engine.module.state_dict()
+                    state_dict = model_to_save.state_dict()
                 else:
                     state_dict = {}
-            self.engine.module.save_parallel_state_dict(
+            model_to_save.save_parallel_state_dict(
                 state_dict=state_dict,
                 path=path,
                 config=self.config,
                 process_exclusion=process_exclusion,
                 protocol=protocol,
             )
-        elif isinstance(self.engine.module, PreTrainedModel):
+        elif isinstance(model_to_save, PreTrainedModel):
             if is_zero3_enabled(self.config):
                 self._checkpoint_prologue()
                 with deepspeed.zero.GatheredParameters(
-                    list(self.engine.module.parameters(recurse=True))
+                    list(model_to_save.parameters(recurse=True))
                 ):
-                    self.engine.module.save_pretrained(save_directory=path, **kwargs)
+                    model_to_save.save_pretrained(save_directory=path, **kwargs)
                 self._checkpoint_epilogue()
             else:
-                self.engine.module.save_pretrained(save_directory=path, **kwargs)
+                model_to_save.save_pretrained(save_directory=path, **kwargs)
 
     def load_model(self, path: str, process_exclusion: bool = False, **kwargs):
         ...
