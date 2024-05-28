@@ -1,10 +1,10 @@
 import json
-from typing import Any, Dict
+import os
+from typing import Dict
+
 from collie.metrics.base import BaseMetric
 from collie.utils import env
 from collie.log.logger import logger
-import torch
-import os
 
 
 class DecodeMetric(BaseMetric):
@@ -15,7 +15,8 @@ class DecodeMetric(BaseMetric):
     :param save_to_file: 控制是否保存生成的 sentences 到文件夹中。
     :param save_path: 保存 decode 生成的 sentences 的文件路径, 当 save_to_file 为 `True` 才生效
     """
-    def __init__(self, 
+
+    def __init__(self,
                  verbose: bool = True,
                  save_to_file: bool = False,
                  save_path: str = None,
@@ -30,16 +31,6 @@ class DecodeMetric(BaseMetric):
             directory = os.path.dirname(self.save_path)
             os.makedirs(directory, exist_ok=True)
 
-            # 检查文件是否存在并创建文件
-            if not os.path.exists(self.save_path):
-                print(f"文件 {self.save_path} 不存在，将创建新文件。")
-                # 创建空文件
-                with open(self.save_path, 'w') as file:
-                    file.write("")  
-                print(f"已创建文件 {self.save_path}。")
-            else:
-                print(f"文件 {self.save_path} 已存在。")
-    
     def get_metric(self):
         """
         该 metric 不需要返回
@@ -69,7 +60,8 @@ class DecodeMetric(BaseMetric):
                 logger.info(result["pred"])
             if self.save_to_file:
                 if "target" in result:
-                    to_write = [{"pred": pred, "target": target} for pred, target in zip(result["pred"], result["target"])]
+                    to_write = [{"pred": pred, "target": target} for pred, target in
+                                zip(result["pred"], result["target"])]
                 else:
                     to_write = [{"pred": pred} for pred in result["pred"]]
                 with open(self.save_path, 'a+') as f:
