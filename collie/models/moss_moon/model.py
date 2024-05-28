@@ -288,7 +288,8 @@ class MossBlock(nn.Module):
         Optional[Tuple[torch.Tensor, Tuple[torch.FloatTensor, ...]]],
     ]:
         residual = hidden_states
-        hidden_states = self.ln_1(hidden_states)
+        input_dtype = hidden_states.dtype
+        hidden_states = self.ln_1(hidden_states.to(torch.float32)).to(input_dtype)
         attn_outputs = self.attn(
             hidden_states=hidden_states,
             layer_past=layer_past,
@@ -433,7 +434,8 @@ class Moss003MoonModel(nn.Module):
             all_hidden_states += (input_dict["hidden_states"],)
             input_dict.update(l(input_dict))
 
-        hidden_states = self.ln_f(input_dict["hidden_states"])
+        input_dtype = input_dict["hidden_states"].dtype     
+        hidden_states = self.ln_f(input_dict["hidden_states"].to(torch.float32)).to(input_dtype)
         all_hidden_states += (hidden_states,)
 
         past_key_values = None
