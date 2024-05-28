@@ -1,8 +1,7 @@
 import json
 from typing import Any, Dict
 from collie.metrics.base import BaseMetric
-# from collie.utils import env
-from collie.metrics.env import env
+from collie.utils import env
 from collie.log.logger import logger
 import torch
 import os
@@ -65,9 +64,7 @@ class DecodeMetric(BaseMetric):
         # sentences = []
         # for ids in decode_list:
         #     sentences.append(self.tokenizer.decode(ids))
-        print(f"Debug Info: dp_rank={env.dp_rank}, pp_rank={env.pp_rank}, tp_rank={env.tp_rank}")
         if env.dp_rank == 0 and env.pp_rank == 0 and env.tp_rank == 0:
-            print(f"Writing to file from process with dp_rank: {env.dp_rank}, pp_rank: {env.pp_rank}, tp_rank: {env.tp_rank}")
             if self.verbose:
                 logger.info(result["pred"])
             if self.save_to_file:
