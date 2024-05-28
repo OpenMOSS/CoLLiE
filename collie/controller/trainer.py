@@ -237,6 +237,10 @@ class Trainer(TrainerEventTrigger):
         self.on_after_trainer_initialized()
         torch.cuda.empty_cache()
 
+        for name, layer in self.model.named_modules():
+            if hasattr(layer, 'set_norm_precision_to_float32'):
+                layer.set_norm_precision_to_float32()   
+
     def init_state_dict(self):
         """初始化优化器的自身状态字典"""
         self.epoch_idx = 0

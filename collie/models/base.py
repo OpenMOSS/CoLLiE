@@ -337,7 +337,6 @@ class CollieModelForCausalLM(nn.Module, GenerationMixin):
                             if name in state_dict:
                                 assert param.data.shape == state_dict[name].data.shape, f"The shape of the parameter corresponding to the `{name}` does not match: {param.data.shape} vs {state_dict[name].data.shape}"
                             param.data = value.to(param.device)
-            
         
         if config.peft_config.peft_type is not None:
             model = get_peft_model(model, config.peft_config)

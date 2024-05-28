@@ -122,12 +122,15 @@ class InternLM2RMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(hidden_size))
         self.variance_epsilon = eps
 
+    def set_norm_precision_to_float32(self):
+        self.weight.data = self.weight.data.to(torch.float32) 
+
     def forward(self, hidden_states):
         input_dtype = hidden_states.dtype
         hidden_states = hidden_states.to(torch.float32)
         variance = hidden_states.pow(2).mean(-1, keepdim=True)
         hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
-        return self.weight * hidden_states.to(input_dtype)
+        return (self.weight * hidden_states).to(input_dtype)
 
 
 # Copied from transformers.model.llama.modeling_llama.LlamaRotaryEmbedding with Llama->InternLM2

@@ -80,12 +80,16 @@ class RMSNormalize(nn.Module):
             )
         self.eps = eps
 
+    def set_norm_precision_to_float32(self):
+        self.weight.data = self.weight.data.to(torch.float32) 
+
     def forward(self, hidden_states):
+        input_dtype = hidden_states.dtype
         variance = hidden_states.to(torch.float32).pow(2).mean(-1, keepdim=True)
         hidden_states = hidden_states * torch.rsqrt(variance + self.eps)
         if self.weight.dtype in [torch.float16, torch.bfloat16]:
             hidden_states = hidden_states.to(self.weight.dtype)
-        return hidden_states * self.weight
+        return (hidden_states * self.weight).to(input_dtype)
 
 
 class InternLMLayer(nn.Module):
