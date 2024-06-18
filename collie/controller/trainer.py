@@ -7,6 +7,7 @@ import glob
 import json
 import logging
 import os
+import random
 from collections import OrderedDict
 from functools import reduce
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
@@ -26,7 +27,7 @@ from transformers.utils import ContextManagers
 from collie.callbacks.callback import Callback
 from collie.callbacks.callback_manager import CallbackManager, prepare_callback
 from collie.config import CollieConfig
-from collie.data import CollieDataLoader
+from collie.data import CollieDataLoader, CollieDatasetForTraining
 from collie.driver.io import IODriver
 from collie.log import logger
 from collie.models.base import CollieModelForCausalLM
@@ -316,6 +317,52 @@ class Trainer(TrainerEventTrigger):
         )
         deepspeed.utils.logging.logger.setLevel(deepspeed_logging_level)
 
+    def dummy_train_loop(self, max_length:Optional[int] = None):
+        r"""
+        对根据用户设置的batchsize和max_length构造两个batch的数据试跑两个epoch测试；
+        如果dataset中未设置max_length值，则需用户手动设置max_length值来构造测试用例；
+        """
+        if not max_length:
+            max_length = self.train_dataset.max_length
+        if max_length > 0:
+            batch_size = self.config.train_micro_batch_size
+            dataset = []
+            for _ in range(2):
+                batch = []
+                for _ in range(batch_size):
+                    tokens = torch.randint(500, 10000, (1, max_length))[0]
+                    labels = [-100] * max_length
+                    sample = {
+                        "tokens": tokens,
+                        "labels": labels
+                    }
+                    batch.append(sample)
+                dataset += batch
+            dataset = CollieDatasetForTraining(dataset)
+            dataloader = CollieDataLoader(
+                    dataset,
+                    batch_size,
+                    self.config.gradient_accumulation_steps,
+                    shuffle=True,
+                    collate_fn=self.train_dataset_collate_fn,
+                    drop_last=False,
+                    num_workers=self.config.dataloader_num_workers,
+                )
+            for epoch in range(2):
+                for batch_idx, batch in enumerate(dataloader):
+                    try:
+                        loss = self.train_fn(self, batch, self.global_batch_idx)
+                    except RuntimeError as e:
+                        if 'out of memory' in str(e):
+                            print("OOM error occurred at epoch:", epoch, "batch index:", batch_idx)
+                            print("Please reduce the batch size or max_length size")
+                            torch.cuda.empty_cache()
+                        else:
+                            raise e
+            logger.info('Success finish dummy_train_loop.')     
+        else:
+            logger.error('The max_length value is not set in the dataset and needs to be manually passed in for testing.')
+        
     def train(self, dataloader: Optional[Iterable] = None):
         """训练循环
 
