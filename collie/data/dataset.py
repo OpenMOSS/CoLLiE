@@ -476,7 +476,7 @@ class CollieDatasetForClassification(CollieDatasetForTraining):
                     input_ids = []
                     attention_mask = []
                     labels = []
-                    for output in self.dataset[index]["output"]:           
+                    for output in self.dataset[index]["output"]:
                         inputs = self.tokenizer(
                             self.dataset[index]["input"],
                             add_special_tokens=self.add_special_tokens,
