@@ -7,7 +7,7 @@ import os
 import random
 import threading
 from functools import reduce
-from typing import Dict, List, Optional, Sequence, Tuple, Callable
+from typing import Dict, List, Optional, Sequence, Tuple, Callable, Union
 
 import numpy as np
 import torch
@@ -163,7 +163,7 @@ class CollieDatasetForTraining(Dataset):
     def __len__(self):
         return len(self.dataset)
 
-    def __getitem__(self, index) -> Dict or List[Dict]:
+    def __getitem__(self, index) -> Union[Dict, List[Dict]]:
         if isinstance(index, slice):
             return self._get_slice(index)
         if index > len(self):
@@ -199,23 +199,32 @@ class CollieDatasetForTraining(Dataset):
                     "input" in self.dataset[0].keys() and "output" in self.dataset[0].keys()
             ):
                 inputs = self.tokenizer(
-                    self.dataset[index]["input"] + self.dataset[index]["output"],
+                    self.dataset[index]["input"],
                     add_special_tokens=self.add_special_tokens,
                 )
+                outputs = self.tokenizer(
+                    self.dataset[index]["output"],
+                    add_special_tokens=self.add_special_tokens,
+                )
+                target_length = len(
+                    outputs.input_ids
+                )
+                if self.add_special_tokens:
+                    if self.eos_length != 0:
+                        inputs["input_ids"] = inputs["input_ids"][:-self.eos_length]
+                        inputs["attention_mask"] = inputs["attention_mask"][:-self.eos_length]
+                    inputs["input_ids"] += outputs["input_ids"][self.bos_length:]
+                    inputs["attention_mask"] += outputs["attention_mask"][self.bos_length:]
+                    target_length -= self.bos_length
+                else:
+                    inputs["input_ids"] += outputs["input_ids"]
+                    inputs["attention_mask"] += outputs["attention_mask"]
                 input_ids = inputs["input_ids"]
                 attention_mask = inputs.get(
                     "attention_mask",
                     [1 for _ in range(len(input_ids))],
                 )
                 labels = torch.tensor(input_ids)
-                target_length = len(
-                    self.tokenizer(
-                        self.dataset[index]["output"],
-                        add_special_tokens=self.add_special_tokens,
-                    ).input_ids
-                )
-                if self.add_special_tokens:
-                    target_length -= self.bos_length
                 labels[: -target_length] = -100
                 labels = labels.cpu().tolist()
             else:
@@ -477,9 +486,26 @@ class CollieDatasetForClassification(CollieDatasetForTraining):
                     labels = []
                     for output in self.dataset[index]["output"]:
                         inputs = self.tokenizer(
-                            self.dataset[index]["input"] + output,
+                            self.dataset[index]["input"],
                             add_special_tokens=self.add_special_tokens,
                         )
+                        outputs = self.tokenizer(
+                            output,
+                            add_special_tokens=self.add_special_tokens,
+                        )
+                        target_length = len(
+                            outputs.input_ids
+                        )
+                        if self.add_special_tokens:
+                            if self.eos_length != 0:
+                                inputs["input_ids"] = inputs["input_ids"][:-self.eos_length]
+                                inputs["attention_mask"] = inputs["attention_mask"][:-self.eos_length]
+                            inputs["input_ids"] += outputs["input_ids"][self.bos_length:]
+                            inputs["attention_mask"] += outputs["attention_mask"][self.bos_length:]
+                            target_length -= self.bos_length
+                        else:
+                            inputs["input_ids"] += outputs["input_ids"]
+                            inputs["attention_mask"] += outputs["attention_mask"]
                         input_ids.append(inputs.get("input_ids"))
                         attention_mask.append(
                             inputs.get(
@@ -488,14 +514,7 @@ class CollieDatasetForClassification(CollieDatasetForTraining):
                             )
                         )
                         label = torch.tensor(inputs.get("input_ids"))
-                        target_length = len(
-                            self.tokenizer(
-                                output,
-                                add_special_tokens=self.add_special_tokens,
-                            ).input_ids
-                        )
-                        if self.add_special_tokens:
-                            target_length -= self.bos_length
+                            
                         label[: -target_length] = -100
                         label = label.cpu().tolist()
                         labels.append(label)

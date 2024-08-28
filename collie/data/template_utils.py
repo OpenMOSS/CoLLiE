@@ -1,5 +1,5 @@
 import json
-from typing import Callable
+from typing import Callable, Optional, Union
 
 
 def prepare_chatml_messages(messages, special_tokens_map, text_field, add_generation_prompt=False):
@@ -129,7 +129,7 @@ TOKENIZER_PREPARE_TEMPLATE_FN_MAPPING = {
 }
 
 
-def tokenize_conversation(conversation, tokenizer, text_field='history', prepare_template_fn: Callable or None = None,
+def tokenize_conversation(conversation, tokenizer, text_field='history', prepare_template_fn: Optional[Callable] = None,
                           add_generation_prompt=False):
     if prepare_template_fn is None:
         if type(tokenizer).__name__ not in TOKENIZER_PREPARE_TEMPLATE_FN_MAPPING:
@@ -224,7 +224,7 @@ if __name__ == "__main__":
     T['history'] = [t for t in T['chat'] if "content" in t]
 
 
-    def _colored_string(string: str, color: str or int) -> str:
+    def _colored_string(string: str, color: Union[str, int]) -> str:
         """在终端中显示一串有颜色的文字
 
         :param string: 在终端中显示的文字
