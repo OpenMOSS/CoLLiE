@@ -19,7 +19,8 @@ config.tp_size = 2
 config.pp_size = 1
 model = LlamaForCausalLM.from_pretrained(model_name_or_path, config=config).cuda()
 model.eval()
-prompt = "[Round 0]\n\n\n\n问：你是谁？\n\n答："
+# prompt = "[Round 0]\n\n\n\n问：你是谁？\n\n答："
+prompt = "Llama is a"
 inputs = tokenizer(prompt, return_tensors="pt")
 print(inputs)
 gen_config = GenerationConfig(max_new_tokens=256, early_stopping=True, eos_token_id=0)

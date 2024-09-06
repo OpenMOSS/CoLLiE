@@ -386,6 +386,7 @@ class Trainer(TrainerEventTrigger):
                             "mode": "train",
                         }
                     )
+                
                 tqbar_batch.set_postfix(Loss=round(loss, 4))
                 self.on_train_batch_end(loss)
                 if (
